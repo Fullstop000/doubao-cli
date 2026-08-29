@@ -105,7 +105,17 @@ export async function sendMessage(id, message, options = {}) {
       messages = await readFromClient(client);
       const assistantMessages = messages.filter((item) => item.role === 'assistant');
       const reply = assistantMessages.length > assistantCountBefore ? assistantMessages.at(-1) : null;
-      const generating = await client.evaluate(`Boolean(document.querySelector('[data-testid="chat_input_local_break_button"], [data-testid="chat_input_end_button"]'))`);
+      const generating = await client.evaluate(`[
+        ...document.querySelectorAll('[data-testid="chat_input_local_break_button"], [data-testid="chat_input_end_button"]'),
+      ].some((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && Number(style.opacity) !== 0
+          && rect.width > 0
+          && rect.height > 0;
+      })`);
       if (reply?.text && reply.text === stableText && !generating) stablePolls += 1;
       else stablePolls = 0;
       stableText = reply?.text || '';
