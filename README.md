@@ -2,6 +2,12 @@
 
 Programmatic access to local sessions in the macOS Doubao desktop app.
 
+## Install
+
+```bash
+npm install --global doubao-cli
+```
+
 ## Commands
 
 ```bash
@@ -53,3 +59,7 @@ Override discovery paths when testing:
 ```bash
 DOUBAO_APP=/path/to/Doubao.app DOUBAO_DATA_DIR=/path/to/user-data doubao status
 ```
+
+## License
+
+MIT © 2026 Fullstop000

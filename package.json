@@ -6,11 +6,30 @@
   "bin": {
     "doubao": "bin/doubao.mjs"
   },
+  "files": [
+    "bin",
+    "src"
+  ],
   "scripts": {
     "test": "node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=22"
   },
-  "license": "UNLICENSED"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fullstop000/doubao-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Fullstop000/doubao-cli/issues"
+  },
+  "homepage": "https://github.com/Fullstop000/doubao-cli#readme",
+  "keywords": [
+    "doubao",
+    "cli",
+    "macos",
+    "automation",
+    "cdp"
+  ],
+  "license": "MIT"
 }
