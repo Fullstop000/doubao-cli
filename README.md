@@ -4,8 +4,17 @@ Programmatic access to local sessions in the macOS Doubao desktop app.
 
 ## Install
 
+Requires macOS, Node.js 22 or newer, and the Doubao desktop app.
+
 ```bash
-npm install --global doubao-cli
+npm install --global doubao-cli@latest
+doubao --version
+```
+
+Upgrade an existing installation with the same command. To run without a global install:
+
+```bash
+npx --yes doubao-cli@latest status
 ```
 
 ## Commands
@@ -47,8 +56,6 @@ No UI coordinates, image recognition, Cookie extraction, or private credential c
 Message read/send uses stable DOM test ids in the authenticated Doubao renderer over localhost CDP. A Doubao update can change these selectors. The CLI verifies that the exact user message appears in the target conversation before reporting success.
 
 ## Development
-
-Requires macOS and Node.js 22 or newer.
 
 ```bash
 npm test
