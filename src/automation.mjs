@@ -46,6 +46,14 @@ async function readFromClient(client) {
   return await client.evaluate(READ_MESSAGES_EXPRESSION) || [];
 }
 
+export function replyAfterLastUserMessage(messages, message) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role !== 'user' || messages[index].text !== message) continue;
+    return messages.slice(index + 1).find((item) => item.role === 'assistant' && item.text) || null;
+  }
+  return null;
+}
+
 export async function readConversation(id, options = {}) {
   const timeoutMs = options.timeoutMs || 10_000;
   openConversation(id);
@@ -66,7 +74,6 @@ export async function sendMessage(id, message, options = {}) {
   return withChatClient(async (client) => {
     await waitForConversation(client, id, Math.min(timeoutMs, 15_000));
     const before = await readFromClient(client);
-    const assistantCountBefore = before.filter((item) => item.role === 'assistant').length;
     const matchingUserCountBefore = before.filter((item) => item.role === 'user' && item.text === message).length;
     const encodedMessage = JSON.stringify(message);
 
@@ -103,8 +110,7 @@ export async function sendMessage(id, message, options = {}) {
     let stablePolls = 0;
     while (Date.now() < deadline) {
       messages = await readFromClient(client);
-      const assistantMessages = messages.filter((item) => item.role === 'assistant');
-      const reply = assistantMessages.length > assistantCountBefore ? assistantMessages.at(-1) : null;
+      const reply = replyAfterLastUserMessage(messages, message);
       const generating = await client.evaluate(`[
         ...document.querySelectorAll('[data-testid="chat_input_local_break_button"], [data-testid="chat_input_end_button"]'),
       ].some((element) => {
