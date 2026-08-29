@@ -6,7 +6,7 @@ import { cdpStatus } from './cdp.mjs';
 import { openConversation, readConversation, sendMessage } from './automation.mjs';
 
 const DEFAULT_APP = '/Applications/Doubao.app';
-const CLI_VERSION = '0.2.0';
+const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
   doubao status [--profile <name>] [--json]
