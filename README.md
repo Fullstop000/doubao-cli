@@ -28,6 +28,10 @@ doubao sessions open 38439138239851266
 doubao sessions read 38439138239851266 --limit 5
 doubao sessions send 38439138239851266 "hello"
 doubao sessions send 38439138239851266 "hello" --wait
+doubao models
+doubao model
+doubao model select doubao-2.1-turbo
+doubao sessions send 38439138239851266 "hello" --model gpt-5.6-sol --wait
 doubao cdp status
 doubao cdp launch
 doubao capabilities
@@ -41,6 +45,8 @@ Quit any running Doubao process first, then run `doubao cdp launch`. The equival
 
 Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply.
 
+`models` reads the choices currently exposed by the desktop app. `model select` changes the active model, and `sessions send --model` selects a model before sending. Exact display names and these aliases are supported: `auto`, `turbo`, `pro`, `orange`, `gemini`, `gpt`, `sol`, plus the stable ids printed by `doubao models`.
+
 CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normally when automation is no longer needed.
 
 ## How it works
@@ -48,8 +54,9 @@ CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normal
 - Session ids and titles are read directly from Doubao's local IndexedDB cache.
 - The current session is recovered from Chromium's local session store.
 - Opening a session uses Doubao's registered `doubao://doubaoapp/open-url` deep-link router.
+- Model discovery and selection use the renderer's semantic menu attributes and native CDP input events.
 
-No UI coordinates, image recognition, Cookie extraction, or private credential copying are involved.
+No hard-coded UI coordinates, image recognition, Cookie extraction, or private credential copying are involved.
 
 ## Limits
 

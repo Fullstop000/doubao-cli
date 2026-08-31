@@ -12,3 +12,12 @@ test('reports the installed package version', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), packageJson.version);
 });
+
+test('documents model selection commands', () => {
+  const result = spawnSync(process.execPath, [cliPath.pathname, '--help'], { encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /doubao models \[--json\]/u);
+  assert.match(result.stdout, /doubao model select <model>/u);
+  assert.match(result.stdout, /--model <model>/u);
+});

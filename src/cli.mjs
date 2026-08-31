@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { currentSession, getDataDir, listSessions, resolveProfile } from './storage.mjs';
 import { cdpStatus } from './cdp.mjs';
 import { openConversation, readConversation, sendMessage } from './automation.mjs';
+import { currentModel, listModels, selectModel } from './models.mjs';
 
 const DEFAULT_APP = '/Applications/Doubao.app';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -15,7 +16,10 @@ const HELP = `Usage:
   doubao sessions current [--profile <name>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
-  doubao sessions send <conversation-id> <message> [--wait] [--timeout <seconds>] [--json]
+  doubao sessions send <conversation-id> <message> [--model <model>] [--wait] [--timeout <seconds>] [--json]
+  doubao models [--json]
+  doubao model [--json]
+  doubao model select <model> [--json]
   doubao cdp status [--json]
   doubao cdp launch [--json]
   doubao capabilities [--json]
@@ -33,6 +37,7 @@ function parseOptions(argv) {
   let wait = false;
   let timeoutSeconds = 120;
   let limit = 20;
+  let model;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--json') {
       json = true;
@@ -50,11 +55,15 @@ function parseOptions(argv) {
       limit = Number(argv[index + 1]);
       if (!Number.isInteger(limit) || limit <= 0 || limit > 1000) throw new Error('--limit requires an integer from 1 to 1000');
       index += 1;
+    } else if (argv[index] === '--model') {
+      model = argv[index + 1];
+      if (!model) throw new Error('--model requires a value');
+      index += 1;
     } else {
       args.push(argv[index]);
     }
   }
-  return { args, profile, json, wait, timeoutMs: timeoutSeconds * 1000, limit };
+  return { args, profile, json, wait, timeoutMs: timeoutSeconds * 1000, limit, model };
 }
 
 function output(value, json) {
@@ -85,7 +94,7 @@ function sessionWithTitle(profilePath, id) {
 }
 
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, wait, timeoutMs, limit } = parseOptions(argv);
+  const { args, profile: requestedProfile, json, wait, timeoutMs, limit, model } = parseOptions(argv);
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
 
@@ -120,6 +129,7 @@ export async function main(argv) {
       openSession: true,
       readMessages: cdp.available,
       sendMessages: cdp.available,
+      selectModels: cdp.available,
       cdp,
       note: cdp.available
         ? 'Message automation is available through the authenticated Doubao renderer over local CDP.'
@@ -133,7 +143,42 @@ export async function main(argv) {
       console.log('sessions open\tyes');
       console.log(`messages read\t${capabilities.readMessages ? 'yes' : 'no'}`);
       console.log(`messages send\t${capabilities.sendMessages ? 'yes' : 'no'}`);
+      console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
       console.log(`note\t${capabilities.note}`);
+    }
+    return;
+  }
+
+  if (command === 'models') {
+    const result = await listModels();
+    if (json) output(result, true);
+    else {
+      console.log('SELECTED\tID\tMODEL');
+      for (const item of result.models) console.log(`${item.selected ? '*' : ''}\t${item.id}\t${item.name}`);
+      if (result.reasoning) console.log(`reasoning\t${result.reasoning}`);
+    }
+    return;
+  }
+
+  if (command === 'model' && (!subcommand || subcommand === 'current')) {
+    const result = await currentModel();
+    if (json) output(result, true);
+    else {
+      console.log(`model\t${result.name}`);
+      console.log(`id\t${result.id}`);
+      if (result.reasoning) console.log(`reasoning\t${result.reasoning}`);
+    }
+    return;
+  }
+
+  if (command === 'model' && subcommand === 'select') {
+    const requestedModel = args.slice(2).join(' ');
+    const result = await selectModel(requestedModel);
+    if (json) output(result, true);
+    else {
+      console.log(`model\t${result.name}`);
+      console.log(`changed\t${result.changed ? 'yes' : 'no'}`);
+      if (result.reasoning) console.log(`reasoning\t${result.reasoning}`);
     }
     return;
   }
@@ -168,7 +213,7 @@ export async function main(argv) {
     const result = spawnSync('/usr/bin/open', ['-a', appPath, '--args', `--remote-debugging-port=${port}`], { encoding: 'utf8' });
     if (result.status !== 0) throw new Error(result.stderr.trim() || 'failed to launch Doubao with CDP');
     let launched = existing;
-    for (let attempt = 0; attempt < 30 && !launched.available; attempt += 1) {
+    for (let attempt = 0; attempt < 120 && !launched.available; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       launched = await cdpStatus();
     }
@@ -243,10 +288,11 @@ export async function main(argv) {
   if (subcommand === 'send') {
     const id = validateId(operand);
     const message = args.slice(3).join(' ');
-    const result = await sendMessage(id, message, { waitForReply: wait, timeoutMs });
+    const result = await sendMessage(id, message, { waitForReply: wait, timeoutMs, model });
     if (json) output(result, true);
     else {
       console.log(`sent\t${result.sent.text}`);
+      if (result.model) console.log(`model\t${result.model}`);
       if (result.reply) console.log(`reply\t${result.reply.text.replaceAll('\n', '\\n')}`);
     }
     return;

@@ -25,13 +25,17 @@ export async function cdpStatus(endpoint = cdpEndpoint()) {
   }
 }
 
-export async function findChatTarget(endpoint = cdpEndpoint()) {
-  const targets = await fetchJson(`${endpoint}/json/list`);
-  const target = targets.find(
-    (item) => item.type === 'page' && /^(?:doubao|chrome):\/\/doubao-chat\/chat(?:\/|$)/u.test(item.url),
-  );
-  if (!target?.webSocketDebuggerUrl) throw new Error(`no Doubao chat page found at ${endpoint}`);
-  return target;
+export async function findChatTarget(endpoint = cdpEndpoint(), timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const targets = await fetchJson(`${endpoint}/json/list`);
+    const target = targets.find(
+      (item) => item.type === 'page' && /^(?:doubao|chrome):\/\/doubao-chat\/chat(?:\/|$)/u.test(item.url),
+    );
+    if (target?.webSocketDebuggerUrl) return target;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  throw new Error(`no Doubao chat page found at ${endpoint}`);
 }
 
 export class CdpClient {
@@ -84,6 +88,48 @@ export class CdpClient {
       throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'JavaScript evaluation failed');
     }
     return result.result?.value;
+  }
+
+  async click(selector) {
+    const point = await this.evaluate(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) throw new Error('click target was not found');
+      element.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) throw new Error('click target is not visible');
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    await this.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await this.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    });
+  }
+
+  async pressEscape() {
+    await this.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+      nativeVirtualKeyCode: 53,
+    });
+    await this.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+      nativeVirtualKeyCode: 53,
+    });
   }
 
   close() {

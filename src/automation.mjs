@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { withChatClient } from './cdp.mjs';
+import { selectModelFromClient } from './models.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
 const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
@@ -73,6 +74,7 @@ export async function sendMessage(id, message, options = {}) {
   openConversation(id);
   return withChatClient(async (client) => {
     await waitForConversation(client, id, Math.min(timeoutMs, 15_000));
+    const selectedModel = options.model ? await selectModelFromClient(client, options.model) : null;
     const before = await readFromClient(client);
     const matchingUserCountBefore = before.filter((item) => item.role === 'user' && item.text === message).length;
     const encodedMessage = JSON.stringify(message);
@@ -104,7 +106,9 @@ export async function sendMessage(id, message, options = {}) {
     const sent = matchingUserMessages.length > matchingUserCountBefore ? matchingUserMessages.at(-1) : null;
     if (!sent) throw new Error(`Doubao did not confirm a new sent message within ${timeoutMs} ms`);
 
-    if (!waitForReply) return { conversationId: id, sent, reply: null };
+    if (!waitForReply) {
+      return { conversationId: id, ...(selectedModel ? { model: selectedModel.name } : {}), sent, reply: null };
+    }
 
     let stableText = '';
     let stablePolls = 0;
@@ -125,7 +129,9 @@ export async function sendMessage(id, message, options = {}) {
       if (reply?.text && reply.text === stableText && !generating) stablePolls += 1;
       else stablePolls = 0;
       stableText = reply?.text || '';
-      if (reply && stablePolls >= 2) return { conversationId: id, sent, reply };
+      if (reply && stablePolls >= 2) {
+        return { conversationId: id, ...(selectedModel ? { model: selectedModel.name } : {}), sent, reply };
+      }
       await delay(500);
     }
     throw new Error(`Doubao reply did not complete within ${timeoutMs} ms`);
