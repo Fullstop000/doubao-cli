@@ -45,7 +45,18 @@ Quit any running Doubao process first, then run `doubao cdp launch`. The equival
 
 Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply.
 
-`models` reads the choices currently exposed by the desktop app. `model select` changes the active model, and `sessions send --model` selects a model before sending. Exact display names and these aliases are supported: `auto`, `turbo`, `pro`, `orange`, `gemini`, `gpt`, `sol`, plus the stable ids printed by `doubao models`.
+`models` reads the choices currently exposed by the desktop app. `model select` changes the active model, and `sessions send --model` selects a model before sending.
+
+| Model | Value | Short aliases |
+| --- | --- | --- |
+| 自动 | `auto` | `自动` |
+| 豆包 2.1 Turbo | `doubao-2.1-turbo` | `turbo` |
+| 豆包 2.1 Pro | `doubao-2.1-pro` | `pro` |
+| Orange 5.0 | `orange-5.0` | `orange` |
+| Gemini 3.7 Flash | `gemini-3.7-flash` | `gemini` |
+| GPT-5.6 Sol | `gpt-5.6-sol` | `gpt`, `sol` |
+
+Use the value, exact display name, or a short alias anywhere `<model>` is accepted. Run `doubao models` to verify the choices exposed by the installed Doubao version.
 
 CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normally when automation is no longer needed.
 
