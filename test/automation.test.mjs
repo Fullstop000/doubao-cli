@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { conversationDeepLink, replyAfterLastUserMessage } from '../src/automation.mjs';
+import {
+  attachmentsConfirmed,
+  conversationDeepLink,
+  conversationIdFromUrl,
+  replyAfterLastUserMessage,
+} from '../src/automation.mjs';
+import { attachmentMimeType, resolveAttachmentFiles } from '../src/attachments.mjs';
 import { modelId, normalizeModelName, resolveModelName } from '../src/models.mjs';
 
 test('builds the desktop open-url route for a conversation', () => {
@@ -8,6 +14,44 @@ test('builds the desktop open-url route for a conversation', () => {
     conversationDeepLink('38439138239851266'),
     'doubao://doubaoapp/open-url?url=https%3A%2F%2Fwww.doubao.com%2Fchat%2F38439138239851266',
   );
+});
+
+test('extracts persisted conversation ids and rejects the blank route', () => {
+  assert.equal(conversationIdFromUrl('chrome://doubao-chat/chat/38439138239851266'), '38439138239851266');
+  assert.equal(conversationIdFromUrl('doubao://doubao-chat/chat'), null);
+});
+
+test('resolves regular attachment files without reading their contents', async () => {
+  const licensePath = new URL('../LICENSE', import.meta.url).pathname;
+  const [file] = await resolveAttachmentFiles([licensePath]);
+
+  assert.equal(file.name, 'LICENSE');
+  assert.equal(file.path, licensePath);
+  assert.ok(file.size > 0);
+  assert.equal(attachmentMimeType('report.pdf'), 'application/pdf');
+});
+
+test('rejects missing attachments', async () => {
+  await assert.rejects(() => resolveAttachmentFiles(['/tmp/doubao-cli-file-that-does-not-exist']), /does not exist/u);
+});
+
+test('confirms every newly sent attachment, including duplicate names', () => {
+  const before = [{ role: 'user', text: '', attachments: ['report.pdf'] }];
+  const after = [
+    ...before,
+    { role: 'user', text: '', attachments: ['report.pdf', 'report.pdf', 'notes.md'] },
+  ];
+
+  assert.equal(attachmentsConfirmed(before, after, [
+    { name: 'report.pdf' },
+    { name: 'report.pdf' },
+    { name: 'notes.md' },
+  ]), true);
+  assert.equal(attachmentsConfirmed(before, after, [
+    { name: 'report.pdf' },
+    { name: 'report.pdf' },
+    { name: 'report.pdf' },
+  ]), false);
 });
 
 test('normalizes documented model aliases', () => {

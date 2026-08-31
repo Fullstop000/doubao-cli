@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { currentSession, getDataDir, listSessions, resolveProfile } from './storage.mjs';
 import { cdpStatus } from './cdp.mjs';
-import { openConversation, readConversation, sendMessage } from './automation.mjs';
+import { createConversation, openConversation, readConversation, sendMessage } from './automation.mjs';
 import { currentModel, listModels, selectModel } from './models.mjs';
 
 const DEFAULT_APP = '/Applications/Doubao.app';
@@ -14,9 +14,10 @@ const HELP = `Usage:
   doubao profiles [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
+  doubao sessions create [message] [--attach <path>] [--model <model>] [--wait] [--timeout <seconds>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
-  doubao sessions send <conversation-id> <message> [--model <model>] [--wait] [--timeout <seconds>] [--json]
+  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--wait] [--timeout <seconds>] [--json]
   doubao models [--json]
   doubao model [--json]
   doubao model select <model> [--json]
@@ -30,7 +31,7 @@ Environment:
   DOUBAO_CDP_ENDPOINT  CDP endpoint (default: http://127.0.0.1:9225)
 `;
 
-function parseOptions(argv) {
+export function parseOptions(argv) {
   const args = [];
   let profile;
   let json = false;
@@ -38,8 +39,12 @@ function parseOptions(argv) {
   let timeoutSeconds = 120;
   let limit = 20;
   let model;
+  const attachments = [];
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === '--json') {
+    if (argv[index] === '--') {
+      args.push(...argv.slice(index + 1));
+      break;
+    } else if (argv[index] === '--json') {
       json = true;
     } else if (argv[index] === '--wait') {
       wait = true;
@@ -59,11 +64,16 @@ function parseOptions(argv) {
       model = argv[index + 1];
       if (!model) throw new Error('--model requires a value');
       index += 1;
+    } else if (argv[index] === '--attach') {
+      const attachment = argv[index + 1];
+      if (!attachment || attachment.startsWith('--')) throw new Error('--attach requires a file path');
+      attachments.push(attachment);
+      index += 1;
     } else {
       args.push(argv[index]);
     }
   }
-  return { args, profile, json, wait, timeoutMs: timeoutSeconds * 1000, limit, model };
+  return { args, profile, json, wait, timeoutMs: timeoutSeconds * 1000, limit, model, attachments };
 }
 
 function output(value, json) {
@@ -94,7 +104,7 @@ function sessionWithTitle(profilePath, id) {
 }
 
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, wait, timeoutMs, limit, model } = parseOptions(argv);
+  const { args, profile: requestedProfile, json, wait, timeoutMs, limit, model, attachments } = parseOptions(argv);
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
 
@@ -127,8 +137,10 @@ export async function main(argv) {
       listSessions: true,
       detectCurrentSession: true,
       openSession: true,
+      createSessions: cdp.available,
       readMessages: cdp.available,
       sendMessages: cdp.available,
+      uploadAttachments: cdp.available,
       selectModels: cdp.available,
       cdp,
       note: cdp.available
@@ -141,8 +153,10 @@ export async function main(argv) {
       console.log('sessions list\tyes');
       console.log('sessions current\tyes');
       console.log('sessions open\tyes');
+      console.log(`sessions create\t${capabilities.createSessions ? 'yes' : 'no'}`);
       console.log(`messages read\t${capabilities.readMessages ? 'yes' : 'no'}`);
       console.log(`messages send\t${capabilities.sendMessages ? 'yes' : 'no'}`);
+      console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
       console.log(`note\t${capabilities.note}`);
     }
@@ -269,6 +283,25 @@ export async function main(argv) {
     return;
   }
 
+  if (subcommand === 'create') {
+    const message = args.slice(2).join(' ');
+    const result = await createConversation(message, {
+      attachments,
+      model,
+      timeoutMs,
+      waitForReply: wait,
+    });
+    if (json) output(result, true);
+    else {
+      console.log(`created\t${result.conversationId || 'draft'}`);
+      if (result.model) console.log(`model\t${result.model}`);
+      for (const attachment of result.attachments || []) console.log(`attachment\t${attachment.name}`);
+      if (result.sent) console.log(`sent\t${result.sent.text}`);
+      if (result.reply) console.log(`reply\t${result.reply.text.replaceAll('\n', '\\n')}`);
+    }
+    return;
+  }
+
   if (subcommand === 'open') {
     const id = validateId(operand);
     const url = openConversation(id);
@@ -288,11 +321,12 @@ export async function main(argv) {
   if (subcommand === 'send') {
     const id = validateId(operand);
     const message = args.slice(3).join(' ');
-    const result = await sendMessage(id, message, { waitForReply: wait, timeoutMs, model });
+    const result = await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model });
     if (json) output(result, true);
     else {
       console.log(`sent\t${result.sent.text}`);
       if (result.model) console.log(`model\t${result.model}`);
+      for (const attachment of result.attachments || []) console.log(`attachment\t${attachment.name}`);
       if (result.reply) console.log(`reply\t${result.reply.text.replaceAll('\n', '\\n')}`);
     }
     return;

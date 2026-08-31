@@ -24,10 +24,13 @@ doubao status
 doubao profiles
 doubao sessions list
 doubao sessions current
+doubao sessions create
+doubao sessions create "summarize the attachment" --attach ./report.pdf --model pro --wait
 doubao sessions open 38439138239851266
 doubao sessions read 38439138239851266 --limit 5
 doubao sessions send 38439138239851266 "hello"
 doubao sessions send 38439138239851266 "hello" --wait
+doubao sessions send 38439138239851266 "compare these files" --attach ./one.pdf --attach ./two.pdf --wait
 doubao models
 doubao model
 doubao model select doubao-2.1-turbo
@@ -44,6 +47,23 @@ Message automation requires Doubao to be launched with local Chrome DevTools Pro
 Quit any running Doubao process first, then run `doubao cdp launch`. The equivalent manual command is `open -a /Applications/Doubao.app --args --remote-debugging-port=9225`.
 
 Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply.
+
+### New sessions and attachments
+
+`sessions create` opens a clean composer. A numeric conversation id does not exist until the first message is sent, so `sessions create` without a message returns `conversationId: null`. Create and persist a session in one command by providing its first message:
+
+```bash
+doubao sessions create "Start a new task" --model gpt-5.6-sol --wait --json
+```
+
+Attach one or more local files by repeating `--attach`. The CLI validates each path, transfers the file through the authenticated renderer, waits for Doubao to finish uploading it, and only then sends the message:
+
+```bash
+doubao sessions create "Summarize these" --attach ./brief.pdf --attach ./notes.md --wait
+doubao sessions send 38439138239851266 "Review this spreadsheet" --attach ./data.xlsx --wait
+```
+
+Use `--` before message text that contains CLI option names, for example `doubao sessions create -- "Explain --model literally"`.
 
 `models` reads the choices currently exposed by the desktop app. `model select` changes the active model, and `sessions send --model` selects a model before sending.
 
@@ -66,12 +86,14 @@ CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normal
 - The current session is recovered from Chromium's local session store.
 - Opening a session uses Doubao's registered `doubao://doubaoapp/open-url` deep-link router.
 - Model discovery and selection use the renderer's semantic menu attributes and native CDP input events.
+- New sessions use Doubao's blank `/chat` route and return the id assigned after the first confirmed send.
+- Attachments are transferred into the renderer through its drop-upload path; file contents and credentials are never printed.
 
 No hard-coded UI coordinates, image recognition, Cookie extraction, or private credential copying are involved.
 
 ## Limits
 
-Message read/send uses stable DOM test ids in the authenticated Doubao renderer over localhost CDP. A Doubao update can change these selectors. The CLI verifies that the exact user message appears in the target conversation before reporting success.
+Message read/send and attachment upload use stable DOM test ids in the authenticated Doubao renderer over localhost CDP. A Doubao update can change these selectors. The CLI verifies that uploads finish and the exact user message appears in the target conversation before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
 
 ## Development
 
