@@ -2,7 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const DROP_AREA = '[data-testid="file_drop_area"]';
+const ATTACHMENT_AREA = '[data-testid="attachment_area"]';
 const ATTACHMENT_ITEM = '[data-testid="attachment_area"] [data-testid="attachment_file_item"]';
+const IMAGE_ITEM = '[data-testid="attachment_area"] [data-testid="mdbox_image"]';
 const MAX_FILE_COUNT = 50;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const CHUNK_BYTES = 384 * 1024;
@@ -98,20 +100,51 @@ async function dispatchDrop(client, stateKey) {
   })()`);
 }
 
-async function waitForUploads(client, expectedCount, timeoutMs) {
+export function attachmentUploadReady(state, expected) {
+  return state.files.length === expected.files
+    && state.files.every((item) => item.available)
+    && state.images.length === expected.images
+    && state.images.every((item) => item.loaded)
+    && !state.progressing;
+}
+
+async function waitForUploads(client, files, timeoutMs) {
+  const expected = {
+    files: files.filter((file) => !file.type.startsWith('image/')).length,
+    images: files.filter((file) => file.type.startsWith('image/')).length,
+  };
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const state = await client.evaluate(`(() => {
-      const items = [...document.querySelectorAll(${JSON.stringify(ATTACHMENT_ITEM)})].slice(-${expectedCount});
-      return items.map((item) => ({
-        available: item.getAttribute('data-available') === 'true',
-        name: (item.querySelector('[data-testid="message_nested_content_file_name"]')?.innerText || '').trim(),
-        status: (item.querySelector('[data-testid="message_nested_content_file_subtitle"]')?.innerText || '').trim(),
-      }));
+      const area = document.querySelector(${JSON.stringify(ATTACHMENT_AREA)});
+      const fileItems = ${expected.files}
+        ? [...document.querySelectorAll(${JSON.stringify(ATTACHMENT_ITEM)})].slice(-${expected.files})
+        : [];
+      const imageItems = ${expected.images}
+        ? [...document.querySelectorAll(${JSON.stringify(IMAGE_ITEM)})]
+          .filter((item) => !item.closest('[data-testid="attachment_file_item"]'))
+          .slice(-${expected.images})
+        : [];
+      return {
+        files: fileItems.map((item) => ({
+          available: item.getAttribute('data-available') === 'true',
+          name: (item.querySelector('[data-testid="message_nested_content_file_name"]')?.innerText || '').trim(),
+          status: (item.querySelector('[data-testid="message_nested_content_file_subtitle"]')?.innerText || '').trim(),
+        })),
+        images: imageItems.map((item) => {
+          const image = item.querySelector('img[alt="image"]');
+          return { loaded: Boolean(image?.complete && image?.naturalWidth > 0) };
+        }),
+        progressing: /(?:^|\\s)\\d{1,3}%(?:\\s|$)/u.test(area?.innerText || ''),
+        status: (area?.innerText || '').trim(),
+      };
     })()`);
-    if (state.length === expectedCount && state.every((item) => item.available)) return state;
-    const failed = state.find((item) => /(?:失败|不支持|超出|error|failed)/iu.test(item.status));
+    if (attachmentUploadReady(state, expected)) return;
+    const failed = state.files.find((item) => /(?:失败|不支持|超出|error|failed)/iu.test(item.status));
     if (failed) throw new Error(`Doubao failed to upload attachment ${failed.name || ''}: ${failed.status}`.trim());
+    if (/(?:失败|不支持|超出|error|failed)/iu.test(state.status)) {
+      throw new Error(`Doubao failed to upload an attachment: ${state.status}`);
+    }
     await delay(250);
   }
   throw new Error(`Doubao attachments did not finish uploading within ${timeoutMs} ms`);
@@ -123,13 +156,33 @@ async function clearComposerAttachments(client) {
       item.querySelector('[data-testid="message_nested_content_file_delete"]')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     }
+    const area = document.querySelector(${JSON.stringify(ATTACHMENT_AREA)});
+    const imageItems = [...document.querySelectorAll(${JSON.stringify(IMAGE_ITEM)})]
+      .filter((item) => !item.closest('[data-testid="attachment_file_item"]'));
+    for (const image of imageItems) {
+      let container = image.parentElement;
+      while (container && container !== area) {
+        const deleteButton = [...container.children]
+          .find((child) => /(?:^|\\s)delete-btn-[^\\s]+/u.test(child.className || ''));
+        if (deleteButton) {
+          deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          break;
+        }
+        container = container.parentElement;
+      }
+    }
   })()`);
 }
 
 export async function uploadAttachmentsFromClient(client, filePaths, options = {}) {
   const files = await resolveAttachmentFiles(filePaths);
   if (!files.length) return [];
-  const existingAttachmentCount = await client.evaluate(`document.querySelectorAll(${JSON.stringify(ATTACHMENT_ITEM)}).length`);
+  const existingAttachmentCount = await client.evaluate(`(() => {
+    const files = document.querySelectorAll(${JSON.stringify(ATTACHMENT_ITEM)}).length;
+    const images = [...document.querySelectorAll(${JSON.stringify(IMAGE_ITEM)})]
+      .filter((item) => !item.closest('[data-testid="attachment_file_item"]')).length;
+    return files + images;
+  })()`);
   if (existingAttachmentCount) {
     throw new Error('Doubao composer already contains draft attachments; remove them before using --attach');
   }
@@ -139,19 +192,13 @@ export async function uploadAttachmentsFromClient(client, filePaths, options = {
     await stageFiles(client, files, stateKey);
     const dropped = await dispatchDrop(client, stateKey);
     if (dropped.length !== files.length) throw new Error('Doubao did not accept every attachment from the drop event');
-    let uploaded;
     try {
-      uploaded = await waitForUploads(client, files.length, timeoutMs);
+      await waitForUploads(client, files, timeoutMs);
     } catch (error) {
       await clearComposerAttachments(client).catch(() => {});
       throw error;
     }
-    return uploaded.map((item, index) => ({
-      name: item.name || files[index].name,
-      path: files[index].path,
-      size: files[index].size,
-      type: files[index].type,
-    }));
+    return files;
   } finally {
     await client.evaluate(`delete globalThis[${JSON.stringify(stateKey)}]`).catch(() => {});
   }

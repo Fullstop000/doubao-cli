@@ -97,7 +97,7 @@ No hard-coded UI coordinates, image recognition, Cookie extraction, or private c
 
 ## Limits
 
-Message read/send and attachment upload use stable DOM test ids in the authenticated Doubao renderer over localhost CDP. A Doubao update can change these selectors. The CLI verifies that uploads finish and the exact user message appears in the target conversation before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
+Message read/send and attachment upload use stable DOM attributes in the authenticated Doubao renderer over localhost CDP. A Doubao update can change these selectors. The CLI treats image previews and file cards separately, waits for their respective upload completion signals, and verifies both the exact user message and sent attachment count before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
 
 ## Development
 

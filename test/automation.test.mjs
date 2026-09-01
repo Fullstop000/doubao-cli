@@ -6,7 +6,7 @@ import {
   conversationIdFromUrl,
   replyAfterLastUserMessage,
 } from '../src/automation.mjs';
-import { attachmentMimeType, resolveAttachmentFiles } from '../src/attachments.mjs';
+import { attachmentMimeType, attachmentUploadReady, resolveAttachmentFiles } from '../src/attachments.mjs';
 import { modelId, normalizeModelName, resolveModelName } from '../src/models.mjs';
 
 test('builds the desktop open-url route for a conversation', () => {
@@ -52,6 +52,29 @@ test('confirms every newly sent attachment, including duplicate names', () => {
     { name: 'report.pdf' },
     { name: 'report.pdf' },
   ]), false);
+});
+
+test('confirms sent images by new image message count', () => {
+  const before = [{ role: 'user', text: '', images: 1 }];
+  const after = [...before, { role: 'user', text: '', images: 2 }];
+  const images = [
+    { name: 'one.png', type: 'image/png' },
+    { name: 'two.png', type: 'image/png' },
+  ];
+
+  assert.equal(attachmentsConfirmed(before, after, images), true);
+  assert.equal(attachmentsConfirmed(before, before, images), false);
+});
+
+test('waits for image preview loading and upload progress completion', () => {
+  const expected = { files: 0, images: 1 };
+
+  assert.equal(attachmentUploadReady({
+    files: [], images: [{ loaded: true }], progressing: true,
+  }, expected), false);
+  assert.equal(attachmentUploadReady({
+    files: [], images: [{ loaded: true }], progressing: false,
+  }, expected), true);
 });
 
 test('normalizes documented model aliases', () => {

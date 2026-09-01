@@ -78,8 +78,14 @@ const READ_MESSAGES_EXPRESSION = `(() => [...document.querySelectorAll('[data-te
     const attachments = [...element.querySelectorAll('[data-testid="message_nested_content_file_name"]')]
       .map((part) => (part.innerText || '').trim())
       .filter(Boolean);
-    return role && (parts.length || attachments.length)
-      ? { role, text: parts.join('\\n'), ...(attachments.length ? { attachments } : {}) }
+    const images = element.querySelectorAll('[data-plugin-identifier="block_type:10052"] img').length;
+    return role && (parts.length || attachments.length || images)
+      ? {
+        role,
+        text: parts.join('\\n'),
+        ...(attachments.length ? { attachments } : {}),
+        ...(images ? { images } : {}),
+      }
       : null;
   })
   .filter(Boolean))()`;
@@ -109,12 +115,16 @@ export function attachmentsConfirmed(before, after, attachments) {
   const beforeCounts = attachmentCounts(before);
   const afterCounts = attachmentCounts(after);
   const expectedCounts = new Map();
-  for (const attachment of attachments) {
+  for (const attachment of attachments.filter((item) => !item.type?.startsWith('image/'))) {
     expectedCounts.set(attachment.name, (expectedCounts.get(attachment.name) || 0) + 1);
   }
-  return [...expectedCounts].every(([name, expected]) => (
+  const filesConfirmed = [...expectedCounts].every(([name, expected]) => (
     (afterCounts.get(name) || 0) - (beforeCounts.get(name) || 0) >= expected
   ));
+  const expectedImages = attachments.filter((item) => item.type?.startsWith('image/')).length;
+  const beforeImages = before.reduce((total, item) => total + (item.role === 'user' ? item.images || 0 : 0), 0);
+  const afterImages = after.reduce((total, item) => total + (item.role === 'user' ? item.images || 0 : 0), 0);
+  return filesConfirmed && afterImages - beforeImages >= expectedImages;
 }
 
 export async function readConversation(id, options = {}) {
