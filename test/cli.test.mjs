@@ -39,6 +39,14 @@ test('parses repeated attachments and option terminators', () => {
   assert.equal(parsed.model, undefined);
 });
 
+test('parses explicit CDP restart confirmation', () => {
+  const parsed = parseOptions(['cdp', 'launch', '--yes', '--json']);
+
+  assert.equal(parsed.yes, true);
+  assert.equal(parsed.json, true);
+  assert.deepEqual(parsed.args, ['cdp', 'launch']);
+});
+
 test('rejects an attachment option without a path', () => {
   assert.throws(() => parseOptions(['sessions', 'create', '--attach']), /requires a file path/u);
   assert.throws(() => parseOptions(['sessions', 'create', '--attach', '--wait']), /requires a file path/u);

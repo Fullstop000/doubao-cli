@@ -44,7 +44,11 @@ Every data-returning command supports `--json`. Select a non-default local profi
 
 Message automation requires Doubao to be launched with local Chrome DevTools Protocol enabled:
 
-Quit any running Doubao process first, then run `doubao cdp launch`. The equivalent manual command is `open -a /Applications/Doubao.app --args --remote-debugging-port=9225`.
+```bash
+doubao cdp launch
+```
+
+If Doubao is already running without CDP, the command asks for confirmation before quitting it and relaunching with the debugging port enabled. Scripts and `--json` mode never prompt; pass `doubao cdp launch --yes` to confirm the restart explicitly. The command returns only after both the CDP endpoint and authenticated chat renderer are ready. The equivalent manual sequence is to quit Doubao completely and run `open -a /Applications/Doubao.app --args --remote-debugging-port=9225`.
 
 Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply.
 

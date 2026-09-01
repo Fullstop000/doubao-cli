@@ -140,7 +140,7 @@ export class CdpClient {
 export async function withChatClient(callback, endpoint = cdpEndpoint()) {
   const status = await cdpStatus(endpoint);
   if (!status.available) {
-    throw new Error(`Doubao CDP is unavailable at ${endpoint}. Restart Doubao with --remote-debugging-port=9225.`);
+    throw new Error(`Doubao CDP is unavailable at ${endpoint}. Run "doubao cdp launch" to restart Doubao with CDP enabled.`);
   }
   const target = await findChatTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();

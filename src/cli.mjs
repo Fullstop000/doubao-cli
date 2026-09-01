@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import { currentSession, getDataDir, listSessions, resolveProfile } from './storage.mjs';
 import { cdpStatus } from './cdp.mjs';
 import { createConversation, openConversation, readConversation, sendMessage } from './automation.mjs';
@@ -22,7 +23,7 @@ const HELP = `Usage:
   doubao model [--json]
   doubao model select <model> [--json]
   doubao cdp status [--json]
-  doubao cdp launch [--json]
+  doubao cdp launch [--yes] [--json]
   doubao capabilities [--json]
 
 Environment:
@@ -35,6 +36,7 @@ export function parseOptions(argv) {
   const args = [];
   let profile;
   let json = false;
+  let yes = false;
   let wait = false;
   let timeoutSeconds = 120;
   let limit = 20;
@@ -46,6 +48,8 @@ export function parseOptions(argv) {
       break;
     } else if (argv[index] === '--json') {
       json = true;
+    } else if (argv[index] === '--yes') {
+      yes = true;
     } else if (argv[index] === '--wait') {
       wait = true;
     } else if (argv[index] === '--profile') {
@@ -73,7 +77,7 @@ export function parseOptions(argv) {
       args.push(argv[index]);
     }
   }
-  return { args, profile, json, wait, timeoutMs: timeoutSeconds * 1000, limit, model, attachments };
+  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, attachments };
 }
 
 function output(value, json) {
@@ -89,9 +93,71 @@ function appVersion(appPath) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
-function appRunning(appPath) {
+function appProcessPattern(appPath) {
   const executable = path.join(appPath, 'Contents', 'MacOS', 'Doubao');
-  return spawnSync('/usr/bin/pgrep', ['-f', executable]).status === 0;
+  const escaped = executable.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return `^${escaped}([[:space:]]|$)`;
+}
+
+function appRunning(appPath) {
+  return spawnSync('/usr/bin/pgrep', ['-f', appProcessPattern(appPath)]).status === 0;
+}
+
+async function waitForAppExit(appPath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!appRunning(appPath)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return !appRunning(appPath);
+}
+
+async function quitAppForCdp(appPath) {
+  const result = spawnSync('/usr/bin/osascript', [
+    '-e',
+    'tell application id "com.bot.pc.doubao" to quit',
+  ], { encoding: 'utf8' });
+  if (result.status === 0 && await waitForAppExit(appPath, 5000)) return;
+
+  const terminated = spawnSync('/usr/bin/pkill', ['-TERM', '-f', appProcessPattern(appPath)], { encoding: 'utf8' });
+  if (terminated.status !== 0 && terminated.status !== 1) {
+    throw new Error(terminated.stderr.trim() || result.stderr.trim() || 'failed to stop Doubao before enabling CDP');
+  }
+  if (!await waitForAppExit(appPath, 10_000)) {
+    throw new Error('Doubao did not quit after SIGTERM. Quit it manually, then run "doubao cdp launch" again.');
+  }
+}
+
+async function confirmCdpRestart({ json, yes }) {
+  if (yes) return;
+  if (json || !process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('Doubao must restart to enable CDP. Re-run "doubao cdp launch --yes" to confirm.');
+  }
+
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question('Doubao must restart to enable CDP. Continue? [y/N] ');
+    if (!/^(?:y|yes)$/iu.test(answer.trim())) {
+      throw new Error('CDP launch cancelled; Doubao was not restarted.');
+    }
+  } finally {
+    prompt.close();
+  }
+}
+
+async function waitForAutomationReady(timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const result = await listModels();
+      if (result.models.length) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Doubao CDP is listening, but the chat renderer is not ready: ${lastError?.message || 'timed out'}`);
 }
 
 function validateId(value) {
@@ -104,7 +170,7 @@ function sessionWithTitle(profilePath, id) {
 }
 
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, wait, timeoutMs, limit, model, attachments } = parseOptions(argv);
+  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, attachments } = parseOptions(argv);
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
 
@@ -213,17 +279,22 @@ export async function main(argv) {
   if (command === 'cdp' && subcommand === 'launch') {
     const existing = await cdpStatus();
     if (existing.available) {
+      await waitForAutomationReady();
       if (json) output(existing, true);
       else console.log(`available\tyes\nendpoint\t${existing.endpoint}`);
       return;
     }
     const appPath = process.env.DOUBAO_APP || DEFAULT_APP;
-    if (appRunning(appPath)) throw new Error('Doubao is already running without CDP. Quit it completely, then run this command again.');
     const endpoint = new URL(existing.endpoint);
     if (endpoint.hostname !== '127.0.0.1' && endpoint.hostname !== 'localhost') {
       throw new Error('cdp launch only supports a localhost DOUBAO_CDP_ENDPOINT');
     }
     const port = endpoint.port || '9225';
+    const restarted = appRunning(appPath);
+    if (restarted) {
+      await confirmCdpRestart({ json, yes });
+      await quitAppForCdp(appPath);
+    }
     const result = spawnSync('/usr/bin/open', ['-a', appPath, '--args', `--remote-debugging-port=${port}`], { encoding: 'utf8' });
     if (result.status !== 0) throw new Error(result.stderr.trim() || 'failed to launch Doubao with CDP');
     let launched = existing;
@@ -232,8 +303,10 @@ export async function main(argv) {
       launched = await cdpStatus();
     }
     if (!launched.available) throw new Error(`Doubao launched, but CDP did not become available at ${existing.endpoint}`);
-    if (json) output(launched, true);
-    else console.log(`available\tyes\nendpoint\t${launched.endpoint}`);
+    await waitForAutomationReady();
+    const launchResult = { ...launched, launched: true, restarted };
+    if (json) output(launchResult, true);
+    else console.log(`available\tyes\nendpoint\t${launched.endpoint}\nrestarted\t${restarted ? 'yes' : 'no'}`);
     return;
   }
 
