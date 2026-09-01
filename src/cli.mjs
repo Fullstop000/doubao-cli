@@ -6,6 +6,14 @@ import { currentSession, getDataDir, listSessions, resolveProfile } from './stor
 import { cdpStatus } from './cdp.mjs';
 import { createConversation, openConversation, readConversation, sendMessage } from './automation.mjs';
 import { currentModel, listModels, selectModel } from './models.mjs';
+import {
+  checkForUpdate,
+  installUpdate,
+  maybeAutoUpdate,
+  readUpdateState,
+  setAutoUpdate,
+  updateStatePath,
+} from './update.mjs';
 
 const DEFAULT_APP = '/Applications/Doubao.app';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -24,12 +32,17 @@ const HELP = `Usage:
   doubao model select <model> [--json]
   doubao cdp status [--json]
   doubao cdp launch [--yes] [--json]
+  doubao update [--json]
+  doubao update check [--json]
+  doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
 
 Environment:
   DOUBAO_APP       Override the Doubao.app path
   DOUBAO_DATA_DIR  Override the Doubao user-data directory
   DOUBAO_CDP_ENDPOINT  CDP endpoint (default: http://127.0.0.1:9225)
+  DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
+  DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip configured automatic updates
 `;
 
 export function parseOptions(argv) {
@@ -169,6 +182,16 @@ function sessionWithTitle(profilePath, id) {
   return listSessions(profilePath).find((session) => session.id === id) || { id, title: null };
 }
 
+async function runConfiguredAutoUpdate(command, json) {
+  if (['help', '--help', '-h', 'version', '--version', '-v', 'update'].includes(command)) return;
+  const result = await maybeAutoUpdate(CLI_VERSION);
+  if (result.updated) {
+    if (!json) console.error(`doubao: automatically updated to ${result.latestVersion}; the new version applies next run`);
+  } else if (result.error && !json) {
+    console.error(`doubao: automatic update failed: ${result.error}`);
+  }
+}
+
 export async function main(argv) {
   const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, attachments } = parseOptions(argv);
   const [command, subcommand, operand] = args;
@@ -182,6 +205,54 @@ export async function main(argv) {
     console.log(CLI_VERSION);
     return;
   }
+
+  if (command === 'update') {
+    if (subcommand === 'auto') {
+      const action = operand || 'status';
+      if (!['on', 'off', 'status'].includes(action)) {
+        throw new Error('update auto requires on, off, or status');
+      }
+      const state = action === 'status'
+        ? await readUpdateState()
+        : await setAutoUpdate(action === 'on');
+      const result = {
+        enabled: state.autoUpdate,
+        lastCheckedAt: state.lastCheckedAt,
+        lastUpdatedVersion: state.lastUpdatedVersion,
+        settingsPath: updateStatePath(),
+      };
+      if (json) output(result, true);
+      else {
+        console.log(`automatic updates\t${result.enabled ? 'on' : 'off'}`);
+        if (result.lastCheckedAt) console.log(`last checked\t${result.lastCheckedAt}`);
+        if (result.lastUpdatedVersion) console.log(`last updated\t${result.lastUpdatedVersion}`);
+      }
+      return;
+    }
+
+    if (subcommand && subcommand !== 'check') {
+      throw new Error(`unknown update command "${subcommand}". Run "doubao help".`);
+    }
+    const check = await checkForUpdate(CLI_VERSION);
+    if (subcommand === 'check') {
+      if (json) output(check, true);
+      else {
+        console.log(`current\t${check.currentVersion}`);
+        console.log(`latest\t${check.latestVersion}`);
+        console.log(`update available\t${check.updateAvailable ? 'yes' : 'no'}`);
+      }
+      return;
+    }
+    const result = check.updateAvailable
+      ? { ...check, ...installUpdate(check.latestVersion, { inherit: !json }) }
+      : { ...check, updated: false };
+    if (json) output(result, true);
+    else if (result.updated) console.log(`updated\t${result.latestVersion}`);
+    else console.log(`up to date\t${result.currentVersion}`);
+    return;
+  }
+
+  await runConfiguredAutoUpdate(command, json);
 
   if (command === 'profiles') {
     const { readProfiles } = await import('./storage.mjs');
@@ -208,6 +279,8 @@ export async function main(argv) {
       sendMessages: cdp.available,
       uploadAttachments: cdp.available,
       selectModels: cdp.available,
+      selfUpdate: true,
+      automaticUpdates: true,
       cdp,
       note: cdp.available
         ? 'Message automation is available through the authenticated Doubao renderer over local CDP.'
@@ -224,6 +297,8 @@ export async function main(argv) {
       console.log(`messages send\t${capabilities.sendMessages ? 'yes' : 'no'}`);
       console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
+      console.log('self update\tyes');
+      console.log('automatic updates\tyes');
       console.log(`note\t${capabilities.note}`);
     }
     return;

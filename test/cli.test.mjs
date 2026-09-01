@@ -23,6 +23,8 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /--model <model>/u);
   assert.match(result.stdout, /doubao sessions create \[message\]/u);
   assert.match(result.stdout, /--attach <path>/u);
+  assert.match(result.stdout, /doubao update \[--json\]/u);
+  assert.match(result.stdout, /doubao update auto <on\|off\|status>/u);
 });
 
 test('parses repeated attachments and option terminators', () => {

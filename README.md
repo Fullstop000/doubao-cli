@@ -11,7 +11,7 @@ npm install --global doubao-cli@latest
 doubao --version
 ```
 
-Upgrade an existing installation with the same command. To run without a global install:
+Upgrade an existing installation with `doubao update`. To run without a global install:
 
 ```bash
 npx --yes doubao-cli@latest status
@@ -37,6 +37,9 @@ doubao model select doubao-2.1-turbo
 doubao sessions send 38439138239851266 "hello" --model gpt-5.6-sol --wait
 doubao cdp status
 doubao cdp launch
+doubao update check
+doubao update
+doubao update auto on
 doubao capabilities
 ```
 
@@ -51,6 +54,25 @@ doubao cdp launch
 If Doubao is already running without CDP, the command asks for confirmation before quitting it and relaunching with the debugging port enabled. Scripts and `--json` mode never prompt; pass `doubao cdp launch --yes` to confirm the restart explicitly. The command returns only after both the CDP endpoint and authenticated chat renderer are ready. The equivalent manual sequence is to quit Doubao completely and run `open -a /Applications/Doubao.app --args --remote-debugging-port=9225`.
 
 Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply.
+
+### Updates
+
+`doubao update check` compares the running version with npm without changing the installation. `doubao update` installs the latest release globally through npm when an update is available:
+
+```bash
+doubao update check --json
+doubao update
+```
+
+Automatic installation is opt-in and checks at most once every 24 hours:
+
+```bash
+doubao update auto on
+doubao update auto status
+doubao update auto off
+```
+
+An automatic update never blocks the requested Doubao command if npm or the network fails. Set `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` to skip configured automatic updates in CI or a one-off invocation. Settings are stored under `~/Library/Application Support/doubao-cli/update.json`; override that directory with `DOUBAO_CLI_CONFIG_DIR`.
 
 ### New sessions and attachments
 
