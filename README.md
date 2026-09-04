@@ -111,15 +111,15 @@ CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normal
 - Session ids and titles are read directly from Doubao's local IndexedDB cache.
 - The current session is recovered from Chromium's local session store.
 - Opening a session uses Doubao's registered `doubao://doubaoapp/open-url` deep-link router.
-- Model discovery and selection use the renderer's semantic menu attributes and native CDP input events.
-- New sessions use Doubao's blank `/chat` route and return the id assigned after the first confirmed send.
+- Sending and creating sessions issue `chat/completion` requests directly inside the authenticated renderer, where the app's own request-signing hook attaches its risk-control parameters; the reply is parsed from the SSE event stream rather than scraped from the DOM.
+- Model selection uses the conversation-level `im/conversation/modify` API when a current session exists, and falls back to the renderer's menu UI otherwise.
 - Attachments are transferred into the renderer through its drop-upload path; file contents and credentials are never printed.
 
 No hard-coded UI coordinates, image recognition, Cookie extraction, or private credential copying are involved.
 
 ## Limits
 
-Message read/send and attachment upload use stable DOM attributes in the authenticated Doubao renderer over localhost CDP. A Doubao update can change these selectors. The CLI treats image previews and file cards separately, waits for their respective upload completion signals, and verifies both the exact user message and sent attachment count before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
+Message send/create and model selection use Doubao's own HTTP APIs from inside the authenticated renderer; message read and attachment upload use stable DOM attributes over localhost CDP. A Doubao update can change either surface. The CLI treats image previews and file cards separately, waits for their respective upload completion signals, and verifies both the exact user message and sent attachment count before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
 
 ## Development
 

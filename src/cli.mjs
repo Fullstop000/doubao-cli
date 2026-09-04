@@ -328,7 +328,8 @@ export async function main(argv) {
 
   if (command === 'model' && subcommand === 'select') {
     const requestedModel = args.slice(2).join(' ');
-    const result = await selectModel(requestedModel);
+    const activeProfile = resolveProfile(dataDir, requestedProfile);
+    const result = await selectModel(requestedModel, currentSession(activeProfile.path));
     if (json) output(result, true);
     else {
       console.log(`model\t${result.name}`);
