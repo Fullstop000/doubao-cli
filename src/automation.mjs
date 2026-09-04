@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { uploadAttachmentsFromClient } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
 import { modelDisplayName, resolveModelId, selectModelFromClient } from './models.mjs';
@@ -26,8 +26,27 @@ export function conversationDeepLink(id) {
 
 export function openConversation(id) {
   const url = conversationDeepLink(id);
-  const result = spawnSync('/usr/bin/open', [url], { encoding: 'utf8' });
+  // Doubao activates itself when handling the deep link (open -g does not
+  // prevent it), so remember the frontmost app and restore focus in a
+  // detached watcher once that activation happens.
+  const before = spawnSync('/usr/bin/osascript', [
+    '-e', 'tell application "System Events" to get name of first application process whose frontmost is true',
+  ], { encoding: 'utf8' }).stdout.trim();
+  const result = spawnSync('/usr/bin/open', ['-g', url], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `failed to open ${url}`);
+  if (before && before !== 'Doubao') {
+    const restore = [
+      'for i in $(seq 1 30); do',
+      'cur=$(/usr/bin/osascript -e \'tell application "System Events" to get name of first application process whose frontmost is true\' 2>/dev/null);',
+      'if [ "$cur" = "Doubao" ]; then',
+      `/usr/bin/osascript -e 'tell application "System Events" to set frontmost of process "${before.replace(/"/g, '\\"')}" to true' 2>/dev/null;`,
+      'exit 0;',
+      'fi;',
+      'sleep 0.3;',
+      'done',
+    ].join(' ');
+    spawn('bash', ['-c', restore], { detached: true, stdio: 'ignore' }).unref();
+  }
   return url;
 }
 
@@ -43,6 +62,18 @@ async function waitForConversation(client, id, timeoutMs) {
     await delay(200);
   }
   throw new Error(`Doubao did not open conversation ${id} within ${timeoutMs} ms`);
+}
+
+// The drop area mounts slightly after the composer input, especially after an
+// in-page navigation. Wait for it before staging attachment uploads.
+async function waitForDropTarget(client, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ready = await client.evaluate('Boolean(document.querySelector(\'[data-testid="file_drop_area"]\'))');
+    if (ready) return;
+    await delay(200);
+  }
+  throw new Error('Doubao attachment drop target was not found');
 }
 
 async function waitForBlankConversation(client, timeoutMs) {
@@ -95,9 +126,17 @@ async function readFromClient(client) {
   return await client.evaluate(READ_MESSAGES_EXPRESSION) || [];
 }
 
+// The composer auto-inserts spaces at CJK/latin/digit boundaries, so the
+// rendered text can differ from the submitted message. Compare with all
+// whitespace stripped.
+export function normalizeMessageText(value) {
+  return String(value || '').replace(/\s+/gu, '');
+}
+
 export function replyAfterLastUserMessage(messages, message) {
+  const expected = normalizeMessageText(message);
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role !== 'user' || messages[index].text !== message) continue;
+    if (messages[index].role !== 'user' || normalizeMessageText(messages[index].text) !== expected) continue;
     return messages.slice(index + 1).find((item) => item.role === 'assistant' && item.text) || null;
   }
   return null;
@@ -133,7 +172,14 @@ export async function readConversation(id, options = {}) {
   openConversation(id);
   return withChatClient(async (client) => {
     await waitForConversation(client, id, timeoutMs);
-    const messages = await readFromClient(client);
+    // The composer is ready before the message list finishes rendering;
+    // give the list a short grace period to populate.
+    const deadline = Date.now() + Math.min(3000, timeoutMs);
+    let messages = await readFromClient(client);
+    while (!messages.length && Date.now() < deadline) {
+      await delay(200);
+      messages = await readFromClient(client);
+    }
     return options.limit ? messages.slice(-options.limit) : messages;
   });
 }
@@ -160,7 +206,9 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
   const timeoutMs = options.timeoutMs || 120_000;
   const waitForReply = options.waitForReply || false;
   const before = await readFromClient(client);
-  const matchingUserCountBefore = before.filter((item) => item.role === 'user' && item.text === message).length;
+  const expectedMessage = normalizeMessageText(message);
+  const isSentUserMessage = (item) => item.role === 'user' && normalizeMessageText(item.text) === expectedMessage;
+  const matchingUserCountBefore = before.filter(isSentUserMessage).length;
   const encodedMessage = JSON.stringify(message);
 
   const draft = await client.evaluate(`(async () => {
@@ -176,18 +224,19 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
     button.click();
     return text;
   })()`);
-  if (draft !== message) throw new Error('Doubao editor did not accept the complete message');
+  if (normalizeMessageText(draft) !== expectedMessage) throw new Error('Doubao editor did not accept the complete message');
 
   const deadline = Date.now() + timeoutMs;
   let messages = before;
   while (Date.now() < deadline) {
     messages = await readFromClient(client);
-    const matchingUserCount = messages.filter((item) => item.role === 'user' && item.text === message).length;
+    const matchingUserCount = messages.filter(isSentUserMessage).length;
     if (matchingUserCount > matchingUserCountBefore) break;
     await delay(250);
   }
-  const matchingUserMessages = messages.filter((item) => item.role === 'user' && item.text === message);
-  const sent = matchingUserMessages.length > matchingUserCountBefore ? matchingUserMessages.at(-1) : null;
+  const matchingUserMessages = messages.filter(isSentUserMessage);
+  const matched = matchingUserMessages.length > matchingUserCountBefore ? matchingUserMessages.at(-1) : null;
+  const sent = matched ? { ...matched, text: message } : null;
   if (!sent) throw new Error(`Doubao did not confirm a new sent message within ${timeoutMs} ms`);
 
   if (attachments.length) {
@@ -272,6 +321,7 @@ export async function sendMessage(id, message, options = {}) {
   openConversation(id);
   return withChatClient(async (client) => {
     await waitForConversation(client, id, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000));
+    await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
     const prepared = await prepareComposer(client, options, remainingMilliseconds(deadline, timeoutMs));
     return sendFromClient(client, id, message, {
       ...options,
@@ -319,6 +369,9 @@ export async function createConversation(message, options = {}) {
     if (!createSelector) throw new Error('Doubao new conversation button was not found');
     await client.click(createSelector);
     const route = await waitForBlankConversation(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000));
+    if (options.attachments?.length) {
+      await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
+    }
     const prepared = await prepareComposer(client, options, remainingMilliseconds(deadline, timeoutMs));
     if (!hasMessage) {
       return {
