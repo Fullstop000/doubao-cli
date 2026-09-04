@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { uploadAttachmentsFromClient } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
-import { selectModelFromClient } from './models.mjs';
+import { modelDisplayName, resolveModelId, selectModelFromClient } from './models.mjs';
+import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
 const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
@@ -233,10 +234,40 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
   throw new Error(`Doubao reply did not complete within ${timeoutMs} ms`);
 }
 
+// Protocol-direct send: no conversation navigation, no composer DOM, reply
+// completion is decided by the SSE stream itself. Attachments still require
+// the legacy UI path (upload flow has not been ported).
+async function sendMessageViaProtocol(id, message, options, timeoutMs) {
+  const waitForReply = options.waitForReply || false;
+  return withChatClient(async (client) => {
+    let modelName = null;
+    let model = modelProtocol('auto');
+    if (options.model) {
+      const modelIdValue = resolveModelId(options.model);
+      model = modelProtocol(modelIdValue);
+      modelName = modelDisplayName(modelIdValue);
+      await switchConversationModel(client, id, model.key);
+    }
+    const result = await sendChatCompletion(client, {
+      conversationId: id, message, model, timeoutMs, waitForReply,
+    });
+    return {
+      conversationId: result.conversationId,
+      ...(modelName ? { model: modelName } : {}),
+      sent: { role: 'user', text: message },
+      reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
+    };
+  });
+}
+
 export async function sendMessage(id, message, options = {}) {
   const timeoutMs = options.timeoutMs || 120_000;
   const deadline = Date.now() + timeoutMs;
   validateMessage(message);
+
+  if (!options.attachments?.length) {
+    return sendMessageViaProtocol(id, message, options, timeoutMs);
+  }
 
   openConversation(id);
   return withChatClient(async (client) => {
@@ -254,6 +285,32 @@ export async function createConversation(message, options = {}) {
   const deadline = Date.now() + timeoutMs;
   const hasMessage = typeof message === 'string' && message.length > 0;
   if (hasMessage) validateMessage(message);
+
+  // Protocol-direct create: the conversation id comes back in SSE_ACK,
+  // no new-chat button click and no location.href polling.
+  if (hasMessage && !options.attachments?.length) {
+    const waitForReply = options.waitForReply || false;
+    return withChatClient(async (client) => {
+      let modelName = null;
+      let model = modelProtocol('auto');
+      if (options.model) {
+        const modelIdValue = resolveModelId(options.model);
+        model = modelProtocol(modelIdValue);
+        modelName = modelDisplayName(modelIdValue);
+      }
+      const result = await sendChatCompletion(client, {
+        conversationId: null, message, model, timeoutMs, waitForReply,
+      });
+      return {
+        conversationId: result.conversationId,
+        created: true,
+        persisted: true,
+        ...(modelName ? { model: modelName } : {}),
+        sent: { role: 'user', text: message },
+        reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
+      };
+    });
+  }
 
   return withChatClient(async (client) => {
     const createSelector = await client.evaluate(`document.querySelector(${JSON.stringify(CREATE_BUTTON)})
