@@ -1,4 +1,5 @@
 import { withChatClient } from './cdp.mjs';
+import { modelProtocol, switchConversationModel } from './protocol.mjs';
 
 const MODEL_TRIGGER = '[data-valid-btn="model-select-action-btn"]';
 const MODEL_OPTION = '[role="menuitem"][data-slot="dropdown-menu-item"]';
@@ -56,6 +57,26 @@ export function resolveModelName(value, availableNames) {
   const resolved = exact || (alias && availableNames.includes(alias) ? alias : null);
   if (resolved) return resolved;
   throw new Error(`unknown model "${value}". Available models: ${availableNames.join(', ')}`);
+}
+
+// UI-free model resolution against the built-in model table. Used by the
+// protocol-direct paths where opening the model menu is unnecessary.
+export function resolveModelId(value) {
+  const name = resolveModelName(value, [...MODEL_IDS.keys()]);
+  return MODEL_IDS.get(name);
+}
+
+export function modelDisplayName(id) {
+  for (const [name, candidate] of MODEL_IDS) if (candidate === id) return name;
+  return id;
+}
+
+// Switch the model of an existing conversation through the
+// im/conversation/modify API (cmd=1114) instead of the menu UI.
+export async function selectModelForConversation(client, conversationId, value) {
+  const id = resolveModelId(value);
+  await switchConversationModel(client, conversationId, modelProtocol(id).key);
+  return { id, name: modelDisplayName(id), changed: true };
 }
 
 async function waitFor(client, expression, timeoutMs = 3000, errorMessage = 'Doubao model menu did not respond') {
@@ -195,6 +216,9 @@ export async function listModels() {
   return withChatClient((client) => listModelsFromClient(client));
 }
 
-export async function selectModel(value) {
+export async function selectModel(value, conversationId) {
+  if (conversationId) {
+    return withChatClient((client) => selectModelForConversation(client, conversationId, value));
+  }
   return withChatClient((client) => selectModelFromClient(client, value));
 }
