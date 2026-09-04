@@ -184,6 +184,10 @@ const SEND_EXPRESSION = `(async () => {
         if (event === 'SSE_REPLY_END' && data.end_type === 1 && data.msg_finish_attr?.brief) {
           answer = data.msg_finish_attr.brief;
         }
+        if (event === 'STREAM_ERROR') {
+          try { reader.cancel(); } catch {}
+          return { error: data.error_code || 'stream_error', detail: data.error_msg || '' };
+        }
         if (event === 'SSE_REPLY_END' && data.end_type === 3) break outer;
       }
     }
