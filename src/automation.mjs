@@ -6,8 +6,6 @@ import { modelProtocol, sendChatCompletion, switchConversationModel } from './pr
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
 const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
-const CREATE_BUTTON = '[data-testid="create_conversation_button"]';
-const CREATE_OFFICE_TASK = '[data-testid="create_office_task_button"]';
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -57,11 +55,45 @@ export function conversationIdFromUrl(url) {
 async function waitForConversation(client, id, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const state = await client.evaluate(`({ href: location.href, ready: Boolean(document.querySelector(${JSON.stringify(CHAT_INPUT)})) })`);
-    if (state?.ready && new RegExp(`/chat/${id}(?:[?#]|$)`, 'u').test(state.href)) return state.href;
+    try {
+      const state = await client.evaluate(`({ href: location.href, ready: Boolean(document.querySelector(${JSON.stringify(CHAT_INPUT)})) })`);
+      if (state?.ready && new RegExp(`/chat/${id}(?:[?#]|$)`, 'u').test(state.href)) return state.href;
+    } catch {
+      // The renderer tears down its execution context during navigation;
+      // keep polling until the new page is ready.
+    }
     await delay(200);
   }
   throw new Error(`Doubao did not open conversation ${id} within ${timeoutMs} ms`);
+}
+
+// Navigating the chat renderer in place never raises the Doubao window,
+// unlike the doubao:// deep link, which always activates the app.
+async function navigateToConversation(client, target, id, timeoutMs) {
+  if (conversationIdFromUrl(target.url) !== id) {
+    const base = target.url.replace(/\/chat(?:\/.*)?$/u, '');
+    await client.send('Page.navigate', { url: `${base}/chat/${id}` });
+  }
+  await waitForConversation(client, id, timeoutMs);
+}
+
+// Runs callback against the chat page showing conversation id. Falls back to
+// the deep link (a brief focus change) only when no chat renderer exists,
+// e.g. the Doubao window was closed.
+async function withConversationPage(id, timeoutMs, callback) {
+  try {
+    return await withChatClient(async (client, target) => {
+      await navigateToConversation(client, target, id, timeoutMs);
+      return await callback(client);
+    });
+  } catch (error) {
+    if (!/no Doubao chat page found/u.test(error.message)) throw error;
+  }
+  openConversation(id);
+  return withChatClient(async (client) => {
+    await waitForConversation(client, id, timeoutMs);
+    return await callback(client);
+  });
 }
 
 // The drop area mounts slightly after the composer input, especially after an
@@ -79,11 +111,15 @@ async function waitForDropTarget(client, timeoutMs) {
 async function waitForBlankConversation(client, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const state = await client.evaluate(`({
-      href: location.href,
-      ready: Boolean(document.querySelector(${JSON.stringify(CHAT_INPUT)})),
-    })`);
-    if (state?.ready && /\/chat(?:[?#]|$)/u.test(state.href)) return state.href;
+    try {
+      const state = await client.evaluate(`({
+        href: location.href,
+        ready: Boolean(document.querySelector(${JSON.stringify(CHAT_INPUT)})),
+      })`);
+      if (state?.ready && /\/chat(?:[?#]|$)/u.test(state.href)) return state.href;
+    } catch {
+      // Keep polling while the renderer navigates.
+    }
     await delay(100);
   }
   throw new Error(`Doubao did not open a blank conversation within ${timeoutMs} ms`);
@@ -169,9 +205,7 @@ export function attachmentsConfirmed(before, after, attachments) {
 
 export async function readConversation(id, options = {}) {
   const timeoutMs = options.timeoutMs || 10_000;
-  openConversation(id);
-  return withChatClient(async (client) => {
-    await waitForConversation(client, id, timeoutMs);
+  return withConversationPage(id, timeoutMs, async (client) => {
     // The composer is ready before the message list finishes rendering;
     // give the list a short grace period to populate.
     const deadline = Date.now() + Math.min(3000, timeoutMs);
@@ -318,9 +352,7 @@ export async function sendMessage(id, message, options = {}) {
     return sendMessageViaProtocol(id, message, options, timeoutMs);
   }
 
-  openConversation(id);
-  return withChatClient(async (client) => {
-    await waitForConversation(client, id, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000));
+  return withConversationPage(id, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000), async (client) => {
     await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
     const prepared = await prepareComposer(client, options, remainingMilliseconds(deadline, timeoutMs));
     return sendFromClient(client, id, message, {
@@ -362,12 +394,12 @@ export async function createConversation(message, options = {}) {
     });
   }
 
-  return withChatClient(async (client) => {
-    const createSelector = await client.evaluate(`document.querySelector(${JSON.stringify(CREATE_BUTTON)})
-      ? ${JSON.stringify(CREATE_BUTTON)}
-      : document.querySelector(${JSON.stringify(CREATE_OFFICE_TASK)}) ? ${JSON.stringify(CREATE_OFFICE_TASK)} : null`);
-    if (!createSelector) throw new Error('Doubao new conversation button was not found');
-    await client.click(createSelector);
+  return withChatClient(async (client, target) => {
+    // Navigating to the bare chat route yields a blank conversation without
+    // clicking the new-conversation button, whose app handler raises the
+    // Doubao window.
+    const base = target.url.replace(/\/chat(?:\/.*)?$/u, '');
+    await client.send('Page.navigate', { url: `${base}/chat` });
     const route = await waitForBlankConversation(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000));
     if (options.attachments?.length) {
       await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
