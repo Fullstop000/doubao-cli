@@ -4,6 +4,11 @@
 // is indistinguishable from the app's own traffic. This avoids DOM-driven
 // composer automation and UI-state timing entirely.
 
+import os from 'node:os';
+
+const HOME = os.homedir();
+const AGENT_WORKSPACE = `${HOME}/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace`;
+
 const CHAT_URL = 'https://api5-normal-gl.doubao.com/chat/completion';
 const MODIFY_URL = 'https://www.doubao.com/im/conversation/modify';
 const BOT_ID = '7338286299411103781';
@@ -50,10 +55,10 @@ function conversationExt(model, localMessageId, workspace) {
     client_option: {
       enable_sandbox: true,
       os: 'Mac',
-      shared_folder_path: [workspace, '/Users/doubao/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace'],
+      shared_folder_path: [workspace, AGENT_WORKSPACE],
       agent_workspace: {
-        agent_workspace: '/Users/doubao/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace',
-        local_skill_paths: ['/Users/doubao/Doubao/skills', '/Users/doubao/.agents/skills'],
+        agent_workspace: AGENT_WORKSPACE,
+        local_skill_paths: [`${HOME}/Doubao/skills`, `${HOME}/.agents/skills`],
       },
       client_env_id: '85dd66b1-4866-483a-a37a-da832ae9a35f',
       sandbox_id: `route-${crypto.randomUUID()}`,
@@ -72,7 +77,13 @@ function conversationExt(model, localMessageId, workspace) {
     },
     agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: false },
     need_modify_conversation: false,
-    task_input_json: '{"agents_md":{"files":[],"state":2},"schema_version":1,"home_dir":"/Users/doubao","project_context":{},"localConnectors":[]}',
+    task_input_json: JSON.stringify({
+      agents_md: { files: [], state: 2 },
+      schema_version: 1,
+      home_dir: HOME,
+      project_context: {},
+      localConnectors: [],
+    }),
   };
   return {
     general_task_param: JSON.stringify(gtp),
@@ -242,7 +253,7 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     waitForReply,
     ext: createNew
       ? conversationExt(model, '%LOCAL_MESSAGE_ID%',
-        `/Users/doubao/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`)
+        `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`)
       : null,
   });
   const result = await client.evaluate(expression);
