@@ -1,6 +1,6 @@
 # doubao CLI
 
-[![skills.sh](https://skills.sh/b/Fullstop000/doubao-cli)](https://skills.sh/Fullstop000/doubao-cli)
+[![skills.sh](https://img.shields.io/badge/skills.sh-doubao-black)](https://skills.sh/Fullstop000/doubao-cli)
 
 Programmatic access to local sessions in the macOS Doubao desktop app.
 
