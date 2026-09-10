@@ -347,7 +347,7 @@ export async function main(argv) {
 
   if (command === 'model' && subcommand === 'reasoning') {
     const level = args.slice(2).join(' ');
-    if (!level) throw new Error('model reasoning requires a level: low, medium, high, ultra, max');
+    if (!level) throw new Error('model reasoning requires a level: low, medium, high, xhigh, max');
     const activeProfile = resolveProfile(dataDir, requestedProfile);
     const id = currentSession(activeProfile.path);
     if (!id) throw new Error('current Doubao session was not found in the local session store');

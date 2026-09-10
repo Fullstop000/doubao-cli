@@ -79,7 +79,7 @@ const REASONING_LEVELS = new Map([
   ['low', '3'],
   ['medium', '4'],
   ['high', '5'],
-  ['ultra', '6'],
+  ['xhigh', '6'],
   ['max', '7'],
 ]);
 
@@ -88,8 +88,8 @@ const REASONING_ALIASES = new Map([
   ['mid', 'medium'],
   ['中', 'medium'],
   ['高', 'high'],
-  ['very high', 'ultra'],
-  ['极高', 'ultra'],
+  ['very high', 'xhigh'],
+  ['极高', 'xhigh'],
   ['maximum', 'max'],
   ['highest', 'max'],
   ['最高', 'max'],
@@ -105,7 +105,7 @@ export function resolveReasoningEffort(value) {
   }
   const name = REASONING_ALIASES.get(normalized);
   if (name) return { effort: REASONING_LEVELS.get(name), name };
-  throw new Error(`unknown reasoning effort "${value}". Available: low, medium, high, ultra, max`);
+  throw new Error(`unknown reasoning effort "${value}". Available: low, medium, high, xhigh, max`);
 }
 
 // Switch the model of an existing conversation through the

@@ -50,9 +50,9 @@ test('parses explicit CDP restart confirmation', () => {
 });
 
 test('parses the reasoning effort option', () => {
-  const parsed = parseOptions(['sessions', 'create', 'hello', '--reasoning', 'ultra']);
+  const parsed = parseOptions(['sessions', 'create', 'hello', '--reasoning', 'xhigh']);
 
-  assert.equal(parsed.reasoning, 'ultra');
+  assert.equal(parsed.reasoning, 'xhigh');
   assert.deepEqual(parsed.args, ['sessions', 'create', 'hello']);
 });
 

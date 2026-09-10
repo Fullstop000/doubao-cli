@@ -50,7 +50,7 @@ Pass `--json` to every data-returning command when another program consumes the 
 
 Accept the value, exact display name, or an alias anywhere `<model>` appears. Confirm availability with `doubao models --json` — the installed app version decides what exists.
 
-Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `ultra` (极高), `max` (最高). `--reasoning` on `sessions send` requires `--model` and is incompatible with `--attach`; `model reasoning <level>` changes the current session without switching models.
+Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `xhigh` (极高), `max` (最高). `--reasoning` on `sessions send` requires `--model` and is incompatible with `--attach`; `model reasoning <level>` changes the current session without switching models.
 
 | Model | Value | Aliases |
 | --- | --- | --- |

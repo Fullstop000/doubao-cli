@@ -122,7 +122,7 @@ doubao model select pro --reasoning max
 doubao sessions send 38439138239851266 "hello" --model turbo --reasoning low --wait
 ```
 
-Levels are `low` (低), `medium` (中), `high` (高), `ultra` (极高), and `max` (最高); display names and raw API values work too. `--reasoning` on `sessions send` requires `--model`, and it is not supported together with `--attach`.
+Levels are `low` (低), `medium` (中), `high` (高), `xhigh` (极高), and `max` (最高); display names and raw API values work too. `--reasoning` on `sessions send` requires `--model`, and it is not supported together with `--attach`.
 
 CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normally when automation is no longer needed.
 
