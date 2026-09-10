@@ -71,48 +71,41 @@ export function modelDisplayName(id) {
   return id;
 }
 
-// Reasoning effort levels exposed by the model menu (推理强度). The value is
-// the reasoning_effort string of the conversation modify API.
+// Reasoning effort levels exposed by the model menu (推理强度: 低中高极高最高).
+// The value is the reasoning_effort string of the conversation modify API.
+// CLI input and output use the English names; the Chinese UI labels and raw
+// API values are accepted as aliases.
 const REASONING_LEVELS = new Map([
-  ['低', '3'],
-  ['中', '4'],
-  ['高', '5'],
-  ['极高', '6'],
-  ['最高', '7'],
+  ['low', '3'],
+  ['medium', '4'],
+  ['high', '5'],
+  ['ultra', '6'],
+  ['max', '7'],
 ]);
 
 const REASONING_ALIASES = new Map([
-  ['low', '低'],
-  ['低', '低'],
-  ['mid', '中'],
-  ['medium', '中'],
-  ['中', '中'],
-  ['high', '高'],
-  ['高', '高'],
-  ['ultra', '极高'],
-  ['very high', '极高'],
-  ['极高', '极高'],
-  ['max', '最高'],
-  ['maximum', '最高'],
-  ['highest', '最高'],
-  ['最高', '最高'],
+  ['低', 'low'],
+  ['mid', 'medium'],
+  ['中', 'medium'],
+  ['高', 'high'],
+  ['very high', 'ultra'],
+  ['极高', 'ultra'],
+  ['maximum', 'max'],
+  ['highest', 'max'],
+  ['最高', 'max'],
 ]);
 
 // Resolves a level name, alias, or raw API value to { effort, name }.
 export function resolveReasoningEffort(value) {
   const normalized = normalizeModelName(value);
   if (!normalized) throw new Error('reasoning effort cannot be empty');
+  if (REASONING_LEVELS.has(normalized)) return { effort: REASONING_LEVELS.get(normalized), name: normalized };
   for (const [name, effort] of REASONING_LEVELS) {
-    if (normalized === effort || normalized === name) return { effort, name };
+    if (normalized === effort) return { effort, name };
   }
   const name = REASONING_ALIASES.get(normalized);
   if (name) return { effort: REASONING_LEVELS.get(name), name };
   throw new Error(`unknown reasoning effort "${value}". Available: low, medium, high, ultra, max`);
-}
-
-export function reasoningDisplayName(effort) {
-  for (const [name, candidate] of REASONING_LEVELS) if (candidate === effort) return name;
-  return effort;
 }
 
 // Switch the model of an existing conversation through the

@@ -69,8 +69,10 @@ async function waitForConversation(client, id, timeoutMs) {
 
 // Navigating the chat renderer in place never raises the Doubao window,
 // unlike the doubao:// deep link, which always activates the app.
-async function navigateToConversation(client, target, id, timeoutMs) {
-  if (conversationIdFromUrl(target.url) !== id) {
+// force reloads even when the renderer already shows the conversation, so
+// callers read fresh state instead of a stale UI left by server-side changes.
+async function navigateToConversation(client, target, id, timeoutMs, { force = false } = {}) {
+  if (force || conversationIdFromUrl(target.url) !== id) {
     const base = target.url.replace(/\/chat(?:\/.*)?$/u, '');
     await client.send('Page.navigate', { url: `${base}/chat/${id}` });
   }
@@ -80,10 +82,10 @@ async function navigateToConversation(client, target, id, timeoutMs) {
 // Runs callback against the chat page showing conversation id. Falls back to
 // the deep link (a brief focus change) only when no chat renderer exists,
 // e.g. the Doubao window was closed.
-async function withConversationPage(id, timeoutMs, callback) {
+async function withConversationPage(id, timeoutMs, callback, { force = false } = {}) {
   try {
     return await withChatClient(async (client, target) => {
-      await navigateToConversation(client, target, id, timeoutMs);
+      await navigateToConversation(client, target, id, timeoutMs, { force });
       return await callback(client);
     });
   } catch (error) {
@@ -350,10 +352,10 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
 }
 
 // Change the reasoning effort of an existing conversation, keeping its model.
-// Navigates the renderer to the conversation first so the model key is read
-// from the right conversation's model selector.
+// Forces a renderer reload so the model key comes from fresh state rather
+// than a UI stale from earlier server-side changes.
 export async function setConversationReasoning(id, value) {
-  return withConversationPage(id, 15_000, (client) => setReasoningForConversation(client, id, value));
+  return withConversationPage(id, 15_000, (client) => setReasoningForConversation(client, id, value), { force: true });
 }
 
 export async function sendMessage(id, message, options = {}) {
