@@ -7,7 +7,7 @@ import {
   replyAfterLastUserMessage,
 } from '../src/automation.mjs';
 import { attachmentMimeType, attachmentUploadReady, resolveAttachmentFiles } from '../src/attachments.mjs';
-import { modelId, normalizeModelName, resolveModelName } from '../src/models.mjs';
+import { modelId, normalizeModelName, resolveModelName, resolveReasoningEffort } from '../src/models.mjs';
 
 test('builds the desktop open-url route for a conversation', () => {
   assert.equal(
@@ -95,6 +95,16 @@ test('rejects unavailable model names with live choices', () => {
     () => resolveModelName('missing', ['自动', 'Orange 5.0']),
     /Available models: 自动, Orange 5\.0/u,
   );
+});
+
+test('resolves reasoning effort names, aliases, and raw values', () => {
+  assert.deepEqual(resolveReasoningEffort('low'), { effort: '3', name: '低' });
+  assert.deepEqual(resolveReasoningEffort('medium'), { effort: '4', name: '中' });
+  assert.deepEqual(resolveReasoningEffort('高'), { effort: '5', name: '高' });
+  assert.deepEqual(resolveReasoningEffort('ultra'), { effort: '6', name: '极高' });
+  assert.deepEqual(resolveReasoningEffort('MAX'), { effort: '7', name: '最高' });
+  assert.deepEqual(resolveReasoningEffort('7'), { effort: '7', name: '最高' });
+  assert.throws(() => resolveReasoningEffort('extreme'), /unknown reasoning effort/u);
 });
 
 test('finds a reply after the latest matching user message in a virtualized list', () => {

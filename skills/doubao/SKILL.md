@@ -33,6 +33,7 @@ Pass `--json` to every data-returning command when another program consumes the 
 | Reveal session in the app | `doubao sessions open <id>` |
 | List / show models | `doubao models --json` / `doubao model --json` |
 | Switch model | `doubao model select <model> --json` or per-send `--model <model>` |
+| Set reasoning effort | `doubao model reasoning <level> --json` or `--reasoning <level>` on select/send/create |
 | Update the CLI | `doubao update` (`update check`, `update auto on`) |
 
 ## Behavior notes
@@ -48,6 +49,8 @@ Pass `--json` to every data-returning command when another program consumes the 
 ## Model values
 
 Accept the value, exact display name, or an alias anywhere `<model>` appears. Confirm availability with `doubao models --json` — the installed app version decides what exists.
+
+Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `ultra` (极高), `max` (最高). `--reasoning` on `sessions send` requires `--model` and is incompatible with `--attach`; `model reasoning <level>` changes the current session without switching models.
 
 | Model | Value | Aliases |
 | --- | --- | --- |

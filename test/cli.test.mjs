@@ -49,6 +49,13 @@ test('parses explicit CDP restart confirmation', () => {
   assert.deepEqual(parsed.args, ['cdp', 'launch']);
 });
 
+test('parses the reasoning effort option', () => {
+  const parsed = parseOptions(['sessions', 'create', 'hello', '--reasoning', 'ultra']);
+
+  assert.equal(parsed.reasoning, 'ultra');
+  assert.deepEqual(parsed.args, ['sessions', 'create', 'hello']);
+});
+
 test('rejects an attachment option without a path', () => {
   assert.throws(() => parseOptions(['sessions', 'create', '--attach']), /requires a file path/u);
   assert.throws(() => parseOptions(['sessions', 'create', '--attach', '--wait']), /requires a file path/u);

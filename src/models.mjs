@@ -71,12 +71,67 @@ export function modelDisplayName(id) {
   return id;
 }
 
+// Reasoning effort levels exposed by the model menu (推理强度). The value is
+// the reasoning_effort string of the conversation modify API.
+const REASONING_LEVELS = new Map([
+  ['低', '3'],
+  ['中', '4'],
+  ['高', '5'],
+  ['极高', '6'],
+  ['最高', '7'],
+]);
+
+const REASONING_ALIASES = new Map([
+  ['low', '低'],
+  ['低', '低'],
+  ['mid', '中'],
+  ['medium', '中'],
+  ['中', '中'],
+  ['high', '高'],
+  ['高', '高'],
+  ['ultra', '极高'],
+  ['very high', '极高'],
+  ['极高', '极高'],
+  ['max', '最高'],
+  ['maximum', '最高'],
+  ['highest', '最高'],
+  ['最高', '最高'],
+]);
+
+// Resolves a level name, alias, or raw API value to { effort, name }.
+export function resolveReasoningEffort(value) {
+  const normalized = normalizeModelName(value);
+  if (!normalized) throw new Error('reasoning effort cannot be empty');
+  for (const [name, effort] of REASONING_LEVELS) {
+    if (normalized === effort || normalized === name) return { effort, name };
+  }
+  const name = REASONING_ALIASES.get(normalized);
+  if (name) return { effort: REASONING_LEVELS.get(name), name };
+  throw new Error(`unknown reasoning effort "${value}". Available: low, medium, high, ultra, max`);
+}
+
+export function reasoningDisplayName(effort) {
+  for (const [name, candidate] of REASONING_LEVELS) if (candidate === effort) return name;
+  return effort;
+}
+
 // Switch the model of an existing conversation through the
 // im/conversation/modify API (cmd=1114) instead of the menu UI.
-export async function selectModelForConversation(client, conversationId, value) {
+export async function selectModelForConversation(client, conversationId, value, reasoning) {
   const id = resolveModelId(value);
-  await switchConversationModel(client, conversationId, modelProtocol(id).key);
-  return { id, name: modelDisplayName(id), changed: true };
+  const effort = reasoning ? resolveReasoningEffort(reasoning) : null;
+  await switchConversationModel(client, conversationId, modelProtocol(id).key, effort?.effort);
+  return { id, name: modelDisplayName(id), changed: true, ...(effort ? { reasoning: effort.name } : {}) };
+}
+
+// Change only the reasoning effort of an existing conversation, keeping its
+// model. The chat renderer must be showing the conversation, since the model
+// key is read from the model selector button.
+export async function setReasoningForConversation(client, conversationId, value) {
+  const { effort, name } = resolveReasoningEffort(value);
+  const current = await currentModelFromClient(client);
+  await switchConversationModel(client, conversationId, modelProtocol(modelId(current.name)).key, effort);
+  return { conversationId, model: current.name, reasoning: name };
 }
 
 async function waitFor(client, expression, timeoutMs = 3000, errorMessage = 'Doubao model menu did not respond') {
@@ -216,9 +271,10 @@ export async function listModels() {
   return withChatClient((client) => listModelsFromClient(client));
 }
 
-export async function selectModel(value, conversationId) {
+export async function selectModel(value, conversationId, reasoning) {
   if (conversationId) {
-    return withChatClient((client) => selectModelForConversation(client, conversationId, value));
+    return withChatClient((client) => selectModelForConversation(client, conversationId, value, reasoning));
   }
+  if (reasoning) throw new Error('--reasoning requires an active session; run "doubao sessions current" to check');
   return withChatClient((client) => selectModelFromClient(client, value));
 }

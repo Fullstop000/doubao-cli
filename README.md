@@ -114,6 +114,16 @@ Use `--` before message text that contains CLI option names, for example `doubao
 
 Use the value, exact display name, or a short alias anywhere `<model>` is accepted. Run `doubao models` to verify the choices exposed by the installed Doubao version.
 
+Adjust the reasoning effort (推理强度) with `--reasoning`, or change it for the current session with `model reasoning`:
+
+```bash
+doubao model reasoning high
+doubao model select pro --reasoning max
+doubao sessions send 38439138239851266 "hello" --model turbo --reasoning low --wait
+```
+
+Levels are `low` (低), `medium` (中), `high` (高), `ultra` (极高), and `max` (最高); display names and raw API values work too. `--reasoning` on `sessions send` requires `--model`, and it is not supported together with `--attach`.
+
 CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normally when automation is no longer needed.
 
 ## How it works

@@ -13,21 +13,22 @@ const CHAT_URL = 'https://api5-normal-gl.doubao.com/chat/completion';
 const MODIFY_URL = 'https://www.doubao.com/im/conversation/modify';
 const BOT_ID = '7338286299411103781';
 
-// Captured from Doubao.app 2.27.11 traffic. New-conversation requests are only
+// Captured from Doubao.app 2.28.9 traffic. New-conversation requests are only
 // honored with the full device parameter set (a reduced set silently merges
 // into the account's current conversation).
 const CHAT_QS = 'aid=582478&channel=mac_official&chromium_version=147.0.7727.149&client_platform=pc_client'
   + '&device_id=4123623653382612&device_platform=web&doubao_device_platform=desktop'
-  + '&doubao_pc_version=2.27.11&fp=verify_4123623653382612&language=zh&pc_version=2.27.11'
-  + '&pkg_type=release_version&real_aid=582478&region=CN&runtime=web&runtime_version=3.35.4'
+  + '&doubao_pc_version=2.28.9&fp=verify_4123623653382612&language=zh&pc_version=2.28.9'
+  + '&pkg_type=release_version&real_aid=582478&region=CN&runtime=web&runtime_version=3.36.2'
   + '&samantha_web=1&sys_region=CN&tea_uuid=4123623653382612&tz_name=Asia%2FShanghai'
   + '&use-olympus-account=1&version_code=20800&web_id=7672758390314255922&web_platform=desktop'
   + '&web_tab_id=5c7c0822-57bf-4d15-87b5-c7b5d3d78687';
 const MODIFY_QS = 'version_code=20800&language=zh&device_platform=web&doubao_device_platform=desktop'
   + '&aid=582478&real_aid=582478&pkg_type=release_version&device_id=4123623653382612'
-  + '&pc_version=2.27.11&doubao_pc_version=2.27.11&region=CN&sys_region=CN&samantha_web=1'
-  + '&web_platform=desktop&use-olympus-account=1&runtime=web&runtime_version=3.35.4'
-  + '&client_platform=pc_client&channel=mac_official&fp=verify_4123623653382612';
+  + '&pc_version=2.28.9&doubao_pc_version=2.28.9&web_id=7672758390314255922&tea_uuid=4123623653382612'
+  + '&region=CN&sys_region=CN&samantha_web=1&web_platform=desktop&use-olympus-account=1'
+  + '&runtime=web&runtime_version=3.36.2&client_platform=pc_client&chromium_version=147.0.7727.149'
+  + '&channel=mac_official&fp=verify_4123623653382612';
 
 // Model is a conversation-level setting (POST im/conversation/modify, cmd=1114).
 // key = model_item_key; ndt = need_deep_think in the chat body; provider =
@@ -133,9 +134,17 @@ const SEND_EXPRESSION = `(async () => {
         sse_recv_event_options: { support_chunk_delta: true },
         conversation_init_option: !args.conversationId ? { need_ack_conversation: true } : undefined,
         conversation_init_ext: !args.conversationId
-          ? { model_item_key: args.model.key, reasoning_effort: '5', mode_id: '3' }
+          ? { model_item_key: args.model.key, reasoning_effort: args.reasoningEffort || '5', mode_id: '3' }
           : undefined,
-        aggregate_params: args.model.provider ? { provider_id: args.model.provider } : undefined,
+        model_config: args.reasoningEffort
+          ? { model_item_key: args.model.key, reasoning_effort: Number(args.reasoningEffort) }
+          : undefined,
+        aggregate_params: (args.model.provider || args.reasoningEffort)
+          ? {
+            provider_id: args.model.provider || '',
+            ...(args.reasoningEffort ? { reasoning_effort: args.reasoningEffort } : {}),
+          }
+          : undefined,
       },
     };
     if (args.ext) {
@@ -216,7 +225,7 @@ const MODIFY_EXPRESSION = `(async () => {
   const resp = await fetch(args.url, {
     method: 'POST',
     credentials: 'include',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json; encoding=utf-8' },
     body: JSON.stringify({
       cmd: 1114,
       uplink_body: {
@@ -226,7 +235,7 @@ const MODIFY_EXPRESSION = `(async () => {
           bot_conversation_type: 3,
           mode_id: '3',
           model_item_key: args.modelKey,
-          reasoning_effort: '5',
+          reasoning_effort: args.reasoningEffort || '5',
         },
       },
       sequence_id: crypto.randomUUID(),
@@ -234,14 +243,23 @@ const MODIFY_EXPRESSION = `(async () => {
       version: '1',
     }),
   });
-  return { status: resp.status, detail: (await resp.text()).slice(0, 200) };
+  let detail = '';
+  try { detail = await resp.text(); } catch {}
+  let statusCode = null;
+  let statusDesc = '';
+  try {
+    const payload = JSON.parse(detail);
+    statusCode = payload?.status_code ?? null;
+    statusDesc = payload?.status_desc || '';
+  } catch {}
+  return { status: resp.status, statusCode, statusDesc, detail: detail.slice(0, 200) };
 })()`;
 
 function buildExpression(template, args) {
   return template.replace('%ARGS%', JSON.stringify(args));
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, timeoutMs, waitForReply = true }) {
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true }) {
   const createNew = !conversationId;
   const expression = buildExpression(SEND_EXPRESSION, {
     url: `${CHAT_URL}?${CHAT_QS}`,
@@ -249,6 +267,7 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     conversationId: conversationId || null,
     message,
     model,
+    reasoningEffort: reasoningEffort || null,
     timeoutMs: Math.max(10_000, timeoutMs || 120_000),
     waitForReply,
     ext: createNew
@@ -265,14 +284,21 @@ export async function sendChatCompletion(client, { conversationId, message, mode
   return result;
 }
 
-export async function switchConversationModel(client, conversationId, modelKey) {
+// reasoning_effort values observed from the app: 低=3 中=4 高=5 极高=6 最高=7.
+export async function switchConversationModel(client, conversationId, modelKey, reasoningEffort) {
   const result = await client.evaluate(buildExpression(MODIFY_EXPRESSION, {
     url: `${MODIFY_URL}?${MODIFY_QS}`,
     conversationId,
     modelKey,
+    reasoningEffort: reasoningEffort || null,
   }));
   if (!result || result.status !== 200) {
     throw new Error(`Doubao model switch failed: HTTP ${result?.status} ${result?.detail || ''}`.trim());
+  }
+  // The API reports application-level failures with HTTP 200; status_code 0
+  // means success (e.g. omitting model_item_key returns 712012002).
+  if (result.statusCode) {
+    throw new Error(`Doubao model switch failed: ${result.statusDesc || `status_code ${result.statusCode}`}`);
   }
   return result;
 }

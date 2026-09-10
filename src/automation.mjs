@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { uploadAttachmentsFromClient } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
-import { modelDisplayName, resolveModelId, selectModelFromClient } from './models.mjs';
+import { modelDisplayName, resolveModelId, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
 import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
@@ -322,6 +322,11 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
 // the legacy UI path (upload flow has not been ported).
 async function sendMessageViaProtocol(id, message, options, timeoutMs) {
   const waitForReply = options.waitForReply || false;
+  const effort = options.reasoning ? resolveReasoningEffort(options.reasoning) : null;
+  // Changing the effort of an existing conversation goes through the modify
+  // API, which requires the model key; without --model the conversation's
+  // current key is unknowable without navigating the UI.
+  if (effort && !options.model) throw new Error('--reasoning requires --model when sending to an existing conversation');
   return withChatClient(async (client) => {
     let modelName = null;
     let model = modelProtocol('auto');
@@ -329,18 +334,26 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
       const modelIdValue = resolveModelId(options.model);
       model = modelProtocol(modelIdValue);
       modelName = modelDisplayName(modelIdValue);
-      await switchConversationModel(client, id, model.key);
+      await switchConversationModel(client, id, model.key, effort?.effort);
     }
     const result = await sendChatCompletion(client, {
-      conversationId: id, message, model, timeoutMs, waitForReply,
+      conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
     });
     return {
       conversationId: result.conversationId,
       ...(modelName ? { model: modelName } : {}),
+      ...(effort ? { reasoning: effort.name } : {}),
       sent: { role: 'user', text: message },
       reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
     };
   });
+}
+
+// Change the reasoning effort of an existing conversation, keeping its model.
+// Navigates the renderer to the conversation first so the model key is read
+// from the right conversation's model selector.
+export async function setConversationReasoning(id, value) {
+  return withConversationPage(id, 15_000, (client) => setReasoningForConversation(client, id, value));
 }
 
 export async function sendMessage(id, message, options = {}) {
@@ -351,6 +364,7 @@ export async function sendMessage(id, message, options = {}) {
   if (!options.attachments?.length) {
     return sendMessageViaProtocol(id, message, options, timeoutMs);
   }
+  if (options.reasoning) throw new Error('--reasoning is not supported with attachments');
 
   return withConversationPage(id, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000), async (client) => {
     await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
@@ -372,6 +386,7 @@ export async function createConversation(message, options = {}) {
   // no new-chat button click and no location.href polling.
   if (hasMessage && !options.attachments?.length) {
     const waitForReply = options.waitForReply || false;
+    const effort = options.reasoning ? resolveReasoningEffort(options.reasoning) : null;
     return withChatClient(async (client) => {
       let modelName = null;
       let model = modelProtocol('auto');
@@ -381,18 +396,21 @@ export async function createConversation(message, options = {}) {
         modelName = modelDisplayName(modelIdValue);
       }
       const result = await sendChatCompletion(client, {
-        conversationId: null, message, model, timeoutMs, waitForReply,
+        conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
       });
       return {
         conversationId: result.conversationId,
         created: true,
         persisted: true,
         ...(modelName ? { model: modelName } : {}),
+        ...(effort ? { reasoning: effort.name } : {}),
         sent: { role: 'user', text: message },
         reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
       };
     });
   }
+
+  if (options.reasoning) throw new Error('--reasoning requires sending a message without attachments');
 
   return withChatClient(async (client, target) => {
     // Navigating to the bare chat route yields a blank conversation without
