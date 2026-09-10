@@ -19,6 +19,14 @@ Upgrade an existing installation with `doubao update`. To run without a global i
 npx --yes doubao-cli@latest status
 ```
 
+### Agent skill
+
+An [agent skill](https://skills.sh/Fullstop000/doubao-cli) for AI coding assistants ships in [`skills/doubao`](skills/doubao/SKILL.md). Install it with the skills CLI:
+
+```bash
+npx skills add Fullstop000/doubao-cli
+```
+
 ## Commands
 
 ```bash
