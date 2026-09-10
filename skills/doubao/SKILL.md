@@ -1,58 +1,53 @@
 ---
 name: doubao
-description: "Drive the local Doubao desktop app on macOS through the `doubao` CLI (doubao-cli). Use when the user asks to message Doubao, create/list/read Doubao chat sessions, attach files to a conversation, switch the active model, or check whether Doubao automation is available. Covers CDP setup, session and message flows, model selection, attachments, self updates, and troubleshooting."
+description: "Drive the local Doubao desktop app on macOS through the `doubao` CLI. Use when the user wants to message Doubao from an agent or script: create, list, read, or send to Doubao chat sessions, attach files, or switch the model. Requires macOS with Doubao.app installed and logged in; message automation additionally needs the app's CDP endpoint (setup covered inside)."
 ---
 
 # Doubao CLI
 
-`doubao` gives programmatic access to the **local, already logged-in** Doubao desktop app on macOS. It talks to the app over a localhost Chrome DevTools Protocol (CDP) endpoint; there is no cloud API key and no credential handling. Requires macOS, Node.js 22+, and Doubao.app installed with an active login.
+`doubao` controls the local, already logged-in Doubao desktop app over a localhost CDP endpoint. No API keys or credentials are involved. Requires macOS, Node.js 22+, Doubao.app.
+
+If the CLI is missing: `npm install --global doubao-cli@latest` (or prefix commands with `npx --yes doubao-cli@latest`).
 
 ## Readiness check (do this first)
 
 ```bash
 doubao status --json        # app installed / running / version / profile
-doubao capabilities --json  # per-feature availability; cdp.available is the gate
+doubao capabilities --json  # per-feature availability; cdp.available gates messaging
 ```
 
-If `capabilities` shows `cdp.available: false`, message automation is off until Doubao runs with the debugging port:
-
-```bash
-doubao cdp launch --yes
-```
-
-This quits and relaunches Doubao with `--remote-debugging-port=9225` and returns only when the authenticated chat renderer is ready. `--yes` is required in scripts and `--json` mode because the restart otherwise asks for confirmation. Use `DOUBAO_CDP_ENDPOINT` for a non-default port.
+If `cdp.available` is false, run `doubao cdp launch --yes` (quits and relaunches Doubao with the debugging port; `--yes` is required in non-interactive use). Use `DOUBAO_CDP_ENDPOINT` for a non-default port.
 
 ## Command routing
 
-All data-returning commands support `--json`; always pass it when another program consumes the output.
+Pass `--json` to every data-returning command when another program consumes the output.
 
 | Task | Command |
 | --- | --- |
-| List local sessions | `doubao sessions list --json` |
+| List sessions | `doubao sessions list --json` |
 | Current session | `doubao sessions current --json` |
-| Create + send first message | `doubao sessions create "..." --wait --json` |
+| Create session with first message | `doubao sessions create "..." --wait --json` |
 | Blank draft session | `doubao sessions create --json` (returns `conversationId: null`) |
 | Send to a session | `doubao sessions send <id> "..." --wait --json` |
 | Read messages | `doubao sessions read <id> --limit 20 --json` |
-| Reveal a session in the app | `doubao sessions open <id>` |
-| List models | `doubao models --json` |
-| Current model | `doubao model --json` |
+| Reveal session in the app | `doubao sessions open <id>` |
+| List / show models | `doubao models --json` / `doubao model --json` |
 | Switch model | `doubao model select <model> --json` or per-send `--model <model>` |
-| Self update | `doubao update check` / `doubao update` / `doubao update auto on` |
+| Update the CLI | `doubao update` (`update check`, `update auto on`) |
 
-Behavior notes that matter for automation:
+## Behavior notes
 
-- `--wait` makes create/send block until the assistant reply completes and returns it as `reply`; without it the command returns as soon as the user message is accepted (`reply: null`). Default timeout is 120 s; override with `--timeout <seconds>`.
-- A numeric conversation id exists only after the first message is sent. Prefer `sessions create "first message"` over create-then-send.
-- All session operations run without raising the Doubao window; only `sessions open` intentionally brings the app to the front.
-- Prefix the message with `--` when it starts with option-like text: `doubao sessions send <id> -- "--model means what here"`.
-- `--profile "Profile 1"` (directory name or display name) selects a non-default local Doubao profile.
-- Attachments: repeat `--attach <path>`; up to 50 files, 100 MiB each. The CLI uploads through the app's drop path and confirms the upload before sending. Attachments force the UI path; plain text uses the faster protocol path.
-- The composer auto-inserts spaces around CJK/latin boundaries; verify content by `sessions read`, not by comparing raw strings.
+- Add `--wait` to block until the assistant reply completes and return it as `reply`; omit it to return once the user message is accepted (`reply: null`). Default timeout is 120 s; raise with `--timeout <seconds>`.
+- Prefer `sessions create "first message"` over create-then-send: a conversation id exists only after the first message.
+- Session operations never raise the Doubao window; only `sessions open` brings the app to the front intentionally.
+- Prefix the message with `--` when it begins with option-like text: `doubao sessions send <id> -- "--model means what here"`.
+- Select a non-default local profile with `--profile "Profile 1"` (directory or display name).
+- Repeat `--attach <path>` for attachments (max 50 files, 100 MiB each). The CLI uploads through the app's drop path and confirms the upload before sending; attachments take the slower UI path while plain text uses the direct protocol path.
+- The composer auto-inserts spaces at CJK/latin boundaries; verify content with `sessions read` rather than raw string comparison.
 
 ## Model values
 
-Use the value, exact display name, or alias anywhere `<model>` is accepted. Run `doubao models --json` for what the installed app actually exposes.
+Accept the value, exact display name, or an alias anywhere `<model>` appears. Confirm availability with `doubao models --json` — the installed app version decides what exists.
 
 | Model | Value | Aliases |
 | --- | --- | --- |
@@ -65,7 +60,7 @@ Use the value, exact display name, or alias anywhere `<model>` is accepted. Run 
 
 ## Environment overrides
 
-- `DOUBAO_APP` — path to Doubao.app (default `/Applications/Doubao.app`)
+- `DOUBAO_APP` — Doubao.app path (default `/Applications/Doubao.app`)
 - `DOUBAO_DATA_DIR` — Doubao user-data directory
 - `DOUBAO_CDP_ENDPOINT` — CDP endpoint (default `http://127.0.0.1:9225`)
 - `DOUBAO_CLI_CONFIG_DIR` — CLI settings directory
@@ -74,8 +69,6 @@ Use the value, exact display name, or alias anywhere `<model>` is accepted. Run 
 ## Troubleshooting
 
 - `Doubao CDP is unavailable` → run `doubao cdp launch --yes`.
-- `no Doubao chat page found` → the app is running with CDP but no chat window exists; open Doubao once, then retry.
-- Commands suddenly failing after a Doubao.app update → the app changed its DOM/API surface; run `doubao update check` for a fixed CLI release.
+- `no Doubao chat page found` → CDP is up but no chat window exists; open Doubao once, then retry.
+- Commands break after a Doubao.app update → the app changed its DOM/API surface; run `doubao update check` for a fixed CLI release.
 - CDP is unauthenticated but bound to 127.0.0.1; quit and relaunch Doubao normally when automation is no longer needed.
-
-Install/upgrade: `npm install --global doubao-cli@latest` or one-off `npx --yes doubao-cli@latest status`.

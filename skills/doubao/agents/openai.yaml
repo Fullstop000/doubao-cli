@@ -1,0 +1,4 @@
+interface:
+  display_name: "Doubao"
+  short_description: "Chat with the local Doubao desktop app"
+  default_prompt: "Use $doubao to send a message to my local Doubao app and return the reply."
