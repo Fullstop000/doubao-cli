@@ -5,6 +5,7 @@
 // composer automation and UI-state timing entirely.
 
 import os from 'node:os';
+import { resolvePermission } from './permissions.mjs';
 
 const HOME = os.homedir();
 export const AGENT_WORKSPACE = `${HOME}/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace`;
@@ -52,6 +53,7 @@ export function modelProtocol(modelId) {
 // conversation instead of creating one.
 export function conversationExt(model, localMessageId, workspace, options = {}) {
   const skillPaths = options.skillPaths || [`${HOME}/Doubao/skills`, `${HOME}/.agents/skills`];
+  const sandboxAuthType = resolvePermission(options.permission);
   const gtp = {
     action: 0,
     thread_local_message_id: [localMessageId],
@@ -66,20 +68,21 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
       client_env_id: options.clientEnvId || '85dd66b1-4866-483a-a37a-da832ae9a35f',
       sandbox_id: options.sandboxId || `route-${crypto.randomUUID()}`,
       workspace,
-      sandbox_auth_type: 2,
+      sandbox_auth_type: sandboxAuthType,
     },
     runtime_type: 2,
     agent_task_param: {
       runtime_type: 2,
-      sandbox_auth_type: 2,
+      sandbox_auth_type: sandboxAuthType,
       device_name: 'MacBook Pro (4)',
       folder_name: '',
       local_app_id: '582478',
       local_device_id: '4123623653382612',
       workspace,
     },
-    agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: false },
-    need_modify_conversation: false,
+    // MCP follow-ups apply this turn's permission even when the UI has stale state.
+    agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: Boolean(options.updatePermission) },
+    need_modify_conversation: Boolean(options.updatePermission),
     task_input_json: JSON.stringify({
       agents_md: { files: [], state: 2 },
       schema_version: 1,
@@ -371,7 +374,7 @@ export function defaultWorkspace() {
   return `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt }) {
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt }) {
   const createNew = !conversationId;
   const expression = buildExpression(SEND_EXPRESSION, {
     url: `${CHAT_URL}?${CHAT_QS}`,
@@ -389,7 +392,7 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     ext: (createNew || withExt)
       ? conversationExt(model, localMessageId || '%LOCAL_MESSAGE_ID%',
         workspace || defaultWorkspace(),
-        { skillPaths, localConnectors, sandboxId, sharedFolderPath })
+        { skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
       : null,
   });
   const result = await evaluateWithWatchdog(client, expression, Math.max(10_000, timeoutMs || 120_000) + 30_000);

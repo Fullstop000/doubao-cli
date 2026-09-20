@@ -77,11 +77,22 @@ The CLI can register a local stdio MCP server as a Doubao personal connector and
 ```bash
 doubao mcp register my-tools --command /usr/local/bin/node --arg /path/to/server.mjs --env TOKEN=secret
 doubao mcp list
-doubao sessions create "use my tool to ..." --mcp 369247068674 --wait
+doubao sessions create "use my tool to ..." --mcp 369247068674 --permission AskOnRisk --wait
+doubao sessions send <conversation-id> "continue" --mcp 369247068674 --permission AskOnRisk --wait
 doubao mcp remove 369247068674
 ```
 
-`mcp register` waits until the app's native MCP runtime reports the connector READY and prints its connector id. Passing `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` snapshots the connector's tool catalog into the request and prepares the local sandbox route, so model-issued tool calls execute against the local server without UI approval prompts. `--mcp` is incompatible with `--attach`. Connectors are account-level and visible in the Doubao settings UI; there is no delete API, so `mcp remove` disconnects and disables. Connector support depends on undocumented app internals (verified against Doubao 2.29.12 and 2.30.1) and may break when the app updates.
+`mcp register` waits until the app's native MCP runtime reports the connector READY and prints its connector id. Passing `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` snapshots the connector's tool catalog into the request and prepares the local sandbox route, so model-issued tool calls execute against the local server. `--mcp` is incompatible with `--attach`. Connectors are account-level and visible in the Doubao settings UI; there is no delete API, so `mcp remove` disconnects and disables. Connector support depends on undocumented app internals (verified against Doubao 2.29.12 and 2.30.1) and may break when the app updates.
+
+`--permission <mode>` sets the local task's execution permission for a turn with MCP tools. It requires `--mcp` and a message. Names are case-insensitive; hyphenated forms such as `ask-on-risk` also work.
+
+| Mode | Doubao policy |
+| --- | --- |
+| `FullAccess` (default) | Allow execution without additional approval |
+| `AskOnRisk` | Ask when Doubao classifies an operation as risky |
+| `AlwaysAsk` | Use Doubao's always-ask policy |
+
+Repeat `--mcp`, `--permission`, and any `--workspace` on each turn; omitting `--permission` returns to `FullAccess`. Approval is handled by Doubao, so a turn may wait for action in the app. Doubao 2.30.1 dispatches `connector.call` separately from the native command approval path: these modes do not guarantee approval for every MCP call or restrict the server process itself. Use `--wait` for MCP turns so the session binding completes.
 
 ### Updates
 

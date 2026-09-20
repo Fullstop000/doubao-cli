@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import test from 'node:test';
 import { parseOptions } from '../src/cli.mjs';
+import { resolvePermission } from '../src/permissions.mjs';
 
 const cliPath = new URL('../bin/doubao.mjs', import.meta.url);
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -28,6 +29,7 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /doubao sessions stop <conversation-id>/u);
   assert.match(result.stdout, /doubao mcp register <name> --command <path>/u);
   assert.match(result.stdout, /--mcp <connector-id>/u);
+  assert.match(result.stdout, /--permission <mode>/u);
 });
 
 test('parses repeated attachments and option terminators', () => {
@@ -90,6 +92,26 @@ test('parses the mcp options', () => {
 
   assert.deepEqual(parsed.mcps, ['369247068674', '123456']);
   assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', 'abc']), /requires a numeric connector id/u);
+});
+
+test('resolves MCP execution permissions and defaults to FullAccess', () => {
+  assert.equal(resolvePermission(parseOptions([]).permission), 2);
+  for (const [mode, value] of [['AlwaysAsk', 0], ['AskOnRisk', 1], ['FullAccess', 2], ['always-ask', 0], ['ask_on_risk', 1], ['fullaccess', 2]]) {
+    const parsed = parseOptions(['sessions', 'create', 'hi', '--mcp', '123456', '--permission', mode]);
+    assert.equal(resolvePermission(parsed.permission), value);
+    assert.deepEqual(parsed.args, ['sessions', 'create', 'hi']);
+  }
+});
+
+test('rejects invalid or ignored MCP permissions before calling the app', () => {
+  for (const value of ['', '--wait', 'typo', '0', '3']) {
+    assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', '123456', '--permission', value]), /permission/u);
+  }
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--permission', 'AlwaysAsk']), /requires sessions create\/send with --mcp/u);
+  assert.throws(() => parseOptions(['mcp', 'list', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires sessions create\/send with --mcp/u);
+  assert.throws(() => parseOptions(['sessions', 'create', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires a message/u);
+  assert.throws(() => parseOptions(['sessions', 'send', '38439138239851266', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires a message/u);
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', '123456', '--permission', 'AlwaysAsk', '--attach', '/tmp/a']), /not supported with attachments/u);
 });
 
 test('parses the mcp register options', () => {

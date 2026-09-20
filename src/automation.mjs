@@ -385,7 +385,7 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
       }
       const request = {
         conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
-        workspace: options.workspace, skillPaths: options.skillPaths,
+        workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission,
       };
       const result = options.mcps?.length
         ? await sendWithConnectors(client, request, options.mcps)
@@ -459,7 +459,7 @@ export async function createConversation(message, options = {}) {
         }
         const request = {
           conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
-          workspace: options.workspace, skillPaths: options.skillPaths,
+          workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission,
         };
         const result = options.mcps?.length
           ? await sendWithConnectors(client, request, options.mcps)
