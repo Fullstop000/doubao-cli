@@ -349,17 +349,22 @@ function buildExpression(template, args) {
 // rejects the orphaned in-page promise, so a wedged renderer can never hang
 // the CLI forever.
 export async function evaluateWithWatchdog(client, expression, timeoutMs) {
-  return await Promise.race([
-    client.evaluate(expression),
-    new Promise((_, reject) => {
-      setTimeout(() => {
-        client.close();
-        const error = new Error(`Doubao page evaluation did not settle within ${timeoutMs} ms`);
-        error.code = 'timeout';
-        reject(error);
-      }, timeoutMs);
-    }),
-  ]);
+  let timer;
+  try {
+    return await Promise.race([
+      client.evaluate(expression),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          client.close();
+          const error = new Error(`Doubao page evaluation did not settle within ${timeoutMs} ms`);
+          error.code = 'timeout';
+          reject(error);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function defaultWorkspace() {
