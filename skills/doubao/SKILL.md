@@ -30,6 +30,9 @@ Pass `--json` to every data-returning command when another program consumes the 
 | Blank draft session | `doubao sessions create --json` (returns `conversationId: null`) |
 | Send to a session | `doubao sessions send <id> "..." --wait --json` |
 | Stop a generating reply | `doubao sessions stop <id> --json` |
+| Register a local MCP server | `doubao mcp register <name> --command <path> [--arg X]... [--env K=V]... --json` |
+| List / remove MCP connectors | `doubao mcp list --json` / `doubao mcp remove <connector-id>` |
+| Send with MCP tools | add `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` |
 | Read messages | `doubao sessions read <id> --limit 20 --json` |
 | Reveal session in the app | `doubao sessions open <id>` |
 | List / show models | `doubao models --json` / `doubao model --json` |
@@ -42,6 +45,7 @@ Pass `--json` to every data-returning command when another program consumes the 
 - Add `--wait` to block until the assistant reply completes and return it as `reply`; omit it to return once the user message is accepted (`reply: null`). Default timeout is 120 s; raise with `--timeout <seconds>`. A reply whose stream ends without Doubao's completion event fails with `incomplete_stream` instead of returning a partial answer; on `timeout`/`incomplete_stream` failures the CLI tries to stop the server-side generation, and the process exits non-zero. `sessions stop <id>` cancels an in-flight generation explicitly.
 - `--expect-json` (with `--wait`) exits 1 when the reply is not valid JSON; `--reply-schema <path>` also checks `type`/`required`/`properties`/`enum`/`items`. Both mark the JSON output with `replyValid`.
 - `--workspace <path>` and `--no-skills` isolate newly created conversations (custom agent workspace, no local skill injection); they have no effect on existing conversations, and agent mode always stays on.
+- `--mcp <connector-id>` gives the model tools from a local MCP connector (register one with `mcp register` first; `mcp list` shows ids). Tool calls run locally without UI approval. Not combinable with `--attach`. Connectors are account-level; `mcp remove` disconnects and disables (there is no delete API).
 - Prefer `sessions create "first message"` over create-then-send: a conversation id exists only after the first message.
 - Session operations never raise the Doubao window; only `sessions open` brings the app to the front intentionally.
 - Prefix the message with `--` when it begins with option-like text: `doubao sessions send <id> -- "--model means what here"`.

@@ -70,6 +70,19 @@ Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits fo
 
 `--workspace <path>` stores the new session's agent workspace under a caller-chosen directory instead of `~/Doubao/chats/<date>`, and `--no-skills` drops the default local skill paths from the request. Both only affect newly created conversations, and agent mode itself stays enabled — the CLI does not currently offer a plain-chat mode.
 
+### Local MCP connectors
+
+The CLI can register a local stdio MCP server as a Doubao personal connector and let the model call its tools:
+
+```bash
+doubao mcp register my-tools --command /usr/local/bin/node --arg /path/to/server.mjs --env TOKEN=secret
+doubao mcp list
+doubao sessions create "use my tool to ..." --mcp 369247068674 --wait
+doubao mcp remove 369247068674
+```
+
+`mcp register` waits until the app's native MCP runtime reports the connector READY and prints its connector id. Passing `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` snapshots the connector's tool catalog into the request and prepares the local sandbox route, so model-issued tool calls execute against the local server without UI approval prompts. `--mcp` is incompatible with `--attach`. Connectors are account-level and visible in the Doubao settings UI; there is no delete API, so `mcp remove` disconnects and disables. Connector support depends on undocumented app internals (verified against Doubao 2.29.12 and 2.30.1) and may break when the app updates.
+
 ### Updates
 
 `doubao update check` compares the running version with npm without changing the installation. `doubao update` installs the latest release globally through npm when an update is available:

@@ -26,6 +26,8 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /doubao update \[--json\]/u);
   assert.match(result.stdout, /doubao update auto <on\|off\|status>/u);
   assert.match(result.stdout, /doubao sessions stop <conversation-id>/u);
+  assert.match(result.stdout, /doubao mcp register <name> --command <path>/u);
+  assert.match(result.stdout, /--mcp <connector-id>/u);
 });
 
 test('parses repeated attachments and option terminators', () => {
@@ -81,4 +83,25 @@ test('parses the reply validation options', () => {
   assert.equal(parsed.expectJson, true);
   assert.equal(parsed.replySchema, '/tmp/s.json');
   assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--reply-schema']), /requires a JSON schema file path/u);
+});
+
+test('parses the mcp options', () => {
+  const parsed = parseOptions(['sessions', 'create', 'hi', '--mcp', '369247068674', '--mcp', '123456']);
+
+  assert.deepEqual(parsed.mcps, ['369247068674', '123456']);
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', 'abc']), /requires a numeric connector id/u);
+});
+
+test('parses the mcp register options', () => {
+  const parsed = parseOptions([
+    'mcp', 'register', 'my', 'tools', '--command', '/usr/local/bin/node',
+    '--arg', '/srv/server.mjs', '--arg', '--verbose', '--env', 'TOKEN=a=b', '--env', 'DEBUG=1',
+  ]);
+
+  assert.deepEqual(parsed.args, ['mcp', 'register', 'my', 'tools']);
+  assert.equal(parsed.commandPath, '/usr/local/bin/node');
+  assert.deepEqual(parsed.commandArgs, ['/srv/server.mjs', '--verbose']);
+  assert.deepEqual(parsed.envPairs, ['TOKEN=a=b', 'DEBUG=1']);
+  assert.throws(() => parseOptions(['mcp', 'register', 'x', '--env', 'NOEQUALS']), /requires a KEY=VALUE pair/u);
+  assert.throws(() => parseOptions(['mcp', 'register', 'x', '--command']), /requires an executable path/u);
 });

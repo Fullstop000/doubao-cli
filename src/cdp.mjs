@@ -38,6 +38,20 @@ export async function findChatTarget(endpoint = cdpEndpoint(), timeoutMs = 5000)
   throw new Error(`no Doubao chat page found at ${endpoint}`);
 }
 
+// The background page hosts the local-tool dispatch (connector.call routing).
+export async function findBackgroundTarget(endpoint = cdpEndpoint(), timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const targets = await fetchJson(`${endpoint}/json/list`);
+    const target = targets.find(
+      (item) => item.type === 'page' && /^doubao:\/\/doubao-background\//u.test(item.url),
+    );
+    if (target?.webSocketDebuggerUrl) return target;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  throw new Error(`no Doubao background page found at ${endpoint}`);
+}
+
 export class CdpClient {
   constructor(webSocketUrl) {
     this.webSocketUrl = webSocketUrl;
@@ -143,6 +157,20 @@ export async function withChatClient(callback, endpoint = cdpEndpoint()) {
     throw new Error(`Doubao CDP is unavailable at ${endpoint}. Run "doubao cdp launch" to restart Doubao with CDP enabled.`);
   }
   const target = await findChatTarget(endpoint);
+  const client = await new CdpClient(target.webSocketDebuggerUrl).connect();
+  try {
+    return await callback(client, target);
+  } finally {
+    client.close();
+  }
+}
+
+export async function withBackgroundClient(callback, endpoint = cdpEndpoint()) {
+  const status = await cdpStatus(endpoint);
+  if (!status.available) {
+    throw new Error(`Doubao CDP is unavailable at ${endpoint}. Run "doubao cdp launch" to restart Doubao with CDP enabled.`);
+  }
+  const target = await findBackgroundTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();
   try {
     return await callback(client, target);

@@ -3,7 +3,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { currentSession, getDataDir, listSessions, resolveProfile } from './storage.mjs';
-import { cdpStatus } from './cdp.mjs';
+import { cdpStatus, withChatClient } from './cdp.mjs';
+import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
 import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation } from './automation.mjs';
 import { currentModel, listModels, selectModel } from './models.mjs';
 import {
@@ -25,11 +26,14 @@ const HELP = `Usage:
   doubao profiles [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
-  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
-  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions stop <conversation-id> [--json]
+  doubao mcp register <name> --command <path> [--arg <x>]... [--env K=V]... [--json]
+  doubao mcp list [--json]
+  doubao mcp remove <connector-id> [--json]
   doubao models [--json]
   doubao model [--json]
   doubao model select <model> [--reasoning <level>] [--json]
@@ -63,6 +67,10 @@ export function parseOptions(argv) {
   let noSkills = false;
   let expectJson = false;
   let replySchema;
+  const mcps = [];
+  let commandPath;
+  const commandArgs = [];
+  const envPairs = [];
   const attachments = [];
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--') {
@@ -111,11 +119,30 @@ export function parseOptions(argv) {
       replySchema = argv[index + 1];
       if (!replySchema || replySchema.startsWith('--')) throw new Error('--reply-schema requires a JSON schema file path');
       index += 1;
+    } else if (argv[index] === '--mcp') {
+      const connectorId = argv[index + 1];
+      if (!/^\d{6,24}$/u.test(connectorId || '')) throw new Error('--mcp requires a numeric connector id');
+      mcps.push(connectorId);
+      index += 1;
+    } else if (argv[index] === '--command') {
+      commandPath = argv[index + 1];
+      if (!commandPath || commandPath.startsWith('--')) throw new Error('--command requires an executable path');
+      index += 1;
+    } else if (argv[index] === '--arg') {
+      const value = argv[index + 1];
+      if (value === undefined) throw new Error('--arg requires a value');
+      commandArgs.push(value);
+      index += 1;
+    } else if (argv[index] === '--env') {
+      const pair = argv[index + 1];
+      if (!pair || !pair.includes('=')) throw new Error('--env requires a KEY=VALUE pair');
+      envPairs.push(pair);
+      index += 1;
     } else {
       args.push(argv[index]);
     }
   }
-  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema };
+  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
 }
 
 function output(value, json) {
@@ -245,7 +272,7 @@ function validateReplyOption(result, { expectJson, replySchema, wait }) {
 }
 
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema } = parseOptions(argv);
+  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = parseOptions(argv);
   const isolation = { workspace, skillPaths: noSkills ? [] : undefined };
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
@@ -331,6 +358,7 @@ export async function main(argv) {
       readMessages: cdp.available,
       sendMessages: cdp.available,
       stopGeneration: cdp.available,
+      mcpConnectors: cdp.available,
       uploadAttachments: cdp.available,
       selectModels: cdp.available,
       selfUpdate: true,
@@ -350,6 +378,7 @@ export async function main(argv) {
       console.log(`messages read\t${capabilities.readMessages ? 'yes' : 'no'}`);
       console.log(`messages send\t${capabilities.sendMessages ? 'yes' : 'no'}`);
       console.log(`generation stop\t${capabilities.stopGeneration ? 'yes' : 'no'}`);
+      console.log(`mcp connectors\t${capabilities.mcpConnectors ? 'yes' : 'no'}`);
       console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
       console.log('self update\tyes');
@@ -357,6 +386,46 @@ export async function main(argv) {
       console.log(`note\t${capabilities.note}`);
     }
     return;
+  }
+
+  if (command === 'mcp') {
+    if (subcommand === 'register') {
+      const name = args.slice(2).join(' ');
+      if (!name) throw new Error('mcp register requires a connector name');
+      if (!commandPath) throw new Error('mcp register requires --command <path> of the stdio MCP server');
+      if (!fs.existsSync(commandPath)) throw new Error(`command not found: ${commandPath}`);
+      const env = Object.fromEntries(envPairs.map((pair) => {
+        const index = pair.indexOf('=');
+        return [pair.slice(0, index), pair.slice(index + 1)];
+      }));
+      const result = await withChatClient((client) => registerConnector(client, {
+        name, command: commandPath, params: commandArgs, env, timeoutMs: Math.max(timeoutMs, 30_000),
+      }));
+      if (json) output(result, true);
+      else {
+        console.log(`connector\t${result.connectorId}`);
+        console.log(`status\t${result.status}`);
+      }
+      return;
+    }
+    if (subcommand === 'list') {
+      const connectors = await withChatClient((client) => listConnectors(client));
+      if (json) output(connectors, true);
+      else {
+        console.log('CONNECTOR ID\tENABLED\tNAME');
+        for (const item of connectors) console.log(`${item.connectorId}\t${item.enabled ? 'yes' : 'no'}\t${item.name}`);
+      }
+      return;
+    }
+    if (subcommand === 'remove') {
+      const id = validateId(operand);
+      const result = await withChatClient((client) => removeConnector(client, id));
+      if (json) output(result, true);
+      else console.log(`removed\t${id}${result.disabled ? '' : ` (disable failed: ${result.disableError || 'unknown'})`}`);
+      if (!result.disabled) process.exitCode = 1;
+      return;
+    }
+    throw new Error(`unknown mcp command "${subcommand || ''}". Run "doubao help".`);
   }
 
   if (command === 'models') {
@@ -510,6 +579,7 @@ export async function main(argv) {
       reasoning,
       timeoutMs,
       waitForReply: wait,
+      mcps,
       ...isolation,
     }), { expectJson, replySchema, wait });
     if (json) output(result, true);
@@ -552,7 +622,7 @@ export async function main(argv) {
   if (subcommand === 'send') {
     const id = validateId(operand);
     const message = args.slice(3).join(' ');
-    const result = validateReplyOption(await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning, ...isolation }), { expectJson, replySchema, wait });
+    const result = validateReplyOption(await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning, mcps, ...isolation }), { expectJson, replySchema, wait });
     if (json) output(result, true);
     else {
       console.log(`sent\t${result.sent.text}`);

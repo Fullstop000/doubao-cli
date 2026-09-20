@@ -7,16 +7,17 @@
 import os from 'node:os';
 
 const HOME = os.homedir();
-const AGENT_WORKSPACE = `${HOME}/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace`;
+export const AGENT_WORKSPACE = `${HOME}/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace`;
 
 const CHAT_URL = 'https://api5-normal-gl.doubao.com/chat/completion';
 const MODIFY_URL = 'https://www.doubao.com/im/conversation/modify';
 const BOT_ID = '7338286299411103781';
+export const CONNECTOR_API_BASE = 'https://www.doubao.com/alice/office/skills/manage/connector';
 
 // Captured from Doubao.app 2.28.9 traffic. New-conversation requests are only
 // honored with the full device parameter set (a reduced set silently merges
 // into the account's current conversation).
-const CHAT_QS = 'aid=582478&channel=mac_official&chromium_version=147.0.7727.149&client_platform=pc_client'
+export const CHAT_QS = 'aid=582478&channel=mac_official&chromium_version=147.0.7727.149&client_platform=pc_client'
   + '&device_id=4123623653382612&device_platform=web&doubao_device_platform=desktop'
   + '&doubao_pc_version=2.28.9&fp=verify_4123623653382612&language=zh&pc_version=2.28.9'
   + '&pkg_type=release_version&real_aid=582478&region=CN&runtime=web&runtime_version=3.36.2'
@@ -57,13 +58,13 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
     client_option: {
       enable_sandbox: true,
       os: 'Mac',
-      shared_folder_path: [workspace, AGENT_WORKSPACE],
+      shared_folder_path: options.sharedFolderPath || [workspace, AGENT_WORKSPACE],
       agent_workspace: {
         agent_workspace: AGENT_WORKSPACE,
         local_skill_paths: skillPaths,
       },
-      client_env_id: '85dd66b1-4866-483a-a37a-da832ae9a35f',
-      sandbox_id: `route-${crypto.randomUUID()}`,
+      client_env_id: options.clientEnvId || '85dd66b1-4866-483a-a37a-da832ae9a35f',
+      sandbox_id: options.sandboxId || `route-${crypto.randomUUID()}`,
       workspace,
       sandbox_auth_type: 2,
     },
@@ -84,7 +85,7 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
       schema_version: 1,
       home_dir: HOME,
       project_context: {},
-      localConnectors: [],
+      localConnectors: options.localConnectors || [],
     }),
   };
   return {
@@ -153,10 +154,10 @@ const SEND_EXPRESSION = `(async () => {
     failed: null,
   };
   try {
-    const localMessageId = crypto.randomUUID();
+    const localMessageId = args.localMessageId || crypto.randomUUID();
     const body = {
       client_meta: {
-        local_conversation_id: 'local_' + Date.now(),
+        local_conversation_id: args.localConversationId || ('local_' + Date.now()),
         conversation_id: args.conversationId || '',
         bot_id: args.botId,
         last_section_id: '',
@@ -212,6 +213,8 @@ const SEND_EXPRESSION = `(async () => {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    const trace = [];
+    let reconciled = false;
     outer: while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -227,20 +230,65 @@ const SEND_EXPRESSION = `(async () => {
         let data;
         try { data = JSON.parse(raw); } catch { continue; }
         const event = eventLine ? eventLine.slice(6).trim() : '';
+        if (args.debug) {
+          trace.push({ event, data: raw.slice(0, 600) });
+          if (trace.length > 80) trace.shift();
+        }
         if (reduceStreamEvent(state, event, data, args) === 'stop') break outer;
+        // A provisioned sandbox starts out bound to the local conversation
+        // id; once the server assigns the real id, bind it or local tool
+        // calls fail with sandbox_profile_conversation_id_missing.
+        if (args.sandboxId && event === 'SSE_ACK' && state.conversationId && !reconciled) {
+          reconciled = true;
+          const step = (name) => { if (args.debug) trace.push({ event: 'RECONCILE_STEP', data: name }); };
+          try {
+            await Promise.race([
+              (async () => {
+                step('push');
+                // The chunk id must be unique per push: webpack dedupes
+                // already-loaded chunk ids and the runtime callback would
+                // never fire again.
+                const req = await new Promise((res) => {
+                  window['@flow-web/desktop:stable'].push([['probe_rec_' + Date.now()], {}, (r) => res(r)]);
+                });
+                step('require');
+                // Bind the sandbox route to the real conversation id. The bus
+                // invoke returns { ok }; module 410467's helper swallows it,
+                // so call the bus directly. instanceId means the sandboxId.
+                const comm = req(763283)._();
+                step('invoke');
+                const upd = await comm.invoke('cua.local_file.sandbox_instance.update_conversation', {
+                  instanceId: args.sandboxId,
+                  conversationId: state.conversationId,
+                });
+                step('invoked:' + JSON.stringify(upd).slice(0, 120));
+                if (!upd || upd.ok !== true) {
+                  throw new Error('update_conversation rejected: ' + JSON.stringify(upd).slice(0, 120));
+                }
+              })(),
+              // Reconcile must never stall the reply stream (module ids drift
+              // between app versions and the page may not have them loaded).
+              new Promise((_, rej) => setTimeout(() => rej(new Error('reconcile timeout')), 5000)),
+            ]);
+            if (args.debug) trace.push({ event: 'RECONCILE_OK', data: state.conversationId });
+          } catch (e) {
+            if (args.debug) trace.push({ event: 'RECONCILE_FAIL', data: String(e?.message || e) });
+          }
+        }
       }
     }
     try { reader.cancel(); } catch {}
-    if (state.failed) return { conversationId: state.conversationId, ...state.failed };
+    if (state.failed) return { conversationId: state.conversationId, ...state.failed, ...(args.debug ? { trace } : {}) };
     if (args.waitForReply && !state.completed) {
       return {
         error: 'incomplete_stream',
         detail: 'stream ended without SSE_REPLY_END after ' + state.answer.length + ' answer chars',
         answer: state.answer,
         conversationId: state.conversationId,
+        ...(args.debug ? { trace } : {}),
       };
     }
-    return { conversationId: state.conversationId, answer: state.answer, thinking: state.thinking };
+    return { conversationId: state.conversationId, answer: state.answer, thinking: state.thinking, ...(args.debug ? { trace } : {}) };
   } catch (error) {
     if (ac.signal.aborted) {
       return {
@@ -297,7 +345,28 @@ function buildExpression(template, args) {
     .replace('%ARGS%', JSON.stringify(args));
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths }) {
+// Races a page-side evaluation against a hard deadline: closing the socket
+// rejects the orphaned in-page promise, so a wedged renderer can never hang
+// the CLI forever.
+export async function evaluateWithWatchdog(client, expression, timeoutMs) {
+  return await Promise.race([
+    client.evaluate(expression),
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        client.close();
+        const error = new Error(`Doubao page evaluation did not settle within ${timeoutMs} ms`);
+        error.code = 'timeout';
+        reject(error);
+      }, timeoutMs);
+    }),
+  ]);
+}
+
+export function defaultWorkspace() {
+  return `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
+}
+
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt }) {
   const createNew = !conversationId;
   const expression = buildExpression(SEND_EXPRESSION, {
     url: `${CHAT_URL}?${CHAT_QS}`,
@@ -308,13 +377,17 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     reasoningEffort: reasoningEffort || null,
     timeoutMs: Math.max(10_000, timeoutMs || 120_000),
     waitForReply,
-    ext: createNew
-      ? conversationExt(model, '%LOCAL_MESSAGE_ID%',
-        workspace || `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`,
-        { skillPaths })
+    localConversationId: localConversationId || null,
+    localMessageId: localMessageId || null,
+    sandboxId: sandboxId || null,
+    debug: Boolean(debug),
+    ext: (createNew || withExt)
+      ? conversationExt(model, localMessageId || '%LOCAL_MESSAGE_ID%',
+        workspace || defaultWorkspace(),
+        { skillPaths, localConnectors, sandboxId, sharedFolderPath })
       : null,
   });
-  const result = await client.evaluate(expression);
+  const result = await evaluateWithWatchdog(client, expression, Math.max(10_000, timeoutMs || 120_000) + 30_000);
   if (!result) throw new Error('Doubao chat completion returned no result');
   if (result.error) {
     const error = new Error(`Doubao chat completion failed: ${result.error} ${result.detail || ''}`.trim());

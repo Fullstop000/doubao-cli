@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { uploadAttachmentsFromClient } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
 import { modelDisplayName, resolveModelId, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
+import { sendWithConnectors } from './mcp.mjs';
 import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
@@ -382,10 +383,13 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
         modelName = modelDisplayName(modelIdValue);
         await switchConversationModel(client, id, model.key, effort?.effort);
       }
-      const result = await sendChatCompletion(client, {
+      const request = {
         conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
         workspace: options.workspace, skillPaths: options.skillPaths,
-      });
+      };
+      const result = options.mcps?.length
+        ? await sendWithConnectors(client, request, options.mcps)
+        : await sendChatCompletion(client, request);
       return {
         conversationId: result.conversationId,
         ...(modelName ? { model: modelName } : {}),
@@ -412,6 +416,9 @@ export async function sendMessage(id, message, options = {}) {
   const deadline = Date.now() + timeoutMs;
   validateMessage(message);
 
+  if (options.mcps?.length && options.attachments?.length) {
+    throw new Error('--mcp is not supported with attachments');
+  }
   if (!options.attachments?.length) {
     return sendMessageViaProtocol(id, message, options, timeoutMs);
   }
@@ -432,6 +439,9 @@ export async function createConversation(message, options = {}) {
   const deadline = Date.now() + timeoutMs;
   const hasMessage = typeof message === 'string' && message.length > 0;
   if (hasMessage) validateMessage(message);
+  if (options.mcps?.length && options.attachments?.length) {
+    throw new Error('--mcp is not supported with attachments');
+  }
 
   // Protocol-direct create: the conversation id comes back in SSE_ACK,
   // no new-chat button click and no location.href polling.
@@ -447,10 +457,13 @@ export async function createConversation(message, options = {}) {
           model = modelProtocol(modelIdValue);
           modelName = modelDisplayName(modelIdValue);
         }
-        const result = await sendChatCompletion(client, {
+        const request = {
           conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
           workspace: options.workspace, skillPaths: options.skillPaths,
-        });
+        };
+        const result = options.mcps?.length
+          ? await sendWithConnectors(client, request, options.mcps)
+          : await sendChatCompletion(client, request);
         return {
           conversationId: result.conversationId,
           created: true,
