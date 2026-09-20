@@ -8,6 +8,7 @@
 import { spawnSync } from 'node:child_process';
 import { withBackgroundClient } from './cdp.mjs';
 import { AGENT_WORKSPACE, defaultWorkspace, evaluateWithWatchdog, sendChatCompletion } from './protocol.mjs';
+import { resolvePermission } from './permissions.mjs';
 
 // Doubao versions whose background-page dispatch needs COMPAT_PATCH_EXPRESSION
 // (2.29.12 mishandles connector.call argument and result field names). Later
@@ -136,7 +137,7 @@ const PREPARE_SANDBOX_EXPRESSION = `(async () => {
     from: 'main',
     globalSkillPath: args.agentWorkspace,
     projectFolders: [],
-    sandboxAuthType: 2, // FullAccess: tool calls run without UI approval
+    sandboxAuthType: args.sandboxAuthType,
     sendContext: args.sendContext,
   });
   if (!out?.sandboxId) return { error: 'sandbox_prepare_failed', detail: JSON.stringify(out).slice(0, 300) };
@@ -202,11 +203,12 @@ export async function connectorsSnapshot(client, connectorIds) {
 
 // Registers a sandbox execution context in the background page. Without this
 // route the model's local tool calls fail with sandbox_not_provisioned.
-export async function prepareToolSandbox(client, { workspace, sendContext }) {
+export async function prepareToolSandbox(client, { workspace, sendContext, permission }) {
   const result = await evaluateWithWatchdog(client, buildExpression(PREPARE_SANDBOX_EXPRESSION, {
     workspace,
     agentWorkspace: AGENT_WORKSPACE,
     sendContext,
+    sandboxAuthType: resolvePermission(permission),
   }), 30_000);
   if (!result?.sandboxId) {
     throw new Error(`Doubao sandbox preparation failed: ${result?.error || 'unknown'} ${result?.detail || ''}`.trim());
@@ -233,7 +235,7 @@ export async function sendWithConnectors(client, request, connectorIds) {
   const sendContext = request.conversationId
     ? { conversationId: request.conversationId, localMessageId }
     : { localConversationId, localMessageId };
-  const sandbox = await prepareToolSandbox(client, { workspace, sendContext });
+  const sandbox = await prepareToolSandbox(client, { workspace, sendContext, permission: request.permission });
   return sendChatCompletion(client, {
     ...request,
     workspace,

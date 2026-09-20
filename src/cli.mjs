@@ -17,6 +17,7 @@ import {
   updateStatePath,
 } from './update.mjs';
 import { validateReply } from './validate.mjs';
+import { resolvePermission } from './permissions.mjs';
 
 const DEFAULT_APP = '/Applications/Doubao.app';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -26,10 +27,10 @@ const HELP = `Usage:
   doubao profiles [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
-  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
-  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions stop <conversation-id> [--json]
   doubao mcp register <name> --command <path> [--arg <x>]... [--env K=V]... [--json]
   doubao mcp list [--json]
@@ -44,6 +45,11 @@ const HELP = `Usage:
   doubao update check [--json]
   doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
+
+Local task execution permission (requires --mcp):
+  --permission <mode>  AlwaysAsk | AskOnRisk | FullAccess (default)
+                      Repeat on each turn; approval is handled by Doubao.
+                      This does not guarantee approval for each MCP call.
 
 Environment:
   DOUBAO_APP       Override the Doubao.app path
@@ -64,6 +70,7 @@ export function parseOptions(argv) {
   let model;
   let reasoning;
   let workspace;
+  let permission;
   let noSkills = false;
   let expectJson = false;
   let replySchema;
@@ -113,6 +120,11 @@ export function parseOptions(argv) {
       index += 1;
     } else if (argv[index] === '--no-skills') {
       noSkills = true;
+    } else if (argv[index] === '--permission') {
+      permission = argv[index + 1];
+      if (!permission || permission.startsWith('--')) throw new Error('--permission requires a mode: AlwaysAsk, AskOnRisk, or FullAccess');
+      resolvePermission(permission);
+      index += 1;
     } else if (argv[index] === '--expect-json') {
       expectJson = true;
     } else if (argv[index] === '--reply-schema') {
@@ -142,7 +154,16 @@ export function parseOptions(argv) {
       args.push(argv[index]);
     }
   }
-  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  if (permission !== undefined) {
+    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1]) || !mcps.length) {
+      throw new Error('--permission requires sessions create/send with --mcp');
+    }
+    if (attachments.length) throw new Error('--permission is not supported with attachments');
+    if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) {
+      throw new Error('--permission requires a message');
+    }
+  }
+  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
 }
 
 function output(value, json) {
@@ -272,8 +293,8 @@ function validateReplyOption(result, { expectJson, replySchema, wait }) {
 }
 
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = parseOptions(argv);
-  const isolation = { workspace, skillPaths: noSkills ? [] : undefined };
+  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = parseOptions(argv);
+  const isolation = { workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
 
