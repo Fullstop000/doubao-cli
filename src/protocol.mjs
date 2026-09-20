@@ -49,7 +49,8 @@ export function modelProtocol(modelId) {
 // The create-conversation handshake requires a complete top-level `ext` plus
 // `user_context`; omitting either silently merges the message into the current
 // conversation instead of creating one.
-function conversationExt(model, localMessageId, workspace) {
+export function conversationExt(model, localMessageId, workspace, options = {}) {
+  const skillPaths = options.skillPaths || [`${HOME}/Doubao/skills`, `${HOME}/.agents/skills`];
   const gtp = {
     action: 0,
     thread_local_message_id: [localMessageId],
@@ -59,7 +60,7 @@ function conversationExt(model, localMessageId, workspace) {
       shared_folder_path: [workspace, AGENT_WORKSPACE],
       agent_workspace: {
         agent_workspace: AGENT_WORKSPACE,
-        local_skill_paths: [`${HOME}/Doubao/skills`, `${HOME}/.agents/skills`],
+        local_skill_paths: skillPaths,
       },
       client_env_id: '85dd66b1-4866-483a-a37a-da832ae9a35f',
       sandbox_id: `route-${crypto.randomUUID()}`,
@@ -98,12 +99,59 @@ function conversationExt(model, localMessageId, workspace) {
   };
 }
 
+// SSE stream reducer. Injected into the renderer via Function#toString, so it
+// must not reference anything outside its own scope. Mutates state and returns
+// 'stop' when the stream should be terminated early.
+export function reduceStreamEvent(state, event, data, options) {
+  if (event === 'SSE_ACK') {
+    state.conversationId = data?.ack_client_meta?.conversation_id || state.conversationId;
+    return options.waitForReply ? null : 'stop';
+  }
+  if (event === 'STREAM_CHUNK') {
+    for (const op of data.patch_op || []) {
+      for (const block of op.patch_value?.content_block || []) {
+        if (block.block_type === 10000 && block.content?.text_block?.text) {
+          state.answer += block.content.text_block.text;
+        }
+        if (block.block_type === 10040 && block.content?.thinking_block?.content) {
+          state.thinking += block.content.thinking_block.content;
+        }
+      }
+    }
+    return null;
+  }
+  if (event === 'SSE_REPLY_END') {
+    if (data.end_type === 1 && data.msg_finish_attr?.brief) {
+      state.answer = data.msg_finish_attr.brief;
+      state.completed = true;
+    }
+    if (data.end_type === 3) {
+      state.completed = true;
+      return 'stop';
+    }
+    return null;
+  }
+  if (event === 'STREAM_ERROR') {
+    state.failed = { error: data.error_code || 'stream_error', detail: data.error_msg || '' };
+    return 'stop';
+  }
+  return null;
+}
+
 // Evaluated inside the chat page. Returns
 // { conversationId, answer, thinking } or { error, detail }.
 const SEND_EXPRESSION = `(async () => {
+  const reduceStreamEvent = %REDUCER%;
   const args = %ARGS%;
   const ac = new AbortController();
   const killer = setTimeout(() => ac.abort(), args.timeoutMs);
+  const state = {
+    conversationId: args.conversationId || '',
+    answer: '',
+    thinking: '',
+    completed: false,
+    failed: null,
+  };
   try {
     const localMessageId = crypto.randomUUID();
     const body = {
@@ -164,9 +212,6 @@ const SEND_EXPRESSION = `(async () => {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let conversationId = args.conversationId || '';
-    let answer = '';
-    let thinking = '';
     outer: while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -182,39 +227,30 @@ const SEND_EXPRESSION = `(async () => {
         let data;
         try { data = JSON.parse(raw); } catch { continue; }
         const event = eventLine ? eventLine.slice(6).trim() : '';
-        if (event === 'SSE_ACK') {
-          conversationId = data?.ack_client_meta?.conversation_id || conversationId;
-          if (!args.waitForReply) {
-            try { reader.cancel(); } catch {}
-            return { conversationId, answer: '', thinking: '' };
-          }
-        }
-        if (event === 'STREAM_CHUNK') {
-          for (const op of data.patch_op || []) {
-            for (const block of op.patch_value?.content_block || []) {
-              if (block.block_type === 10000 && block.content?.text_block?.text) {
-                answer += block.content.text_block.text;
-              }
-              if (block.block_type === 10040 && block.content?.thinking_block?.content) {
-                thinking += block.content.thinking_block.content;
-              }
-            }
-          }
-        }
-        if (event === 'SSE_REPLY_END' && data.end_type === 1 && data.msg_finish_attr?.brief) {
-          answer = data.msg_finish_attr.brief;
-        }
-        if (event === 'STREAM_ERROR') {
-          try { reader.cancel(); } catch {}
-          return { error: data.error_code || 'stream_error', detail: data.error_msg || '' };
-        }
-        if (event === 'SSE_REPLY_END' && data.end_type === 3) break outer;
+        if (reduceStreamEvent(state, event, data, args) === 'stop') break outer;
       }
     }
     try { reader.cancel(); } catch {}
-    return { conversationId, answer, thinking };
+    if (state.failed) return { conversationId: state.conversationId, ...state.failed };
+    if (args.waitForReply && !state.completed) {
+      return {
+        error: 'incomplete_stream',
+        detail: 'stream ended without SSE_REPLY_END after ' + state.answer.length + ' answer chars',
+        answer: state.answer,
+        conversationId: state.conversationId,
+      };
+    }
+    return { conversationId: state.conversationId, answer: state.answer, thinking: state.thinking };
   } catch (error) {
-    return { error: 'exception', detail: String(error?.message || error) };
+    if (ac.signal.aborted) {
+      return {
+        error: 'timeout',
+        detail: 'no completion within ' + args.timeoutMs + ' ms',
+        conversationId: state.conversationId,
+        answer: state.answer,
+      };
+    }
+    return { error: 'exception', detail: String(error?.message || error), conversationId: state.conversationId };
   } finally {
     clearTimeout(killer);
   }
@@ -256,10 +292,12 @@ const MODIFY_EXPRESSION = `(async () => {
 })()`;
 
 function buildExpression(template, args) {
-  return template.replace('%ARGS%', JSON.stringify(args));
+  return template
+    .replace('%REDUCER%', reduceStreamEvent.toString())
+    .replace('%ARGS%', JSON.stringify(args));
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true }) {
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths }) {
   const createNew = !conversationId;
   const expression = buildExpression(SEND_EXPRESSION, {
     url: `${CHAT_URL}?${CHAT_QS}`,
@@ -272,13 +310,18 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     waitForReply,
     ext: createNew
       ? conversationExt(model, '%LOCAL_MESSAGE_ID%',
-        `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`)
+        workspace || `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`,
+        { skillPaths })
       : null,
   });
   const result = await client.evaluate(expression);
   if (!result) throw new Error('Doubao chat completion returned no result');
   if (result.error) {
-    throw new Error(`Doubao chat completion failed: ${result.error} ${result.detail || ''}`.trim());
+    const error = new Error(`Doubao chat completion failed: ${result.error} ${result.detail || ''}`.trim());
+    error.code = result.error;
+    if (result.conversationId) error.conversationId = result.conversationId;
+    if (result.answer) error.partialAnswer = result.answer;
+    throw error;
   }
   if (!result.conversationId) throw new Error('Doubao did not assign a conversation id');
   return result;

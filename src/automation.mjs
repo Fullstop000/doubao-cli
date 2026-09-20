@@ -6,6 +6,26 @@ import { modelProtocol, sendChatCompletion, switchConversationModel } from './pr
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
 const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
+const STOP_BUTTONS = '[data-testid="chat_input_local_break_button"], [data-testid="chat_input_end_button"]';
+
+const VISIBILITY_TEST = `((element) => {
+  const style = getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  return style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && Number(style.opacity) !== 0
+    && rect.width > 0
+    && rect.height > 0;
+})`;
+
+const GENERATING_EXPRESSION = `[...document.querySelectorAll(${JSON.stringify(STOP_BUTTONS)})].some(${VISIBILITY_TEST})`;
+
+const CLICK_STOP_EXPRESSION = `(() => {
+  const button = [...document.querySelectorAll(${JSON.stringify(STOP_BUTTONS)})].find(${VISIBILITY_TEST});
+  if (!button) return false;
+  button.click();
+  return true;
+})()`;
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -299,17 +319,7 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
   while (Date.now() < deadline) {
     messages = await readFromClient(client);
     const reply = replyAfterLastUserMessage(messages, message);
-    const generating = await client.evaluate(`[
-      ...document.querySelectorAll('[data-testid="chat_input_local_break_button"], [data-testid="chat_input_end_button"]'),
-    ].some((element) => {
-      const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== 'none'
-        && style.visibility !== 'hidden'
-        && Number(style.opacity) !== 0
-        && rect.width > 0
-        && rect.height > 0;
-    })`);
+    const generating = await client.evaluate(GENERATING_EXPRESSION);
     if (reply?.text && reply.text === stableText && !generating) stablePolls += 1;
     else stablePolls = 0;
     stableText = reply?.text || '';
@@ -317,6 +327,39 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
     await delay(500);
   }
   throw new Error(`Doubao reply did not complete within ${timeoutMs} ms`);
+}
+
+// Stops an in-flight generation by clicking the composer's break/end button
+// and confirming it disappears. Best-effort cleanup: returns
+// { conversationId, stopped } instead of throwing when the page cannot be
+// reached or generation does not stop in time.
+export async function stopConversation(id, options = {}) {
+  const timeoutMs = options.timeoutMs || 15_000;
+  try {
+    return await withConversationPage(id, timeoutMs, async (client) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (!await client.evaluate(GENERATING_EXPRESSION)) {
+          return { conversationId: id, stopped: true };
+        }
+        await client.evaluate(CLICK_STOP_EXPRESSION);
+        await delay(500);
+      }
+      return { conversationId: id, stopped: false, reason: 'generation did not stop in time' };
+    });
+  } catch (error) {
+    return { conversationId: id, stopped: false, reason: error.message };
+  }
+}
+
+// After a stream failure the model may still be generating server-side;
+// cancel it through the UI and record the outcome on the error.
+async function stopAfterStreamFailure(error, id) {
+  if (error.code !== 'timeout' && error.code !== 'incomplete_stream') return;
+  const target = error.conversationId || id;
+  if (!target) return;
+  const stop = await stopConversation(target, { timeoutMs: 10_000 });
+  error.stopped = stop.stopped;
 }
 
 // Protocol-direct send: no conversation navigation, no composer DOM, reply
@@ -329,26 +372,32 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
   // API, which requires the model key; without --model the conversation's
   // current key is unknowable without navigating the UI.
   if (effort && !options.model) throw new Error('--reasoning requires --model when sending to an existing conversation');
-  return withChatClient(async (client) => {
-    let modelName = null;
-    let model = modelProtocol('auto');
-    if (options.model) {
-      const modelIdValue = resolveModelId(options.model);
-      model = modelProtocol(modelIdValue);
-      modelName = modelDisplayName(modelIdValue);
-      await switchConversationModel(client, id, model.key, effort?.effort);
-    }
-    const result = await sendChatCompletion(client, {
-      conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
+  try {
+    return await withChatClient(async (client) => {
+      let modelName = null;
+      let model = modelProtocol('auto');
+      if (options.model) {
+        const modelIdValue = resolveModelId(options.model);
+        model = modelProtocol(modelIdValue);
+        modelName = modelDisplayName(modelIdValue);
+        await switchConversationModel(client, id, model.key, effort?.effort);
+      }
+      const result = await sendChatCompletion(client, {
+        conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
+        workspace: options.workspace, skillPaths: options.skillPaths,
+      });
+      return {
+        conversationId: result.conversationId,
+        ...(modelName ? { model: modelName } : {}),
+        ...(effort ? { reasoning: effort.name } : {}),
+        sent: { role: 'user', text: message },
+        reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
+      };
     });
-    return {
-      conversationId: result.conversationId,
-      ...(modelName ? { model: modelName } : {}),
-      ...(effort ? { reasoning: effort.name } : {}),
-      sent: { role: 'user', text: message },
-      reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
-    };
-  });
+  } catch (error) {
+    await stopAfterStreamFailure(error, id);
+    throw error;
+  }
 }
 
 // Change the reasoning effort of an existing conversation, keeping its model.
@@ -389,27 +438,33 @@ export async function createConversation(message, options = {}) {
   if (hasMessage && !options.attachments?.length) {
     const waitForReply = options.waitForReply || false;
     const effort = options.reasoning ? resolveReasoningEffort(options.reasoning) : null;
-    return withChatClient(async (client) => {
-      let modelName = null;
-      let model = modelProtocol('auto');
-      if (options.model) {
-        const modelIdValue = resolveModelId(options.model);
-        model = modelProtocol(modelIdValue);
-        modelName = modelDisplayName(modelIdValue);
-      }
-      const result = await sendChatCompletion(client, {
-        conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
+    try {
+      return await withChatClient(async (client) => {
+        let modelName = null;
+        let model = modelProtocol('auto');
+        if (options.model) {
+          const modelIdValue = resolveModelId(options.model);
+          model = modelProtocol(modelIdValue);
+          modelName = modelDisplayName(modelIdValue);
+        }
+        const result = await sendChatCompletion(client, {
+          conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
+          workspace: options.workspace, skillPaths: options.skillPaths,
+        });
+        return {
+          conversationId: result.conversationId,
+          created: true,
+          persisted: true,
+          ...(modelName ? { model: modelName } : {}),
+          ...(effort ? { reasoning: effort.name } : {}),
+          sent: { role: 'user', text: message },
+          reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
+        };
       });
-      return {
-        conversationId: result.conversationId,
-        created: true,
-        persisted: true,
-        ...(modelName ? { model: modelName } : {}),
-        ...(effort ? { reasoning: effort.name } : {}),
-        sent: { role: 'user', text: message },
-        reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
-      };
-    });
+    } catch (error) {
+      await stopAfterStreamFailure(error, null);
+      throw error;
+    }
   }
 
   if (options.reasoning) throw new Error('--reasoning requires sending a message without attachments');

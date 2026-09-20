@@ -40,6 +40,7 @@ doubao sessions open 38439138239851266
 doubao sessions read 38439138239851266 --limit 5
 doubao sessions send 38439138239851266 "hello"
 doubao sessions send 38439138239851266 "hello" --wait
+doubao sessions stop 38439138239851266
 doubao sessions send 38439138239851266 "compare these files" --attach ./one.pdf --attach ./two.pdf --wait
 doubao models
 doubao model
@@ -63,7 +64,11 @@ doubao cdp launch
 
 If Doubao is already running without CDP, the command asks for confirmation before quitting it and relaunching with the debugging port enabled. Scripts and `--json` mode never prompt; pass `doubao cdp launch --yes` to confirm the restart explicitly. The command returns only after both the CDP endpoint and authenticated chat renderer are ready. The equivalent manual sequence is to quit Doubao completely and run `open -a /Applications/Doubao.app --args --remote-debugging-port=9225`.
 
-Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply.
+Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply; a reply stream that ends without Doubao's completion event, or a reply that does not finish within `--timeout`, is reported as an error (with the partial text attached) rather than returned as success, and the CLI makes a best-effort attempt to stop the server-side generation afterwards. `sessions stop` cancels an in-flight generation explicitly.
+
+`--expect-json` fails the command (exit code 1, `replyValid: false`) when the waited reply is not valid JSON; `--reply-schema <path>` additionally checks it against a JSON schema subset (`type`, `required`, `properties`, `enum`, `items`). Both require `--wait`.
+
+`--workspace <path>` stores the new session's agent workspace under a caller-chosen directory instead of `~/Doubao/chats/<date>`, and `--no-skills` drops the default local skill paths from the request. Both only affect newly created conversations, and agent mode itself stays enabled — the CLI does not currently offer a plain-chat mode.
 
 ### Updates
 
@@ -83,6 +88,8 @@ doubao update auto off
 ```
 
 An automatic update never blocks the requested Doubao command if npm or the network fails. Set `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` to skip configured automatic updates in CI or a one-off invocation. Settings are stored under `~/Library/Application Support/doubao-cli/update.json`; override that directory with `DOUBAO_CLI_CONFIG_DIR`.
+
+When automatic updates are off, the CLI still checks npm at most once every 24 hours and prints a reminder to stderr when a newer version exists. The reminder is silent on network failures, suppressed in `--json` mode, and also disabled by `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1`.
 
 ### New sessions and attachments
 

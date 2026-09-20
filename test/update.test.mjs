@@ -7,6 +7,7 @@ import {
   checkForUpdate,
   compareVersions,
   maybeAutoUpdate,
+  maybeUpdateReminder,
   readUpdateState,
   setAutoUpdate,
 } from '../src/update.mjs';
@@ -70,6 +71,60 @@ test('persists opt-in automatic updates and runs them only when due', async () =
 
     const state = await readUpdateState(env);
     assert.equal(state.lastUpdatedVersion, '0.5.0');
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('reminds about updates without installing when auto update is off', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'doubao-cli-reminder-test-'));
+  const env = { ...process.env, DOUBAO_CLI_CONFIG_DIR: directory };
+  try {
+    const reminder = await maybeUpdateReminder('0.4.2', {
+      env,
+      now: Date.parse('2026-09-01T00:00:00.000Z'),
+      fetchImpl: async () => ({ ok: true, json: async () => ({ version: '0.5.0' }) }),
+    });
+    assert.equal(reminder.updateAvailable, true);
+    assert.equal(reminder.latestVersion, '0.5.0');
+
+    const throttled = await maybeUpdateReminder('0.4.2', {
+      env,
+      now: Date.parse('2026-09-01T01:00:00.000Z'),
+      fetchImpl: async () => {
+        throw new Error('should not check before the interval');
+      },
+    });
+    assert.equal(throttled, null);
+
+    const upToDate = await maybeUpdateReminder('0.5.0', {
+      env,
+      now: Date.parse('2026-09-03T00:00:00.000Z'),
+      fetchImpl: async () => ({ ok: true, json: async () => ({ version: '0.5.0' }) }),
+    });
+    assert.equal(upToDate, null);
+
+    const state = await readUpdateState(env);
+    assert.equal(state.autoUpdate, false);
+    assert.equal(state.lastUpdatedVersion, null);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('skips the reminder when auto update is on or disabled', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'doubao-cli-reminder-test-'));
+  const env = { ...process.env, DOUBAO_CLI_CONFIG_DIR: directory };
+  const fetchImpl = async () => {
+    throw new Error('should not check the registry');
+  };
+  try {
+    await setAutoUpdate(true, env);
+    assert.equal(await maybeUpdateReminder('0.4.2', { env, fetchImpl }), null);
+
+    const disabled = { ...env, DOUBAO_CLI_DISABLE_AUTO_UPDATE: '1' };
+    await setAutoUpdate(false, env);
+    assert.equal(await maybeUpdateReminder('0.4.2', { env: disabled, fetchImpl }), null);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

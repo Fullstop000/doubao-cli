@@ -4,16 +4,18 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { currentSession, getDataDir, listSessions, resolveProfile } from './storage.mjs';
 import { cdpStatus } from './cdp.mjs';
-import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning } from './automation.mjs';
+import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation } from './automation.mjs';
 import { currentModel, listModels, selectModel } from './models.mjs';
 import {
   checkForUpdate,
   installUpdate,
   maybeAutoUpdate,
+  maybeUpdateReminder,
   readUpdateState,
   setAutoUpdate,
   updateStatePath,
 } from './update.mjs';
+import { validateReply } from './validate.mjs';
 
 const DEFAULT_APP = '/Applications/Doubao.app';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -23,10 +25,11 @@ const HELP = `Usage:
   doubao profiles [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
-  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--json]
+  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
-  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--json]
+  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions stop <conversation-id> [--json]
   doubao models [--json]
   doubao model [--json]
   doubao model select <model> [--reasoning <level>] [--json]
@@ -56,6 +59,10 @@ export function parseOptions(argv) {
   let limit = 20;
   let model;
   let reasoning;
+  let workspace;
+  let noSkills = false;
+  let expectJson = false;
+  let replySchema;
   const attachments = [];
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--') {
@@ -92,11 +99,23 @@ export function parseOptions(argv) {
       if (!attachment || attachment.startsWith('--')) throw new Error('--attach requires a file path');
       attachments.push(attachment);
       index += 1;
+    } else if (argv[index] === '--workspace') {
+      workspace = argv[index + 1];
+      if (!workspace || workspace.startsWith('--')) throw new Error('--workspace requires a directory path');
+      index += 1;
+    } else if (argv[index] === '--no-skills') {
+      noSkills = true;
+    } else if (argv[index] === '--expect-json') {
+      expectJson = true;
+    } else if (argv[index] === '--reply-schema') {
+      replySchema = argv[index + 1];
+      if (!replySchema || replySchema.startsWith('--')) throw new Error('--reply-schema requires a JSON schema file path');
+      index += 1;
     } else {
       args.push(argv[index]);
     }
   }
-  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments };
+  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema };
 }
 
 function output(value, json) {
@@ -195,11 +214,39 @@ async function runConfiguredAutoUpdate(command, json) {
     if (!json) console.error(`doubao: automatically updated to ${result.latestVersion}; the new version applies next run`);
   } else if (result.error && !json) {
     console.error(`doubao: automatic update failed: ${result.error}`);
+  } else if (result.skipped === 'not-enabled' && !json) {
+    const reminder = await maybeUpdateReminder(CLI_VERSION);
+    if (reminder) {
+      console.error(`doubao: update available: ${reminder.latestVersion} (current ${reminder.currentVersion}); run "doubao update" to upgrade or "doubao update auto on" to enable automatic updates`);
+    }
   }
 }
 
+// Validates the reply of a create/send result when --expect-json or
+// --reply-schema is given. Marks the result with replyValid and sets the
+// exit code on failure so callers (e.g. Sprout) can retry.
+function validateReplyOption(result, { expectJson, replySchema, wait }) {
+  if (!expectJson && !replySchema) return result;
+  if (!wait) throw new Error('--expect-json and --reply-schema require --wait');
+  let schema = null;
+  if (replySchema) {
+    try {
+      schema = JSON.parse(fs.readFileSync(replySchema, 'utf8'));
+    } catch (error) {
+      throw new Error(`cannot read reply schema at ${replySchema}: ${error.message}`);
+    }
+  }
+  const validation = validateReply(result.reply?.text || '', schema);
+  if (!validation.ok) {
+    for (const error of validation.errors || []) console.error(`doubao: reply validation failed: ${error}`);
+    process.exitCode = 1;
+  }
+  return { ...result, replyValid: validation.ok };
+}
+
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments } = parseOptions(argv);
+  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, expectJson, replySchema } = parseOptions(argv);
+  const isolation = { workspace, skillPaths: noSkills ? [] : undefined };
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
 
@@ -283,6 +330,7 @@ export async function main(argv) {
       createSessions: cdp.available,
       readMessages: cdp.available,
       sendMessages: cdp.available,
+      stopGeneration: cdp.available,
       uploadAttachments: cdp.available,
       selectModels: cdp.available,
       selfUpdate: true,
@@ -301,6 +349,7 @@ export async function main(argv) {
       console.log(`sessions create\t${capabilities.createSessions ? 'yes' : 'no'}`);
       console.log(`messages read\t${capabilities.readMessages ? 'yes' : 'no'}`);
       console.log(`messages send\t${capabilities.sendMessages ? 'yes' : 'no'}`);
+      console.log(`generation stop\t${capabilities.stopGeneration ? 'yes' : 'no'}`);
       console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
       console.log('self update\tyes');
@@ -455,13 +504,14 @@ export async function main(argv) {
 
   if (subcommand === 'create') {
     const message = args.slice(2).join(' ');
-    const result = await createConversation(message, {
+    const result = validateReplyOption(await createConversation(message, {
       attachments,
       model,
       reasoning,
       timeoutMs,
       waitForReply: wait,
-    });
+      ...isolation,
+    }), { expectJson, replySchema, wait });
     if (json) output(result, true);
     else {
       console.log(`created\t${result.conversationId || 'draft'}`);
@@ -490,10 +540,19 @@ export async function main(argv) {
     return;
   }
 
+  if (subcommand === 'stop') {
+    const id = validateId(operand);
+    const result = await stopConversation(id, { timeoutMs });
+    if (json) output(result, true);
+    else console.log(`stopped\t${result.stopped ? 'yes' : `no (${result.reason || 'unknown'})`}`);
+    if (!result.stopped) process.exitCode = 1;
+    return;
+  }
+
   if (subcommand === 'send') {
     const id = validateId(operand);
     const message = args.slice(3).join(' ');
-    const result = await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning });
+    const result = validateReplyOption(await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning, ...isolation }), { expectJson, replySchema, wait });
     if (json) output(result, true);
     else {
       console.log(`sent\t${result.sent.text}`);

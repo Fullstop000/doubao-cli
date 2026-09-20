@@ -131,6 +131,28 @@ function automaticUpdatesDisabled(env) {
   return /^(?:1|true|yes)$/iu.test(env.DOUBAO_CLI_DISABLE_AUTO_UPDATE || '');
 }
 
+// When automatic updates are off, still check the registry (throttled to the
+// same interval) so the CLI can remind the user that an update exists.
+// Returns the check result only when an update is available, otherwise null.
+export async function maybeUpdateReminder(currentVersion, options = {}) {
+  const env = options.env || process.env;
+  if (automaticUpdatesDisabled(env)) return null;
+  try {
+    const state = await readUpdateState(env);
+    if (state.autoUpdate) return null;
+    const now = options.now || Date.now();
+    const lastCheckedAt = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : 0;
+    if (Number.isFinite(lastCheckedAt) && now - lastCheckedAt < (options.intervalMs || CHECK_INTERVAL_MS)) {
+      return null;
+    }
+    const check = await checkForUpdate(currentVersion, options);
+    await writeUpdateState({ ...state, lastCheckedAt: new Date(now).toISOString() }, env);
+    return check.updateAvailable ? check : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function maybeAutoUpdate(currentVersion, options = {}) {
   const env = options.env || process.env;
   if (automaticUpdatesDisabled(env)) return { skipped: 'disabled' };

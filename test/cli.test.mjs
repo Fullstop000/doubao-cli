@@ -25,6 +25,7 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /--attach <path>/u);
   assert.match(result.stdout, /doubao update \[--json\]/u);
   assert.match(result.stdout, /doubao update auto <on\|off\|status>/u);
+  assert.match(result.stdout, /doubao sessions stop <conversation-id>/u);
 });
 
 test('parses repeated attachments and option terminators', () => {
@@ -59,4 +60,25 @@ test('parses the reasoning effort option', () => {
 test('rejects an attachment option without a path', () => {
   assert.throws(() => parseOptions(['sessions', 'create', '--attach']), /requires a file path/u);
   assert.throws(() => parseOptions(['sessions', 'create', '--attach', '--wait']), /requires a file path/u);
+});
+
+test('parses the isolation options', () => {
+  const parsed = parseOptions(['sessions', 'create', 'hello', '--workspace', '/tmp/ws', '--no-skills']);
+
+  assert.equal(parsed.workspace, '/tmp/ws');
+  assert.equal(parsed.noSkills, true);
+  assert.deepEqual(parsed.args, ['sessions', 'create', 'hello']);
+});
+
+test('rejects a workspace option without a path', () => {
+  assert.throws(() => parseOptions(['sessions', 'create', '--workspace']), /requires a directory path/u);
+  assert.throws(() => parseOptions(['sessions', 'create', '--workspace', '--wait']), /requires a directory path/u);
+});
+
+test('parses the reply validation options', () => {
+  const parsed = parseOptions(['sessions', 'send', '38439138239851266', 'hi', '--wait', '--expect-json', '--reply-schema', '/tmp/s.json']);
+
+  assert.equal(parsed.expectJson, true);
+  assert.equal(parsed.replySchema, '/tmp/s.json');
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--reply-schema']), /requires a JSON schema file path/u);
 });
