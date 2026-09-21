@@ -1,5 +1,6 @@
 import { withChatClient } from './cdp.mjs';
-import { modelProtocol, switchConversationModel } from './protocol.mjs';
+import { switchConversationModel } from './protocol.mjs';
+import { conversationSettings } from './sessions.mjs';
 
 const MODEL_TRIGGER = '[data-valid-btn="model-select-action-btn"]';
 const MODEL_OPTION = '[role="menuitem"][data-slot="dropdown-menu-item"]';
@@ -111,10 +112,12 @@ export function resolveReasoningEffort(value) {
 // Switch the model of an existing conversation through the
 // im/conversation/modify API (cmd=1114) instead of the menu UI.
 export async function selectModelForConversation(client, conversationId, value, reasoning) {
-  const id = resolveModelId(value);
+  const resolved = await resolveModelFromClient(client, value);
+  const id = resolved.id;
   const effort = reasoning ? resolveReasoningEffort(reasoning) : null;
-  await switchConversationModel(client, conversationId, modelProtocol(id).key, effort?.effort);
-  return { id, name: modelDisplayName(id), changed: true, ...(effort ? { reasoning: effort.name } : {}) };
+  await switchConversationModel(client, conversationId, resolved.protocol.key, effort?.effort);
+  await waitForModelSetting(client, conversationId, resolved.protocol.key, effort?.effort);
+  return { id, name: resolved.name, changed: true, ...(effort ? { reasoning: effort.name } : {}) };
 }
 
 // Change only the reasoning effort of an existing conversation, keeping its
@@ -123,8 +126,20 @@ export async function selectModelForConversation(client, conversationId, value, 
 export async function setReasoningForConversation(client, conversationId, value) {
   const { effort, name } = resolveReasoningEffort(value);
   const current = await currentModelFromClient(client);
-  await switchConversationModel(client, conversationId, modelProtocol(modelId(current.name)).key, effort);
+  const model = await resolveModelFromClient(client, current.name);
+  await switchConversationModel(client, conversationId, model.protocol.key, effort);
+  await waitForModelSetting(client, conversationId, model.protocol.key, effort);
   return { conversationId, model: current.name, reasoning: name };
+}
+
+async function waitForModelSetting(client, id, key, effort) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const settings = await conversationSettings(client, id);
+    if (settings?.key === key && (!effort || settings.effort === effort)) return;
+    await delay(200);
+  }
+  throw new Error('Doubao did not confirm the requested model setting');
 }
 
 async function waitFor(client, expression, timeoutMs = 3000, errorMessage = 'Doubao model menu did not respond') {
@@ -149,7 +164,7 @@ async function closeModelMenu(client, menuId) {
   await delay(50);
 }
 
-export async function currentModelFromClient(client) {
+async function modelButtonState(client) {
   const state = await waitFor(client, `(() => {
     const trigger = document.querySelector(${JSON.stringify(MODEL_TRIGGER)});
     const button = trigger?.querySelector(':scope > button');
@@ -164,8 +179,27 @@ export async function currentModelFromClient(client) {
   return { id: modelId(state.name), ...state };
 }
 
+export async function currentModelFromClient(client) {
+  const id = /\/chat\/(\d{12,24})(?:[?#]|$)/u.exec(await client.evaluate('location.href'))?.[1];
+  const settings = id ? await conversationSettings(client, id) : null;
+  if (settings) {
+    let menuId;
+    try {
+      menuId = await openModelMenu(client);
+      const options = await readOpenOptions(client, menuId);
+      const model = options.find(option => option.protocol?.key === settings.key);
+      if (!model) throw new Error(`Current model ${settings.key} is not in the available model list`);
+      const labels = { '3': '低', '4': '中', '5': '高', '6': '极高', '7': '最高' };
+      return { id: modelId(model.name), name: model.name, reasoning: labels[settings.effort] || null };
+    } finally { if (menuId) await closeModelMenu(client, menuId); }
+  }
+  return modelButtonState(client);
+}
+
 async function openModelMenu(client) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    await waitFor(client, `Boolean(document.querySelector(${JSON.stringify(MODEL_TRIGGER)}))`,
+      5000, 'Doubao model selector was not found');
     await closeModelMenu(client);
     await client.click(MODEL_TRIGGER);
     try {
@@ -184,19 +218,43 @@ async function openModelMenu(client) {
 }
 
 async function readOpenOptions(client, menuId) {
-  const options = await client.evaluate(`(() => {
+  const options = await waitFor(client, `(() => {
     const menu = document.getElementById(${JSON.stringify(menuId)});
-    if (!menu) return [];
+    if (!menu || !menu.querySelectorAll(${JSON.stringify(MODEL_OPTION)}).length) return null;
     return [...menu.querySelectorAll(${JSON.stringify(MODEL_OPTION)})]
       .map((item, index) => {
         const label = item.querySelector('span.shrink-0') || item.querySelector('span');
         const name = (label?.innerText || label?.textContent || '').trim();
-        return name ? { index, name, selected: Boolean(item.querySelector(':scope > svg')) } : null;
+        let fiber = item[Object.keys(item).find(key => key.startsWith('__reactFiber'))];
+        let protocol;
+        for (let depth = 0; fiber && depth < 24; depth++, fiber = fiber.return) {
+          const config = fiber.memoizedProps?.item;
+          if (config?.name === name && config.model_item_key && Number.isFinite(config.item_id)) {
+            protocol = { key: config.model_item_key, ndt: config.item_id, provider: config.model_extra_params?.provider_id || '' };
+            break;
+          }
+        }
+        return name ? { index, name, protocol, selected: Boolean(item.querySelector(':scope > svg')) } : null;
       })
       .filter(Boolean);
   })()`);
   if (!options?.length) throw new Error('Doubao model menu contains no model options');
   return options;
+}
+
+// Resolve against the selected app's live menu, including newly added models.
+export async function resolveModelFromClient(client, value) {
+  let menuId;
+  try {
+    menuId = await openModelMenu(client);
+    const options = await readOpenOptions(client, menuId);
+    const name = resolveModelName(value, options.map(option => option.name));
+    const option = options.find(option => option.name === name);
+    if (!option.protocol) throw new Error(`Protocol metadata unavailable for model "${name}"`);
+    return { id: modelId(name), name, protocol: option.protocol };
+  } finally {
+    if (menuId) await closeModelMenu(client, menuId);
+  }
 }
 
 export async function listModelsFromClient(client) {
@@ -208,7 +266,7 @@ export async function listModelsFromClient(client) {
     return {
       current: current.name,
       reasoning: current.reasoning,
-      models: options.map(({ name, selected }) => ({ id: modelId(name), name, selected: selected || name === current.name })),
+      models: options.map(({ name }) => ({ id: modelId(name), name, selected: name === current.name })),
     };
   } finally {
     if (menuId) await closeModelMenu(client, menuId);

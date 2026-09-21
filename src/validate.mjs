@@ -1,6 +1,28 @@
 // Minimal JSON schema subset validator (type, required, properties, enum,
 // items) so reply validation works without a runtime dependency.
 
+export function validateSchema(schema, location = '$') {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new Error(`${location}: reply schema must be an object`);
+  }
+  if (schema.type !== undefined && !['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'].includes(schema.type)) {
+    throw new Error(`${location}: unsupported schema type`);
+  }
+  if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some(key => typeof key !== 'string'))) {
+    throw new Error(`${location}: required must be an array of property names`);
+  }
+  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || !schema.enum.length)) {
+    throw new Error(`${location}: enum must be a nonempty array`);
+  }
+  if (schema.properties !== undefined) {
+    if (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) {
+      throw new Error(`${location}: properties must be an object`);
+    }
+    for (const [key, child] of Object.entries(schema.properties)) validateSchema(child, `${location}.${key}`);
+  }
+  if (schema.items !== undefined) validateSchema(schema.items, `${location}[]`);
+}
+
 function typeOf(value) {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -12,7 +34,6 @@ function check(value, schema, path, errors) {
   if (schema.enum) {
     const matched = schema.enum.some((item) => JSON.stringify(item) === JSON.stringify(value));
     if (!matched) errors.push(`${path}: value is not one of the enum values`);
-    return;
   }
   if (schema.type) {
     const actual = typeOf(value);

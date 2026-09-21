@@ -1,7 +1,7 @@
-const DEFAULT_ENDPOINT = 'http://127.0.0.1:9225';
+import { currentApp, resolveApp, isAppTarget } from './app.mjs';
 
-export function cdpEndpoint(env = process.env) {
-  return (env.DOUBAO_CDP_ENDPOINT || DEFAULT_ENDPOINT).replace(/\/$/u, '');
+export function cdpEndpoint(env) {
+  return env ? resolveApp(undefined, env).endpoint : currentApp().endpoint;
 }
 
 async function fetchJson(url, timeoutMs = 3000) {
@@ -19,7 +19,11 @@ async function fetchJson(url, timeoutMs = 3000) {
 export async function cdpStatus(endpoint = cdpEndpoint()) {
   try {
     const version = await fetchJson(`${endpoint}/json/version`);
-    return { available: true, endpoint, browser: version.Browser, protocolVersion: version['Protocol-Version'] };
+    const targets = await fetchJson(`${endpoint}/json/list`);
+    if (!targets.some((target) => isAppTarget(target.url) || isAppTarget(target.url, currentApp(), 'background'))) {
+      return { available: false, endpoint, identityMismatch: true, error: `CDP endpoint ${endpoint} does not belong to ${currentApp().name}; select the correct --app or endpoint` };
+    }
+    return { app: currentApp().id, available: true, endpoint, browser: version.Browser, protocolVersion: version['Protocol-Version'] };
   } catch (error) {
     return { available: false, endpoint, error: error.message };
   }
@@ -30,12 +34,12 @@ export async function findChatTarget(endpoint = cdpEndpoint(), timeoutMs = 5000)
   do {
     const targets = await fetchJson(`${endpoint}/json/list`);
     const target = targets.find(
-      (item) => item.type === 'page' && /^(?:doubao|chrome):\/\/doubao-chat\/chat(?:\/|$)/u.test(item.url),
+      (item) => item.type === 'page' && isAppTarget(item.url),
     );
     if (target?.webSocketDebuggerUrl) return target;
     await new Promise((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
-  throw new Error(`no Doubao chat page found at ${endpoint}`);
+  throw new Error(`no Doubao chat page found at ${endpoint}; open a chat window in ${currentApp().name} explicitly, then retry`);
 }
 
 // The background page hosts the local-tool dispatch (connector.call routing).
@@ -44,7 +48,7 @@ export async function findBackgroundTarget(endpoint = cdpEndpoint(), timeoutMs =
   do {
     const targets = await fetchJson(`${endpoint}/json/list`);
     const target = targets.find(
-      (item) => item.type === 'page' && /^doubao:\/\/doubao-background\//u.test(item.url),
+      (item) => item.type === 'page' && isAppTarget(item.url, currentApp(), 'background'),
     );
     if (target?.webSocketDebuggerUrl) return target;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -154,7 +158,7 @@ export class CdpClient {
 export async function withChatClient(callback, endpoint = cdpEndpoint()) {
   const status = await cdpStatus(endpoint);
   if (!status.available) {
-    throw new Error(`Doubao CDP is unavailable at ${endpoint}. Run "doubao cdp launch" to restart Doubao with CDP enabled.`);
+    throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --app ${currentApp().id} cdp launch" to enable CDP.`);
   }
   const target = await findChatTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();
@@ -168,7 +172,7 @@ export async function withChatClient(callback, endpoint = cdpEndpoint()) {
 export async function withBackgroundClient(callback, endpoint = cdpEndpoint()) {
   const status = await cdpStatus(endpoint);
   if (!status.available) {
-    throw new Error(`Doubao CDP is unavailable at ${endpoint}. Run "doubao cdp launch" to restart Doubao with CDP enabled.`);
+    throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --app ${currentApp().id} cdp launch" to enable CDP.`);
   }
   const target = await findBackgroundTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();

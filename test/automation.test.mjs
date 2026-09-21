@@ -11,7 +11,7 @@ import { modelId, normalizeModelName, resolveModelName, resolveReasoningEffort }
 
 test('builds the desktop open-url route for a conversation', () => {
   assert.equal(
-    conversationDeepLink('38439138239851266'),
+    conversationDeepLink('38439138239851266', { scheme: 'doubao' }),
     'doubao://doubaoapp/open-url?url=https%3A%2F%2Fwww.doubao.com%2Fchat%2F38439138239851266',
   );
 });

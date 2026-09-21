@@ -1,13 +1,13 @@
 import fs from 'node:fs';
-import os from 'node:os';
+import { currentApp, resolveApp } from './app.mjs';
 import path from 'node:path';
 
 const SNAPSHOT_MARKER = Buffer.from('pull_recent_conv_chain_downlink_body');
 const CONVERSATION_ID = Buffer.from('conversation_id');
 const NAME = Buffer.from('name');
 
-export function getDataDir(env = process.env) {
-  return env.DOUBAO_DATA_DIR || path.join(os.homedir(), 'Library', 'Application Support', 'Doubao');
+export function getDataDir(env) {
+  return env ? resolveApp(undefined, env).dataDir : currentApp().dataDir;
 }
 
 export function readProfiles(dataDir = getDataDir()) {
@@ -130,7 +130,7 @@ export function parseSessionSnapshot(buffer, startOffset = 0) {
 }
 
 function cacheFiles(profilePath) {
-  const directory = path.join(profilePath, 'IndexedDB', 'chrome_doubao-chat_0.indexeddb.leveldb');
+  const directory = path.join(profilePath, 'IndexedDB', `chrome_${currentApp().scheme}-chat_0.indexeddb.leveldb`);
   let entries;
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -164,7 +164,7 @@ function idsInBuffer(buffer) {
   const ids = [];
   for (const encoding of ['utf8', 'utf16le']) {
     const text = buffer.toString(encoding);
-    const pattern = /(?:doubao|chrome):\/\/doubao-chat\/chat\/(\d{12,24})/gu;
+    const pattern = new RegExp(`(?:${currentApp().scheme}|chrome)://${currentApp().scheme}-chat/chat/(\\d{12,24})`, 'gu');
     for (const match of text.matchAll(pattern)) ids.push({ id: match[1], index: match.index || 0 });
   }
   return ids.sort((left, right) => left.index - right.index);

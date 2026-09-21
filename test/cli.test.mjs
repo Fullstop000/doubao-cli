@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import test from 'node:test';
-import { parseOptions } from '../src/cli.mjs';
+import { main, parseOptions } from '../src/cli.mjs';
 import { resolvePermission } from '../src/permissions.mjs';
 
 const cliPath = new URL('../bin/doubao.mjs', import.meta.url);
@@ -88,7 +88,7 @@ test('parses the reply validation options', () => {
 });
 
 test('parses the mcp options', () => {
-  const parsed = parseOptions(['sessions', 'create', 'hi', '--mcp', '369247068674', '--mcp', '123456']);
+  const parsed = parseOptions(['sessions', 'create', 'hi', '--wait', '--mcp', '369247068674', '--mcp', '123456']);
 
   assert.deepEqual(parsed.mcps, ['369247068674', '123456']);
   assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', 'abc']), /requires a numeric connector id/u);
@@ -97,10 +97,19 @@ test('parses the mcp options', () => {
 test('resolves MCP execution permissions and defaults to FullAccess', () => {
   assert.equal(resolvePermission(parseOptions([]).permission), 2);
   for (const [mode, value] of [['AlwaysAsk', 0], ['AskOnRisk', 1], ['FullAccess', 2], ['always-ask', 0], ['ask_on_risk', 1], ['fullaccess', 2]]) {
-    const parsed = parseOptions(['sessions', 'create', 'hi', '--mcp', '123456', '--permission', mode]);
+    const parsed = parseOptions(['sessions', 'create', 'hi', '--wait', '--mcp', '123456', '--permission', mode]);
     assert.equal(resolvePermission(parsed.permission), value);
     assert.deepEqual(parsed.args, ['sessions', 'create', 'hi']);
   }
+});
+
+test('rejects reply validation and MCP requests before sending when required input is missing', async () => {
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--expect-json']), /require --wait/u);
+  assert.throws(() => parseOptions(['sessions', 'create', '--wait', '--expect-json']), /require a message/u);
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', '123456']), /requires --wait/u);
+  assert.throws(() => parseOptions(['sessions', 'create', '--wait', '--mcp', '123456']), /requires a message/u);
+  assert.throws(() => parseOptions(['sessions', 'send', '38439138239851266', 'hi', '--wait', '--mcp', '123456', '--attach', '/tmp/file']), /not supported with attachments/u);
+  await assert.rejects(main(['sessions', 'create', 'must not be sent', '--wait', '--reply-schema', '/missing-doubao-e2e-schema.json']), /cannot read reply schema/u);
 });
 
 test('rejects invalid or ignored MCP permissions before calling the app', () => {

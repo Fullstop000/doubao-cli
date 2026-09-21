@@ -1,9 +1,11 @@
+import { currentApp } from './app.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { uploadAttachmentsFromClient } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
-import { modelDisplayName, resolveModelId, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
+import { resolveModelFromClient, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
 import { sendWithConnectors } from './mcp.mjs';
 import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
+import { stopGeneration } from './sessions.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
 const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
@@ -21,13 +23,6 @@ const VISIBILITY_TEST = `((element) => {
 
 const GENERATING_EXPRESSION = `[...document.querySelectorAll(${JSON.stringify(STOP_BUTTONS)})].some(${VISIBILITY_TEST})`;
 
-const CLICK_STOP_EXPRESSION = `(() => {
-  const button = [...document.querySelectorAll(${JSON.stringify(STOP_BUTTONS)})].find(${VISIBILITY_TEST});
-  if (!button) return false;
-  button.click();
-  return true;
-})()`;
-
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -38,9 +33,9 @@ function remainingMilliseconds(deadline, timeoutMs) {
   return remaining;
 }
 
-export function conversationDeepLink(id) {
+export function conversationDeepLink(id, app = currentApp()) {
   const webUrl = `https://www.doubao.com/chat/${id}`;
-  return `doubao://doubaoapp/open-url?url=${encodeURIComponent(webUrl)}`;
+  return `${app.scheme}://${app.scheme}app/open-url?url=${encodeURIComponent(webUrl)}`;
 }
 
 export function openConversation(id) {
@@ -51,13 +46,13 @@ export function openConversation(id) {
   const before = spawnSync('/usr/bin/osascript', [
     '-e', 'tell application "System Events" to get name of first application process whose frontmost is true',
   ], { encoding: 'utf8' }).stdout.trim();
-  const result = spawnSync('/usr/bin/open', ['-g', url], { encoding: 'utf8' });
+  const result = spawnSync('/usr/bin/open', ['-g', '-a', currentApp().appPath, url], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `failed to open ${url}`);
-  if (before && before !== 'Doubao') {
+  if (before && before !== currentApp().name) {
     const restore = [
       'for i in $(seq 1 30); do',
       'cur=$(/usr/bin/osascript -e \'tell application "System Events" to get name of first application process whose frontmost is true\' 2>/dev/null);',
-      'if [ "$cur" = "Doubao" ]; then',
+      `if [ "$cur" = "${currentApp().name}" ]; then`,
       `/usr/bin/osascript -e 'tell application "System Events" to set frontmost of process "${before.replace(/"/g, '\\"')}" to true' 2>/dev/null;`,
       'exit 0;',
       'fi;',
@@ -100,21 +95,11 @@ async function navigateToConversation(client, target, id, timeoutMs, { force = f
   await waitForConversation(client, id, timeoutMs);
 }
 
-// Runs callback against the chat page showing conversation id. Falls back to
-// the deep link (a brief focus change) only when no chat renderer exists,
-// e.g. the Doubao window was closed.
+// Use the existing renderer only. A missing chat page must not implicitly
+// launch the app's deep link and interrupt the user's foreground application.
 async function withConversationPage(id, timeoutMs, callback, { force = false } = {}) {
-  try {
-    return await withChatClient(async (client, target) => {
-      await navigateToConversation(client, target, id, timeoutMs, { force });
-      return await callback(client);
-    });
-  } catch (error) {
-    if (!/no Doubao chat page found/u.test(error.message)) throw error;
-  }
-  openConversation(id);
-  return withChatClient(async (client) => {
-    await waitForConversation(client, id, timeoutMs);
+  return withChatClient(async (client, target) => {
+    await navigateToConversation(client, target, id, timeoutMs, { force });
     return await callback(client);
   });
 }
@@ -229,16 +214,22 @@ export function attachmentsConfirmed(before, after, attachments) {
 export async function readConversation(id, options = {}) {
   const timeoutMs = options.timeoutMs || 10_000;
   return withConversationPage(id, timeoutMs, async (client) => {
-    // The composer is ready before the message list finishes rendering;
-    // give the list a short grace period to populate.
-    const deadline = Date.now() + Math.min(3000, timeoutMs);
-    let messages = await readFromClient(client);
-    while (!messages.length && Date.now() < deadline) {
-      await delay(200);
+    // File/image blocks mount after text. Wait for the whole message snapshot
+    // to settle so a reload cannot silently omit an uploaded attachment.
+    const deadline = Date.now() + Math.min(5000, timeoutMs);
+    let messages = [];
+    let previous = '';
+    let stableSince = Date.now();
+    do {
       messages = await readFromClient(client);
-    }
+      const snapshot = JSON.stringify(messages);
+      if (snapshot !== previous) stableSince = Date.now();
+      if (messages.length && Date.now() - stableSince >= 1000) break;
+      previous = snapshot;
+      await delay(200);
+    } while (Date.now() < deadline);
     return options.limit ? messages.slice(-options.limit) : messages;
-  });
+  }, { force: true });
 }
 
 function validateMessage(message) {
@@ -275,13 +266,24 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
     document.execCommand('selectAll', false, null);
     document.execCommand('insertText', false, ${encodedMessage});
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const button = document.querySelector(${JSON.stringify(SEND_BUTTON)});
-    if (!button || button.disabled) throw new Error('Doubao send button is unavailable');
-    const text = (editor.innerText || '').replace(/\\n$/, '');
-    button.click();
-    return text;
+    return (editor.innerText || '').replace(/\\n$/, '');
   })()`);
   if (normalizeMessageText(draft) !== expectedMessage) throw new Error('Doubao editor did not accept the complete message');
+
+  const readyDeadline = Date.now() + Math.min(5000, timeoutMs);
+  let ready = false;
+  while (Date.now() < readyDeadline) {
+    ready = await client.evaluate(`(() => {
+      const button = document.querySelector(${JSON.stringify(SEND_BUTTON)});
+      return Boolean(button && !button.disabled && button.getAttribute('aria-disabled') !== 'true'
+        && button.getAttribute('data-disabled') !== 'true' && button.getAttribute('data-loading') !== 'true');
+    })()`);
+    if (ready) break;
+    await delay(100);
+  }
+  if (!ready) throw new Error('Doubao send button is unavailable');
+  // Dispatch a native CDP click after the editor has committed its state.
+  await client.click(SEND_BUTTON);
 
   const deadline = Date.now() + timeoutMs;
   let messages = before;
@@ -306,7 +308,7 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
     }
   }
 
-  const conversationId = requestedId || await waitForConversationId(client, Math.min(5000, Math.max(1, deadline - Date.now())));
+  const conversationId = requestedId || await waitForConversationId(client, Math.max(1, deadline - Date.now()));
   const baseResult = {
     conversationId,
     ...(selectedModel ? { model: selectedModel.name } : {}),
@@ -330,24 +332,14 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
   throw new Error(`Doubao reply did not complete within ${timeoutMs} ms`);
 }
 
-// Stops an in-flight generation by clicking the composer's break/end button
-// and confirming it disappears. Best-effort cleanup: returns
+// Stops an in-flight generation and confirms the latest server message has
+// finished or been interrupted. Best-effort cleanup: returns
 // { conversationId, stopped } instead of throwing when the page cannot be
 // reached or generation does not stop in time.
 export async function stopConversation(id, options = {}) {
   const timeoutMs = options.timeoutMs || 15_000;
   try {
-    return await withConversationPage(id, timeoutMs, async (client) => {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        if (!await client.evaluate(GENERATING_EXPRESSION)) {
-          return { conversationId: id, stopped: true };
-        }
-        await client.evaluate(CLICK_STOP_EXPRESSION);
-        await delay(500);
-      }
-      return { conversationId: id, stopped: false, reason: 'generation did not stop in time' };
-    });
+    return await withChatClient(client => stopGeneration(client, id, timeoutMs));
   } catch (error) {
     return { conversationId: id, stopped: false, reason: error.message };
   }
@@ -378,9 +370,9 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
       let modelName = null;
       let model = modelProtocol('auto');
       if (options.model) {
-        const modelIdValue = resolveModelId(options.model);
-        model = modelProtocol(modelIdValue);
-        modelName = modelDisplayName(modelIdValue);
+        const resolved = await resolveModelFromClient(client, options.model);
+        model = resolved.protocol;
+        modelName = resolved.name;
         await switchConversationModel(client, id, model.key, effort?.effort);
       }
       const request = {
@@ -453,9 +445,9 @@ export async function createConversation(message, options = {}) {
         let modelName = null;
         let model = modelProtocol('auto');
         if (options.model) {
-          const modelIdValue = resolveModelId(options.model);
-          model = modelProtocol(modelIdValue);
-          modelName = modelDisplayName(modelIdValue);
+          const resolved = await resolveModelFromClient(client, options.model);
+          model = resolved.protocol;
+          modelName = resolved.name;
         }
         const request = {
           conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,

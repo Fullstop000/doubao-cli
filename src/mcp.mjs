@@ -1,3 +1,4 @@
+import { currentApp, agentWorkspace } from './app.mjs';
 // Local MCP connector support: registers stdio personal connectors through
 // the app's own API client, waits for the native MCP runtime to spawn them,
 // and prepares the sandbox route that lets model-issued connector.call tool
@@ -7,7 +8,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { withBackgroundClient } from './cdp.mjs';
-import { AGENT_WORKSPACE, defaultWorkspace, evaluateWithWatchdog, sendChatCompletion } from './protocol.mjs';
+import { defaultWorkspace, evaluateWithWatchdog, sendChatCompletion } from './protocol.mjs';
 import { resolvePermission } from './permissions.mjs';
 
 // Doubao versions whose background-page dispatch needs COMPAT_PATCH_EXPRESSION
@@ -16,7 +17,7 @@ import { resolvePermission } from './permissions.mjs';
 const COMPAT_PATCH_VERSIONS = new Set(['2.29.12']);
 
 function doubaoAppVersion() {
-  const appPath = process.env.DOUBAO_APP || '/Applications/Doubao.app';
+  const appPath = currentApp().appPath;
   const result = spawnSync('/usr/libexec/PlistBuddy', [
     '-c', 'Print CFBundleShortVersionString', `${appPath}/Contents/Info.plist`,
   ], { encoding: 'utf8' });
@@ -28,15 +29,24 @@ function doubaoAppVersion() {
 // common query params, request signing and response unwrapping); module
 // 987391 prepares sandbox execution contexts in the background page.
 const RUNTIME_BOOTSTRAP = `
+  const __readyDeadline = Date.now() + 10000;
+  while (!document.querySelector('[data-testid="chat_input_input"]')) {
+    if (Date.now() >= __readyDeadline) throw new Error('Doubao chat renderer is not ready');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   const __req = await new Promise((resolve) => {
     window['@flow-web/desktop:stable'].push([['doubao_cli_' + Date.now()], {}, (r) => resolve(r)]);
   });
   const __mod = async (id, chunk) => {
-    try { return __req(id); } catch {}
-    await Promise.race([
-      __req.e(String(chunk)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('chunk ' + chunk + ' load timeout')), 10000)),
-    ]);
+    // Requiring an unloaded webpack module can leave an empty cache entry.
+    // Load its chunk first, including on a freshly navigated renderer.
+    let timer;
+    try {
+      await Promise.race([
+        __req.e(String(chunk)),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('chunk ' + chunk + ' load timeout')), 10000); }),
+      ]);
+    } finally { clearTimeout(timer); }
     return __req(id);
   };
 `;
@@ -79,7 +89,9 @@ const LIST_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
   const api = (await __mod(359531, 1383)).Sf;
   const result = await api.AGWManageListUserConnectors({ keyword: '', page_size: 100, page_token: '' });
-  return (result?.data?.items || []).map((item) => ({
+  if (result?.code || !Array.isArray(result?.data?.items)) throw new Error('Doubao connector list could not be read');
+  if (result.data.has_more) throw new Error('Doubao connector list is incomplete; narrow the account catalog before retrying');
+  return result.data.items.map((item) => ({
     connectorId: item.connector_id,
     name: item.name,
     enabled: item.enabled,
@@ -92,12 +104,40 @@ const REMOVE_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
   const args = %ARGS%;
   const api = (await __mod(359531, 1383)).Sf;
-  const result = { connectorId: args.connectorId };
+  const result = { connectorId: args.connectorId, removed: false };
+  const verify = async () => {
+    const response = await api.AGWManageListUserConnectors({ keyword: '', page_size: 100, page_token: '' });
+    if (response?.code || !Array.isArray(response?.data?.items)) throw new Error('connector list could not be read');
+    const connector = response.data.items.find(item => item.connector_id === args.connectorId);
+    if (!connector && response.data.has_more) throw new Error('connector list is incomplete');
+    result.state = !connector ? 'absent' : connector.enabled === false ? 'disabled' : 'enabled';
+    return result.state !== 'enabled';
+  };
   try { await api.AGWManageDisconnectConnector({ connector_id: args.connectorId, skill_type: 1 }); result.disconnected = true; }
   catch (error) { result.disconnected = false; result.disconnectError = String(error?.message || error).slice(0, 200); }
-  try { await api.AGWManageSetConnectorEnabled({ connector_id: args.connectorId, enabled: false, skill_type: 1 }); result.disabled = true; }
-  catch (error) { result.disabled = false; result.disableError = String(error?.message || error).slice(0, 200); }
+  let inactive = false;
+  try { inactive = await verify(); }
+  catch (error) { result.verificationError = String(error?.message || error).slice(0, 200); }
+  if (!inactive) {
+    try { await api.AGWManageSetConnectorEnabled({ connector_id: args.connectorId, enabled: false, skill_type: 1 }); }
+    catch (error) { result.disableError = String(error?.message || error).slice(0, 200); }
+    try { inactive = await verify(); delete result.verificationError; }
+    catch (error) { result.verificationError = String(error?.message || error).slice(0, 200); }
+  }
+  result.disabled = inactive;
   try { await window.neotix.taskMode.runtime.triggerUpdate(); } catch {}
+  if (inactive) {
+    const deadline = Date.now() + 10000;
+    do {
+      try {
+        const { connectors } = await window.neotix.mcp.getAllTools();
+        result.runtimeDisconnected = !connectors.some(item => item.connectorId === args.connectorId);
+        if (result.runtimeDisconnected) { result.removed = true; break; }
+      } catch (error) { result.verificationError = String(error?.message || error).slice(0, 200); break; }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    } while (Date.now() < deadline);
+    if (!result.runtimeDisconnected && !result.verificationError) result.verificationError = 'connector tools are still loaded locally';
+  }
   return result;
 })()`;
 
@@ -182,13 +222,13 @@ export async function registerConnector(client, { name, command, params = [], en
 }
 
 export async function listConnectors(client) {
-  return await client.evaluate(LIST_EXPRESSION) || [];
+  return await evaluateWithWatchdog(client, LIST_EXPRESSION, 15_000) || [];
 }
 
-// There is no delete API; removal disconnects the runtime and disables the
-// connector so it leaves the tool catalog.
+// Disconnect may itself delete a personal connector. Confirm account state
+// before disabling, then require the local tool catalog to release it.
 export async function removeConnector(client, connectorId) {
-  return await client.evaluate(buildExpression(REMOVE_EXPRESSION, { connectorId }));
+  return evaluateWithWatchdog(client, buildExpression(REMOVE_EXPRESSION, { connectorId }), 30_000);
 }
 
 // Builds the localConnectors tool snapshot for a chat request. Throws unless
@@ -206,7 +246,7 @@ export async function connectorsSnapshot(client, connectorIds) {
 export async function prepareToolSandbox(client, { workspace, sendContext, permission }) {
   const result = await evaluateWithWatchdog(client, buildExpression(PREPARE_SANDBOX_EXPRESSION, {
     workspace,
-    agentWorkspace: AGENT_WORKSPACE,
+    agentWorkspace: agentWorkspace(),
     sendContext,
     sandboxAuthType: resolvePermission(permission),
   }), 30_000);

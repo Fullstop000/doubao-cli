@@ -1,3 +1,4 @@
+import { currentApp, agentWorkspace } from './app.mjs';
 // Protocol-direct messaging: issues chat/completion requests inside the
 // authenticated Doubao renderer, where the webmssdk fetch hook transparently
 // attaches msToken / a_bogus / x-helios / x-medusa and cookies, so the request
@@ -8,29 +9,37 @@ import os from 'node:os';
 import { resolvePermission } from './permissions.mjs';
 
 const HOME = os.homedir();
-export const AGENT_WORKSPACE = `${HOME}/Library/Application Support/Doubao/Profile 1/.doubao/agent_mode/workspace`;
 
 const CHAT_URL = 'https://api5-normal-gl.doubao.com/chat/completion';
 const MODIFY_URL = 'https://www.doubao.com/im/conversation/modify';
 const BOT_ID = '7338286299411103781';
 export const CONNECTOR_API_BASE = 'https://www.doubao.com/alice/office/skills/manage/connector';
 
-// Captured from Doubao.app 2.28.9 traffic. New-conversation requests are only
-// honored with the full device parameter set (a reduced set silently merges
-// into the account's current conversation).
-export const CHAT_QS = 'aid=582478&channel=mac_official&chromium_version=147.0.7727.149&client_platform=pc_client'
-  + '&device_id=4123623653382612&device_platform=web&doubao_device_platform=desktop'
-  + '&doubao_pc_version=2.28.9&fp=verify_4123623653382612&language=zh&pc_version=2.28.9'
-  + '&pkg_type=release_version&real_aid=582478&region=CN&runtime=web&runtime_version=3.36.2'
-  + '&samantha_web=1&sys_region=CN&tea_uuid=4123623653382612&tz_name=Asia%2FShanghai'
-  + '&use-olympus-account=1&version_code=20800&web_id=7672758390314255922&web_platform=desktop'
-  + '&web_tab_id=5c7c0822-57bf-4d15-87b5-c7b5d3d78687';
-const MODIFY_QS = 'version_code=20800&language=zh&device_platform=web&doubao_device_platform=desktop'
-  + '&aid=582478&real_aid=582478&pkg_type=release_version&device_id=4123623653382612'
-  + '&pc_version=2.28.9&doubao_pc_version=2.28.9&web_id=7672758390314255922&tea_uuid=4123623653382612'
-  + '&region=CN&sys_region=CN&samantha_web=1&web_platform=desktop&use-olympus-account=1'
-  + '&runtime=web&runtime_version=3.36.2&client_platform=pc_client&chromium_version=147.0.7727.149'
-  + '&channel=mac_official&fp=verify_4123623653382612';
+// Read only the common, non-secret request parameters from this renderer.
+// Never copy signature/token fields or use another application's device ids.
+export async function runtimeParameters(client) {
+  const runtime = await evaluateWithWatchdog(client, `(async () => {
+    const keys = ['aid', 'real_aid', 'channel', 'chromium_version', 'client_platform',
+      'device_id', 'device_platform', 'doubao_device_platform', 'doubao_pc_version',
+      'fp', 'language', 'pc_version', 'pkg_type', 'region', 'runtime', 'runtime_version',
+      'samantha_web', 'sys_region', 'tea_uuid', 'tz_name', 'use-olympus-account',
+      'version_code', 'web_id', 'web_platform', 'web_tab_id'];
+    const entry = performance.getEntriesByType('resource').slice().reverse().find(entry => {
+      try { const u = new URL(entry.name); return u.origin === 'https://www.doubao.com'
+        && u.pathname.startsWith('/im/') && u.searchParams.has('device_id') && u.searchParams.has('aid'); }
+      catch { return false; }
+    });
+    if (!entry) throw new Error('Doubao runtime parameters are not ready; open a chat and retry');
+    const source = new URL(entry.name).searchParams;
+    const params = Object.fromEntries(keys.filter(key => source.has(key)).map(key => [key, source.get(key)]));
+    const runtime = await window.neotix.taskMode.runtime.queryRuntimeInfo({ env: true });
+    return { params, clientEnvId: runtime?.env?.environmentId || '' };
+  })()`, 10_000);
+  if (runtime?.params?.aid !== currentApp().aid || !runtime.params.device_id) {
+    throw new Error(`Runtime identity does not match ${currentApp().name}`);
+  }
+  return { ...runtime, query: new URLSearchParams(runtime.params).toString() };
+}
 
 // Model is a conversation-level setting (POST im/conversation/modify, cmd=1114).
 // key = model_item_key; ndt = need_deep_think in the chat body; provider =
@@ -52,7 +61,7 @@ export function modelProtocol(modelId) {
 // `user_context`; omitting either silently merges the message into the current
 // conversation instead of creating one.
 export function conversationExt(model, localMessageId, workspace, options = {}) {
-  const skillPaths = options.skillPaths || [`${HOME}/Doubao/skills`, `${HOME}/.agents/skills`];
+  const skillPaths = options.skillPaths || [`${HOME}/${currentApp().name}/skills`, `${HOME}/.agents/skills`];
   const sandboxAuthType = resolvePermission(options.permission);
   const gtp = {
     action: 0,
@@ -60,12 +69,12 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
     client_option: {
       enable_sandbox: true,
       os: 'Mac',
-      shared_folder_path: options.sharedFolderPath || [workspace, AGENT_WORKSPACE],
+      shared_folder_path: options.sharedFolderPath || [workspace, agentWorkspace()],
       agent_workspace: {
-        agent_workspace: AGENT_WORKSPACE,
+        agent_workspace: agentWorkspace(),
         local_skill_paths: skillPaths,
       },
-      client_env_id: options.clientEnvId || '85dd66b1-4866-483a-a37a-da832ae9a35f',
+      client_env_id: options.clientEnvId || '',
       sandbox_id: options.sandboxId || `route-${crypto.randomUUID()}`,
       workspace,
       sandbox_auth_type: sandboxAuthType,
@@ -74,10 +83,10 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
     agent_task_param: {
       runtime_type: 2,
       sandbox_auth_type: sandboxAuthType,
-      device_name: 'MacBook Pro (4)',
+      device_name: os.hostname(),
       folder_name: '',
-      local_app_id: '582478',
-      local_device_id: '4123623653382612',
+      local_app_id: currentApp().aid,
+      local_device_id: options.deviceId || '',
       workspace,
     },
     // MCP follow-ups apply this turn's permission even when the UI has stale state.
@@ -371,13 +380,14 @@ export async function evaluateWithWatchdog(client, expression, timeoutMs) {
 }
 
 export function defaultWorkspace() {
-  return `${HOME}/Doubao/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
+  return `${HOME}/${currentApp().name}/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
 }
 
 export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt }) {
+  const runtime = await runtimeParameters(client);
   const createNew = !conversationId;
   const expression = buildExpression(SEND_EXPRESSION, {
-    url: `${CHAT_URL}?${CHAT_QS}`,
+    url: `${CHAT_URL}?${runtime.query}`,
     botId: BOT_ID,
     conversationId: conversationId || null,
     message,
@@ -392,7 +402,7 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     ext: (createNew || withExt)
       ? conversationExt(model, localMessageId || '%LOCAL_MESSAGE_ID%',
         workspace || defaultWorkspace(),
-        { skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
+        { clientEnvId: runtime.clientEnvId, deviceId: runtime.params.device_id, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
       : null,
   });
   const result = await evaluateWithWatchdog(client, expression, Math.max(10_000, timeoutMs || 120_000) + 30_000);
@@ -410,8 +420,9 @@ export async function sendChatCompletion(client, { conversationId, message, mode
 
 // reasoning_effort values observed from the app: 低=3 中=4 高=5 极高=6 最高=7.
 export async function switchConversationModel(client, conversationId, modelKey, reasoningEffort) {
+  const runtime = await runtimeParameters(client);
   const result = await client.evaluate(buildExpression(MODIFY_EXPRESSION, {
-    url: `${MODIFY_URL}?${MODIFY_QS}`,
+    url: `${MODIFY_URL}?${runtime.query}`,
     conversationId,
     modelKey,
     reasoningEffort: reasoningEffort || null,

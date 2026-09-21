@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateReply } from '../src/validate.mjs';
+import { validateReply, validateSchema } from '../src/validate.mjs';
 
 test('accepts valid JSON without a schema', () => {
   assert.deepEqual(validateReply('{"a": 1}'), { ok: true, value: { a: 1 } });
@@ -41,4 +41,12 @@ test('checks array items', () => {
   const result = validateReply('[{"id": 1}, {}]', schema);
   assert.equal(result.ok, false);
   assert.match(result.errors[0], /\$\[1\]\.id/u);
+});
+
+test('rejects malformed schemas before a request and combines enum with other constraints', () => {
+  for (const schema of [null, [], { type: 'typo' }, { required: 'name' }, { enum: 'yes' }, { properties: [] }, { items: false }]) {
+    assert.throws(() => validateSchema(schema));
+  }
+  validateSchema({ type: 'object', properties: { tags: { type: 'array', items: { type: 'string' } } } });
+  assert.equal(validateReply('1', { type: 'string', enum: [1] }).ok, false);
 });

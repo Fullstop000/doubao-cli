@@ -51,7 +51,11 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
     } }) };
     throw new Error(`unexpected app module: ${id}`);
   };
+  requireModule.e = async () => {};
   const context = vm.createContext({
+    URL,
+    document: { querySelector: () => ({}) },
+    performance: { getEntriesByType: () => [{ name: 'https://www.doubao.com/im/chain/recent_conv?aid=582478&device_id=test-device' }] },
     crypto, AbortController, TextDecoder, setTimeout, clearTimeout,
     window: {
       '@flow-web/desktop:stable': { push: ([, , callback]) => callback(requireModule) },
