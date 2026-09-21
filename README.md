@@ -6,7 +6,7 @@ Programmatic access to local sessions in the macOS Doubao desktop app.
 
 ## Install
 
-Requires macOS, Node.js 22 or newer, and the Doubao desktop app.
+Requires macOS, Node.js 22 or newer, and DoubaoWork.app or Doubao.app.
 
 ```bash
 npm install --global doubao-cli@latest
@@ -54,7 +54,19 @@ doubao update auto on
 doubao capabilities
 ```
 
-Every data-returning command supports `--json`. Select a non-default local profile with `--profile "Profile 1"` or its display name.
+The CLI prefers `/Applications/DoubaoWork.app`; it falls back to `/Applications/Doubao.app` only when Work is absent. Use `--app work` or `--app doubao` to select explicitly. Login or connection failures never switch apps. `status --json` reports the selected app, profile, and endpoint.
+
+```bash
+doubao status --json                  # Work first
+doubao --app doubao status --json     # regular Doubao
+doubao --app work cdp launch
+```
+
+Each app uses its own data directory and CDP port: Work **9226**, Doubao **9225**. Every turn in a conversation should target the same app. Connectors remain account-level and may appear in both apps when signed into the same account.
+
+Ordinary session, model and MCP commands run in the background. They require an existing chat window and report an error if it is closed. `sessions open` explicitly follows the app's deep link and may briefly change focus; it is not needed before sending or reading. Launching or restarting with `cdp launch` may also show the app window.
+
+Every data-returning command supports `--json`. Select a local profile with `--profile "Profile 1"` or its display name. Messaging, models and connectors require that profile to be active in the selected app; the CLI does not switch accounts.
 
 Message automation requires Doubao to be launched with local Chrome DevTools Protocol enabled:
 
@@ -62,13 +74,13 @@ Message automation requires Doubao to be launched with local Chrome DevTools Pro
 doubao cdp launch
 ```
 
-If Doubao is already running without CDP, the command asks for confirmation before quitting it and relaunching with the debugging port enabled. Scripts and `--json` mode never prompt; pass `doubao cdp launch --yes` to confirm the restart explicitly. The command returns only after both the CDP endpoint and authenticated chat renderer are ready. The equivalent manual sequence is to quit Doubao completely and run `open -a /Applications/Doubao.app --args --remote-debugging-port=9225`.
+If Doubao is already running without CDP, the command asks for confirmation before quitting it and relaunching with the debugging port enabled. Scripts and `--json` mode never prompt; pass `doubao cdp launch --yes` to confirm the restart explicitly. The command returns only after both the CDP endpoint and authenticated chat renderer are ready. For Work, the equivalent manual sequence is to quit it completely and run `open -a /Applications/DoubaoWork.app --args --remote-debugging-port=9226`. Regular Doubao uses `/Applications/Doubao.app` and port `9225`.
 
 Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply; a reply stream that ends without Doubao's completion event, or a reply that does not finish within `--timeout`, is reported as an error (with the partial text attached) rather than returned as success, and the CLI makes a best-effort attempt to stop the server-side generation afterwards. `sessions stop` cancels an in-flight generation explicitly.
 
-`--expect-json` fails the command (exit code 1, `replyValid: false`) when the waited reply is not valid JSON; `--reply-schema <path>` additionally checks it against a JSON schema subset (`type`, `required`, `properties`, `enum`, `items`). Both require `--wait`.
+`--expect-json` fails the command (exit code 1, `replyValid: false`) when the waited reply is not valid JSON; `--reply-schema <path>` additionally checks it against a JSON schema subset (`type`, `required`, `properties`, `enum`, `items`). Both require a message and `--wait`. Invalid options or an unreadable/malformed schema fail before sending.
 
-`--workspace <path>` stores the new session's agent workspace under a caller-chosen directory instead of `~/Doubao/chats/<date>`, and `--no-skills` drops the default local skill paths from the request. Both only affect newly created conversations, and agent mode itself stays enabled — the CLI does not currently offer a plain-chat mode.
+`--workspace <path>` sets the agent workspace instead of `~/DoubaoWork/chats/<date>` (regular Doubao: `~/Doubao/chats/<date>`), and `--no-skills` omits default local skill paths. These apply to new conversations and every MCP turn; ordinary follow-ups do not resend them. Agent mode stays enabled.
 
 ### Local MCP connectors
 
@@ -82,7 +94,7 @@ doubao sessions send <conversation-id> "continue" --mcp 369247068674 --permissio
 doubao mcp remove 369247068674
 ```
 
-`mcp register` waits until the app's native MCP runtime reports the connector READY and prints its connector id. Passing `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` snapshots the connector's tool catalog into the request and prepares the local sandbox route, so model-issued tool calls execute against the local server. `--mcp` is incompatible with `--attach`. Connectors are account-level and visible in the Doubao settings UI; there is no delete API, so `mcp remove` disconnects and disables. Connector support depends on undocumented app internals (verified against Doubao 2.29.12 and 2.30.1) and may break when the app updates.
+`mcp register` waits until the app's native MCP runtime reports the connector READY and prints its connector id. Passing `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` snapshots the connector's tool catalog into the request and prepares the local sandbox route, so model-issued tool calls execute against the local server. It requires a message and `--wait`, and is incompatible with `--attach`. Connectors are account-level and visible in the Doubao settings UI. `mcp remove` disconnects, disables if still present, and confirms both account state and local tool removal. Connector support depends on undocumented app internals (verified against Doubao 2.29.12, 2.30.1, 2.30.2, and DoubaoWork 2.30.5) and may break when the app updates.
 
 `--permission <mode>` sets the local task's execution permission for a turn with MCP tools. It requires `--mcp` and a message. Names are case-insensitive; hyphenated forms such as `ask-on-risk` also work.
 
@@ -143,7 +155,7 @@ Use `--` before message text that contains CLI option names, for example `doubao
 | Gemini 3.7 Flash | `gemini-3.7-flash` | `gemini` |
 | GPT-5.6 Sol | `gpt-5.6-sol` | `gpt`, `sol` |
 
-Use the value, exact display name, or a short alias anywhere `<model>` is accepted. Run `doubao models` to verify the choices exposed by the installed Doubao version.
+Use the value, exact display name, or a short alias anywhere `<model>` is accepted. Run `doubao models` to verify the choices exposed by the selected app. Exact names and IDs from this list also work for newer models, for example `--model gpt-6-astra`; protocol parameters are read from the live menu.
 
 Adjust the reasoning effort (推理强度) with `--reasoning`, or change it for the current session with `model reasoning`:
 
@@ -159,11 +171,12 @@ CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normal
 
 ## How it works
 
-- Session ids and titles are read directly from Doubao's local IndexedDB cache.
-- The current session is recovered from Chromium's local session store.
-- Opening a session uses Doubao's registered `doubao://doubaoapp/open-url` deep-link router.
+- Session ids and titles come from the signed-in account's IndexedDB snapshots; offline profiles use the older disk cache when available.
+- The current session comes from the selected app's live chat route when CDP is available.
+- Opening a session targets the selected app and its registered `doubaowork://` or `doubao://` deep-link router.
 - Sending and creating sessions issue `chat/completion` requests directly inside the authenticated renderer, where the app's own request-signing hook attaches its risk-control parameters; the reply is parsed from the SSE event stream rather than scraped from the DOM.
-- Model selection uses the conversation-level `im/conversation/modify` API when a current session exists, and falls back to the renderer's menu UI otherwise.
+- Model choices and request parameters come from the selected app's live menu. Existing-session model changes use `im/conversation/modify` and verify `batch_get`; draft changes use the menu.
+- Stopping uses `im/message/break_stream_msg` and verifies the latest server message, including when the page still shows an older turn.
 - Attachments are transferred into the renderer through its drop-upload path; file contents and credentials are never printed.
 
 No hard-coded UI coordinates, image recognition, Cookie extraction, or private credential copying are involved.
@@ -177,6 +190,17 @@ Message send/create and model selection use Doubao's own HTTP APIs from inside t
 ```bash
 npm test
 ```
+
+Run the live command suite against an already signed-in app with CDP enabled:
+
+```bash
+npm run test:e2e -- --app work
+npm run test:e2e -- --fallback
+```
+
+This sends synthetic messages, uploads generated fixtures and registers a temporary MCP server. Run it against a quiet app. It does not restart the app; it removes its connector and restores the initial page. Results stay in `.e2e/work/` or `.e2e/fallback/` and are excluded from Git. Use `--stage baseline|messages|models|attachments|stop|mcp|negative|update|cleanup` to rerun a stage. See [verification](docs/doubaowork-e2e.md) for tested coverage and limits.
+
+`--fallback` hides only the Work installation probe in CLI child processes and omits `--app`; commands then use real regular Doubao with its default data directory and port. It neither moves nor uninstalls Work. The suite discovers the selected app's available models. `--fallback --stage selection` checks discovery and failure isolation without restarting either app.
 
 Override discovery paths when testing:
 

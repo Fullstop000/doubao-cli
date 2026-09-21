@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { currentSession, getDataDir, listSessions, resolveProfile } from './storage.mjs';
+import { getDataDir, readProfiles, resolveProfile } from './storage.mjs';
+import { sessionIndex } from './sessions.mjs';
 import { cdpStatus, withChatClient } from './cdp.mjs';
 import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
 import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation } from './automation.mjs';
@@ -16,10 +17,9 @@ import {
   setAutoUpdate,
   updateStatePath,
 } from './update.mjs';
-import { validateReply } from './validate.mjs';
+import { validateReply, validateSchema } from './validate.mjs';
 import { resolvePermission } from './permissions.mjs';
-
-const DEFAULT_APP = '/Applications/Doubao.app';
+import { currentApp, resolveApp, withApp } from './app.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
@@ -51,10 +51,13 @@ Local task execution permission (requires --mcp):
                       Repeat on each turn; approval is handled by Doubao.
                       This does not guarantee approval for each MCP call.
 
+Application:
+  --app work|doubao  Select an app (default: Work if installed, otherwise Doubao)
+
 Environment:
-  DOUBAO_APP       Override the Doubao.app path
+  DOUBAO_APP       Override the application path
   DOUBAO_DATA_DIR  Override the Doubao user-data directory
-  DOUBAO_CDP_ENDPOINT  CDP endpoint (default: http://127.0.0.1:9225)
+  DOUBAO_CDP_ENDPOINT  CDP endpoint (Work: 9226; Doubao: 9225)
   DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
   DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip configured automatic updates
 `;
@@ -62,6 +65,7 @@ Environment:
 export function parseOptions(argv) {
   const args = [];
   let profile;
+  let app;
   let json = false;
   let yes = false;
   let wait = false;
@@ -89,6 +93,9 @@ export function parseOptions(argv) {
       yes = true;
     } else if (argv[index] === '--wait') {
       wait = true;
+    } else if (argv[index] === '--app') {
+      app = argv[++index];
+      if (!['work', 'doubao'].includes(app)) throw new Error('--app requires work or doubao');
     } else if (argv[index] === '--profile') {
       profile = argv[index + 1];
       if (!profile) throw new Error('--profile requires a value');
@@ -163,7 +170,24 @@ export function parseOptions(argv) {
       throw new Error('--permission requires a message');
     }
   }
-  return { args, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  if (mcps.length) {
+    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1])) {
+      throw new Error('--mcp requires sessions create/send');
+    }
+    if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) throw new Error('--mcp requires a message');
+    if (attachments.length) throw new Error('--mcp is not supported with attachments');
+    if (!wait) throw new Error('--mcp requires --wait so the local tool session stays connected');
+  }
+  if (expectJson || replySchema) {
+    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1])) {
+      throw new Error('--expect-json and --reply-schema require sessions create/send');
+    }
+    if (!wait) throw new Error('--expect-json and --reply-schema require --wait');
+    if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) {
+      throw new Error('--expect-json and --reply-schema require a message');
+    }
+  }
+  return { args, app, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
 }
 
 function output(value, json) {
@@ -180,7 +204,7 @@ function appVersion(appPath) {
 }
 
 function appProcessPattern(appPath) {
-  const executable = path.join(appPath, 'Contents', 'MacOS', 'Doubao');
+  const executable = path.join(appPath, 'Contents', 'MacOS', currentApp().name);
   const escaped = executable.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   return `^${escaped}([[:space:]]|$)`;
 }
@@ -201,7 +225,7 @@ async function waitForAppExit(appPath, timeoutMs) {
 async function quitAppForCdp(appPath) {
   const result = spawnSync('/usr/bin/osascript', [
     '-e',
-    'tell application id "com.bot.pc.doubao" to quit',
+    `tell application id ${JSON.stringify(currentApp().bundleId)} to quit`,
   ], { encoding: 'utf8' });
   if (result.status === 0 && await waitForAppExit(appPath, 5000)) return;
 
@@ -217,14 +241,14 @@ async function quitAppForCdp(appPath) {
 async function confirmCdpRestart({ json, yes }) {
   if (yes) return;
   if (json || !process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error('Doubao must restart to enable CDP. Re-run "doubao cdp launch --yes" to confirm.');
+    throw new Error(`${currentApp().name} must restart to enable CDP. Re-run "doubao --app ${currentApp().id} cdp launch --yes" to confirm.`);
   }
 
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await prompt.question('Doubao must restart to enable CDP. Continue? [y/N] ');
+    const answer = await prompt.question(`${currentApp().name} must restart to enable CDP. Continue? [y/N] `);
     if (!/^(?:y|yes)$/iu.test(answer.trim())) {
-      throw new Error('CDP launch cancelled; Doubao was not restarted.');
+      throw new Error(`CDP launch cancelled; ${currentApp().name} was not restarted.`);
     }
   } finally {
     prompt.close();
@@ -251,10 +275,6 @@ function validateId(value) {
   return value;
 }
 
-function sessionWithTitle(profilePath, id) {
-  return listSessions(profilePath).find((session) => session.id === id) || { id, title: null };
-}
-
 async function runConfiguredAutoUpdate(command, json) {
   if (['help', '--help', '-h', 'version', '--version', '-v', 'update'].includes(command)) return;
   const result = await maybeAutoUpdate(CLI_VERSION);
@@ -273,17 +293,19 @@ async function runConfiguredAutoUpdate(command, json) {
 // Validates the reply of a create/send result when --expect-json or
 // --reply-schema is given. Marks the result with replyValid and sets the
 // exit code on failure so callers (e.g. Sprout) can retry.
-function validateReplyOption(result, { expectJson, replySchema, wait }) {
-  if (!expectJson && !replySchema) return result;
-  if (!wait) throw new Error('--expect-json and --reply-schema require --wait');
-  let schema = null;
-  if (replySchema) {
-    try {
-      schema = JSON.parse(fs.readFileSync(replySchema, 'utf8'));
-    } catch (error) {
-      throw new Error(`cannot read reply schema at ${replySchema}: ${error.message}`);
-    }
+function loadReplySchema({ replySchema }) {
+  if (!replySchema) return null;
+  try {
+    const schema = JSON.parse(fs.readFileSync(replySchema, 'utf8'));
+    validateSchema(schema);
+    return schema;
+  } catch (error) {
+    throw new Error(`cannot read reply schema at ${replySchema}: ${error.message}`);
   }
+}
+
+function validateReplyOption(result, { expectJson, replySchema }, schema) {
+  if (!expectJson && !replySchema) return result;
   const validation = validateReply(result.reply?.text || '', schema);
   if (!validation.ok) {
     for (const error of validation.errors || []) console.error(`doubao: reply validation failed: ${error}`);
@@ -293,7 +315,23 @@ function validateReplyOption(result, { expectJson, replySchema, wait }) {
 }
 
 export async function main(argv) {
-  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = parseOptions(argv);
+  const options = parseOptions(argv);
+  options.schema = loadReplySchema(options);
+  const app = resolveApp(options.app);
+  if (options.profile) {
+    app.profile = resolveProfile(app.dataDir, options.profile).directory;
+    const [command, subcommand] = options.args;
+    const usesRenderer = ['models', 'model', 'mcp'].includes(command)
+      || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop'].includes(subcommand));
+    if (usesRenderer && app.profile !== readProfiles(app.dataDir).lastUsed) {
+      throw new Error(`Profile ${app.profile} is not active in ${app.name}; switch profiles in the app before automating it`);
+    }
+  }
+  return withApp(app, () => run(options));
+}
+
+async function run(options) {
+  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
   const isolation = { workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
@@ -387,7 +425,7 @@ export async function main(argv) {
       cdp,
       note: cdp.available
         ? 'Message automation is available through the authenticated Doubao renderer over local CDP.'
-        : 'Restart Doubao with --remote-debugging-port=9225 to enable message automation.',
+        : `Run doubao --app ${currentApp().id} cdp launch to enable message automation.`,
     };
     if (json) output(capabilities, true);
     else {
@@ -439,11 +477,12 @@ export async function main(argv) {
       return;
     }
     if (subcommand === 'remove') {
-      const id = validateId(operand);
+      const id = operand;
+      if (!/^\d{6,24}$/u.test(id || '')) throw new Error('connector id must contain 6 to 24 digits');
       const result = await withChatClient((client) => removeConnector(client, id));
       if (json) output(result, true);
-      else console.log(`removed\t${id}${result.disabled ? '' : ` (disable failed: ${result.disableError || 'unknown'})`}`);
-      if (!result.disabled) process.exitCode = 1;
+      else console.log(`${result.removed ? 'removed' : 'removal unconfirmed'}\t${id}${result.removed ? '' : ` (${result.verificationError || result.disableError || result.disconnectError || 'connector still enabled'})`}`);
+      if (!result.removed) process.exitCode = 1;
       return;
     }
     throw new Error(`unknown mcp command "${subcommand || ''}". Run "doubao help".`);
@@ -474,7 +513,7 @@ export async function main(argv) {
   if (command === 'model' && subcommand === 'select') {
     const requestedModel = args.slice(2).join(' ');
     const activeProfile = resolveProfile(dataDir, requestedProfile);
-    const result = await selectModel(requestedModel, currentSession(activeProfile.path), reasoning);
+    const result = await selectModel(requestedModel, (await sessionIndex(activeProfile)).currentId, reasoning);
     if (json) output(result, true);
     else {
       console.log(`model\t${result.name}`);
@@ -488,7 +527,7 @@ export async function main(argv) {
     const level = args.slice(2).join(' ');
     if (!level) throw new Error('model reasoning requires a level: low, medium, high, xhigh, max');
     const activeProfile = resolveProfile(dataDir, requestedProfile);
-    const id = currentSession(activeProfile.path);
+    const id = (await sessionIndex(activeProfile)).currentId;
     if (!id) throw new Error('current Doubao session was not found in the local session store');
     const result = await setConversationReasoning(id, level);
     if (json) output(result, true);
@@ -520,12 +559,14 @@ export async function main(argv) {
       else console.log(`available\tyes\nendpoint\t${existing.endpoint}`);
       return;
     }
-    const appPath = process.env.DOUBAO_APP || DEFAULT_APP;
+    const appPath = currentApp().appPath;
     const endpoint = new URL(existing.endpoint);
     if (endpoint.hostname !== '127.0.0.1' && endpoint.hostname !== 'localhost') {
       throw new Error('cdp launch only supports a localhost DOUBAO_CDP_ENDPOINT');
     }
-    const port = endpoint.port || '9225';
+    if (existing.identityMismatch) throw new Error(existing.error);
+    if (!fs.existsSync(appPath)) throw new Error(`app not found: ${appPath}`);
+    const port = endpoint.port || String(currentApp().port);
     const restarted = appRunning(appPath);
     if (restarted) {
       await confirmCdpRestart({ json, yes });
@@ -549,19 +590,22 @@ export async function main(argv) {
   const profile = resolveProfile(dataDir, requestedProfile);
 
   if (command === 'status') {
-    const appPath = process.env.DOUBAO_APP || DEFAULT_APP;
-    const sessions = listSessions(profile.path);
+    const appPath = currentApp().appPath;
+    const { sessions } = await sessionIndex(profile);
     const status = {
       installed: fs.existsSync(appPath),
       running: appRunning(appPath),
       appVersion: appVersion(appPath),
+      app: currentApp().id,
       appPath,
+      cdpEndpoint: currentApp().endpoint,
       dataDir,
       profile: { directory: profile.directory, name: profile.name },
       cachedSessions: sessions.length,
     };
     if (json) output(status, true);
     else {
+      console.log(`app\t${currentApp().name}`);
       console.log(`installed\t${status.installed ? 'yes' : 'no'}`);
       console.log(`running\t${status.running ? 'yes' : 'no'}`);
       console.log(`app version\t${status.appVersion || 'unknown'}`);
@@ -574,7 +618,7 @@ export async function main(argv) {
   if (command !== 'sessions') throw new Error(`unknown command "${command}". Run "doubao help".`);
 
   if (subcommand === 'list') {
-    const sessions = listSessions(profile.path);
+    const { sessions } = await sessionIndex(profile);
     if (json) output(sessions, true);
     else {
       console.log('CONVERSATION ID\tTITLE');
@@ -584,9 +628,9 @@ export async function main(argv) {
   }
 
   if (subcommand === 'current') {
-    const id = currentSession(profile.path);
-    if (!id) throw new Error('current Doubao session was not found in the local session store');
-    const session = sessionWithTitle(profile.path, id);
+    const { currentId: id, sessions } = await sessionIndex(profile);
+    if (!id) throw new Error('current Doubao page is a draft or has no conversation; open a session first');
+    const session = sessions.find(item => item.id === id) || { id, title: null };
     if (json) output(session, true);
     else console.log(`${session.id}\t${session.title || ''}`);
     return;
@@ -602,7 +646,7 @@ export async function main(argv) {
       waitForReply: wait,
       mcps,
       ...isolation,
-    }), { expectJson, replySchema, wait });
+    }), { expectJson, replySchema }, options.schema);
     if (json) output(result, true);
     else {
       console.log(`created\t${result.conversationId || 'draft'}`);
@@ -643,7 +687,7 @@ export async function main(argv) {
   if (subcommand === 'send') {
     const id = validateId(operand);
     const message = args.slice(3).join(' ');
-    const result = validateReplyOption(await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning, mcps, ...isolation }), { expectJson, replySchema, wait });
+    const result = validateReplyOption(await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning, mcps, ...isolation }), { expectJson, replySchema }, options.schema);
     if (json) output(result, true);
     else {
       console.log(`sent\t${result.sent.text}`);
