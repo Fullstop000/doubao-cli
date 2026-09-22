@@ -22,6 +22,7 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
   Object.assign(process.env, {
     DOUBAO_APP: path.join(directory, 'Absent.app'),
     DOUBAO_DATA_DIR: directory,
+    DOUBAO_CLI_CONFIG_DIR: directory,
     DOUBAO_CLI_DISABLE_AUTO_UPDATE: '1',
     DOUBAO_CDP_ENDPOINT: 'http://127.0.0.1:19925',
   });
@@ -54,6 +55,8 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
   requireModule.e = async () => {};
   const context = vm.createContext({
     URL,
+    localStorage: { getItem: () => "test-user" },
+    AbortSignal,
     document: { querySelector: () => ({}) },
     performance: { getEntriesByType: () => [{ name: 'https://www.doubao.com/im/chain/recent_conv?aid=582478&device_id=test-device' }] },
     crypto, AbortController, TextDecoder, setTimeout, clearTimeout,
@@ -67,10 +70,14 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
       },
     },
     fetch: async (url, options) => {
+      if (url.includes('/conversation/batch_get')) return Response.json({ downlink_body: { batch_get_conv_info_downlink_body: { conversation_info_list: [{ conversation_id: conversationId, messages: [
+        { user_type: 1, message_id: '56322687642882050', index_in_conv: '1' },
+        { user_type: 2, message_id: '56322687642882051', index_in_conv: '2', bot_reply_message_id: '56322687642882050', ext: { is_finish: '1' }, content_block: [{block_type:10000,content:{text_block:{text:'pong'}}}] },
+      ] }] } } });
       assert.match(url, /\/chat\/completion\?/u);
       requests.push(JSON.parse(options.body));
       return new Response(
-        `event: SSE_ACK\ndata: ${JSON.stringify({ ack_client_meta: { conversation_id: conversationId } })}\n\n`
+        `event: SSE_ACK\ndata: ${JSON.stringify({ ack_client_meta: { conversation_id: conversationId }, query_list: [{ question_id: '56322687642882050' }] })}\n\n`
         + 'event: SSE_REPLY_END\ndata: {"end_type":3}\n\n',
       );
     },
@@ -83,6 +90,7 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
   });
   t.mock.method(CdpClient.prototype, 'connect', async function () { return this; });
   t.mock.method(CdpClient.prototype, 'close', () => {});
+  t.mock.method(CdpClient.prototype, 'send', async () => ({}));
   t.mock.method(CdpClient.prototype, 'evaluate', (expression) => vm.runInContext(expression, context));
   t.mock.method(console, 'log', (value) => output.push(JSON.parse(value)));
 

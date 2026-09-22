@@ -136,3 +136,11 @@ test('parses the mcp register options', () => {
   assert.throws(() => parseOptions(['mcp', 'register', 'x', '--env', 'NOEQUALS']), /requires a KEY=VALUE pair/u);
   assert.throws(() => parseOptions(['mcp', 'register', 'x', '--command']), /requires an executable path/u);
 });
+
+test('validates run targeting and resumable reply checks before calling the app', () => {
+ const run='56325877314422786';
+ for (const action of ['status','wait','stop']) assert.equal(parseOptions(['sessions',action,'38443335508942082','--run',run]).runId,run);
+ assert.throws(()=>parseOptions(['sessions','send','38443335508942082','hi','--run',run]),/--run requires/);
+ assert.throws(()=>parseOptions(['sessions','wait','38443335508942082','--run','bad']),/numeric run id/);
+ assert.equal(parseOptions(['sessions','wait','38443335508942082','--expect-json']).expectJson,true);
+});

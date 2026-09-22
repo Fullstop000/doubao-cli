@@ -112,13 +112,51 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
   };
 }
 
-// SSE stream reducer. Injected into the renderer via Function#toString, so it
-// must not reference anything outside its own scope. Mutates state and returns
-// 'stop' when the stream should be terminated early.
+// Injected functions must not reference anything outside their own scope.
+// Retain control blocks needed before IM has persisted the live stream.
+export function updateLiveControls(state, event, data) {
+  state.liveMessages ||= [];
+  const changes = event === 'STREAM_MSG_NOTIFY'
+    ? [{ meta: data.meta || {}, blocks: data.content?.content_block || [] }]
+    : event === 'STREAM_CHUNK'
+      ? (data.patch_op || []).map(op => ({ meta: { message_id: data.message_id }, blocks: op.patch_value?.content_block || [] })) : [];
+  for (const { meta, blocks } of changes) {
+    if (!meta.message_id) continue;
+    let message = state.liveMessages.find(item => item.message_id === String(meta.message_id));
+    if (!message) {
+      message = { ...meta, message_id: String(meta.message_id), user_type: 2, content_block: [] };
+      state.liveMessages.push(message);
+    }
+    Object.assign(message, meta);
+    for (const block of blocks) {
+      if (![10070, 10080, 10082, 10090].includes(block.block_type)) continue;
+      const previous = message.content_block.find(item => item.block_id === block.block_id);
+      if (previous) {
+        const content = { ...previous.content };
+        for (const [key, value] of Object.entries(block.content || {})) if (value) content[key] = { ...content[key], ...value };
+        Object.assign(previous, block, { content });
+      } else message.content_block.push(block);
+    }
+  }
+  return state.liveMessages.some(message => message.content_block.some(block => {
+    const ask = block.content?.interaction_ask_block, quick = block.content?.quick_reply_block;
+    return ask?.status === 1 && ask.quick_reply_scene !== 11 || quick?.status === 1 && [2,7,8,9,10,12].includes(quick.scene);
+  }));
+}
+
+// Mutates stream state and returns 'stop' at an acknowledged send or stream end.
 export function reduceStreamEvent(state, event, data, options) {
   if (event === 'SSE_ACK') {
     state.conversationId = data?.ack_client_meta?.conversation_id || state.conversationId;
+    state.runId = String(data?.query_list?.[0]?.question_id || state.runId || '');
     return options.waitForReply ? null : 'stop';
+  }
+  if (event === 'FETCH_STREAM' && data.fetch_type === 2 && data.fetch_key) {
+    state.handoffs ||= [];
+    if (!state.handoffs.some(task => task.taskId === String(data.fetch_key))) {
+      state.handoffs.push({ taskId: String(data.fetch_key), appendScene: data.append_scene, threadId: data.thread_id || '', seq: 0 });
+    }
+    return null;
   }
   if (event === 'STREAM_CHUNK') {
     for (const op of data.patch_op || []) {
@@ -136,7 +174,6 @@ export function reduceStreamEvent(state, event, data, options) {
   if (event === 'SSE_REPLY_END') {
     if (data.end_type === 1 && data.msg_finish_attr?.brief) {
       state.answer = data.msg_finish_attr.brief;
-      state.completed = true;
     }
     if (data.end_type === 3) {
       state.completed = true;
@@ -155,6 +192,7 @@ export function reduceStreamEvent(state, event, data, options) {
 // { conversationId, answer, thinking } or { error, detail }.
 const SEND_EXPRESSION = `(async () => {
   const reduceStreamEvent = %REDUCER%;
+  const updateLiveControls = %LIVE_CONTROLS%;
   const args = %ARGS%;
   const ac = new AbortController();
   const killer = setTimeout(() => ac.abort(), args.timeoutMs);
@@ -164,7 +202,11 @@ const SEND_EXPRESSION = `(async () => {
     thinking: '',
     completed: false,
     failed: null,
+    runId: args.runId || '', handoffs: [], liveMessages: [], localMessageId: args.localMessageId,
   };
+  let requestBody;
+  const receipt = () => ({ conversationId: state.conversationId, runId: state.runId, localMessageId: args.localMessageId, handoffs: state.handoffs, liveMessages: state.liveMessages, requestBody });
+  const checkpoint = () => { if (args.receiptBinding && window[args.receiptBinding]) window[args.receiptBinding](JSON.stringify(receipt())); };
   try {
     const localMessageId = args.localMessageId || crypto.randomUUID();
     const body = {
@@ -189,6 +231,7 @@ const SEND_EXPRESSION = `(async () => {
         agent_mode: 1,
         need_deep_think: args.model.ndt,
         unique_key: crypto.randomUUID(),
+        recovery_option: { is_recovery: false, req_create_time_sec: Math.floor(Date.now() / 1000), append_sse_event_scene: 0 },
         need_create_conversation: !args.conversationId,
         is_old_user: true,
         message_from: 0,
@@ -214,11 +257,13 @@ const SEND_EXPRESSION = `(async () => {
       body.ext = args.ext;
       body.user_context = [];
     }
+    requestBody = args.resumeRequest || body;
+    if (args.resumeRequest) requestBody.option.recovery_option.is_recovery = true;
     const resp = await fetch(args.url, {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
       signal: ac.signal,
     });
     if (!resp.ok) return { error: resp.status, detail: (await resp.text()).slice(0, 300) };
@@ -246,7 +291,16 @@ const SEND_EXPRESSION = `(async () => {
           trace.push({ event, data: raw.slice(0, 600) });
           if (trace.length > 80) trace.shift();
         }
-        if (reduceStreamEvent(state, event, data, args) === 'stop') break outer;
+        const controlsBefore = JSON.stringify(state.liveMessages);
+        const waitingInput = updateLiveControls(state, event, data);
+        if (args.runId && event === 'SSE_ACK' && String(data.query_list?.[0]?.question_id || args.runId) !== args.runId) {
+          state.failed = { error: 'run_mismatch', detail: 'Recovery returned a different run id; inspect the session' };
+          break outer;
+        }
+        const signal = reduceStreamEvent(state, event, data, args);
+        if (event === 'SSE_ACK' || event === 'FETCH_STREAM' || controlsBefore !== JSON.stringify(state.liveMessages)) checkpoint();
+        if (waitingInput) { state.waitingInput = true; break outer; }
+        if (signal === 'stop') break outer;
         // A provisioned sandbox starts out bound to the local conversation
         // id; once the server assigns the real id, bind it or local tool
         // calls fail with sandbox_profile_conversation_id_missing.
@@ -290,27 +344,27 @@ const SEND_EXPRESSION = `(async () => {
       }
     }
     try { reader.cancel(); } catch {}
-    if (state.failed) return { conversationId: state.conversationId, ...state.failed, ...(args.debug ? { trace } : {}) };
-    if (args.waitForReply && !state.completed) {
+    if (state.failed) return { ...receipt(), ...state.failed, ...(args.debug ? { trace } : {}) };
+    if (args.waitForReply && !state.completed && !state.waitingInput) {
       return {
         error: 'incomplete_stream',
         detail: 'stream ended without SSE_REPLY_END after ' + state.answer.length + ' answer chars',
         answer: state.answer,
-        conversationId: state.conversationId,
+        ...receipt(),
         ...(args.debug ? { trace } : {}),
       };
     }
-    return { conversationId: state.conversationId, answer: state.answer, thinking: state.thinking, ...(args.debug ? { trace } : {}) };
+    return { ...receipt(), completed: state.completed, waitingInput: state.waitingInput, answer: state.answer, thinking: state.thinking, ...(args.debug ? { trace } : {}) };
   } catch (error) {
     if (ac.signal.aborted) {
       return {
         error: 'timeout',
         detail: 'no completion within ' + args.timeoutMs + ' ms',
-        conversationId: state.conversationId,
+        ...receipt(),
         answer: state.answer,
       };
     }
-    return { error: 'exception', detail: String(error?.message || error), conversationId: state.conversationId };
+    return { error: 'exception', detail: String(error?.message || error), ...receipt() };
   } finally {
     clearTimeout(killer);
   }
@@ -353,7 +407,7 @@ const MODIFY_EXPRESSION = `(async () => {
 
 function buildExpression(template, args) {
   return template
-    .replace('%REDUCER%', reduceStreamEvent.toString())
+    .replace('%REDUCER%', reduceStreamEvent.toString()).replace('%LIVE_CONTROLS%', updateLiveControls.toString())
     .replace('%ARGS%', JSON.stringify(args));
 }
 
@@ -383,33 +437,55 @@ export function defaultWorkspace() {
   return `${HOME}/${currentApp().name}/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt }) {
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt, onReceipt, resumeRequest, runId }) {
   const runtime = await runtimeParameters(client);
+  localMessageId ||= crypto.randomUUID();
+  const receiptBinding = client.subscribe && onReceipt ? '__doubaoReceipt_' + crypto.randomUUID().replaceAll('-', '') : null;
+  let unsubscribe, checkpointError;
+  let lastReceipt = { conversationId, localMessageId };
+  if (receiptBinding) {
+    await client.send('Runtime.addBinding', { name: receiptBinding });
+    unsubscribe = client.subscribe('Runtime.bindingCalled', ({ name, payload }) => {
+      if (name !== receiptBinding) return;
+      try { lastReceipt = JSON.parse(payload); onReceipt(lastReceipt); }
+      catch (error) { checkpointError = error; }
+    });
+  }
   const createNew = !conversationId;
   const expression = buildExpression(SEND_EXPRESSION, {
+    receiptBinding, resumeRequest, runId,
     url: `${CHAT_URL}?${runtime.query}`,
     botId: BOT_ID,
     conversationId: conversationId || null,
     message,
     model,
     reasoningEffort: reasoningEffort || null,
-    timeoutMs: Math.max(10_000, timeoutMs || 120_000),
+    timeoutMs: Math.max(1, timeoutMs || 120_000),
     waitForReply,
     localConversationId: localConversationId || null,
     localMessageId: localMessageId || null,
     sandboxId: sandboxId || null,
     debug: Boolean(debug),
-    ext: (createNew || withExt)
+    ext: !resumeRequest && (createNew || withExt)
       ? conversationExt(model, localMessageId || '%LOCAL_MESSAGE_ID%',
         workspace || defaultWorkspace(),
         { clientEnvId: runtime.clientEnvId, deviceId: runtime.params.device_id, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
       : null,
   });
-  const result = await evaluateWithWatchdog(client, expression, Math.max(10_000, timeoutMs || 120_000) + 30_000);
+  let result;
+  try { result = await evaluateWithWatchdog(client, expression, Math.max(10_000, timeoutMs || 120_000) + 30_000); }
+  catch (error) { error.receipt = lastReceipt; throw error; }
+  finally {
+    unsubscribe?.();
+    if (receiptBinding) await client.send('Runtime.removeBinding', { name: receiptBinding }).catch(() => {});
+  }
+  if (checkpointError) { checkpointError.receipt = result || lastReceipt; throw checkpointError; }
+  if (result?.runId) onReceipt?.(result);
   if (!result) throw new Error('Doubao chat completion returned no result');
   if (result.error) {
     const error = new Error(`Doubao chat completion failed: ${result.error} ${result.detail || ''}`.trim());
     error.code = result.error;
+    error.receipt = result;
     if (result.conversationId) error.conversationId = result.conversationId;
     if (result.answer) error.partialAnswer = result.answer;
     throw error;

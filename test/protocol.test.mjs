@@ -47,7 +47,7 @@ test('accumulates answer and thinking blocks from STREAM_CHUNK', () => {
   assert.equal(state.completed, false);
 });
 
-test('SSE_REPLY_END end_type 1 replaces the answer with the brief and completes', () => {
+test('SSE_REPLY_END end_type 1 updates message text without completing the reply', () => {
   const { state, options } = streamState();
   state.answer = 'partial';
 
@@ -58,7 +58,7 @@ test('SSE_REPLY_END end_type 1 replaces the answer with the brief and completes'
 
   assert.equal(signal, null);
   assert.equal(state.answer, '最终回复');
-  assert.equal(state.completed, true);
+  assert.equal(state.completed, false);
 });
 
 test('SSE_REPLY_END end_type 3 completes and stops the stream', () => {

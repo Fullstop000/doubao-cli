@@ -40,7 +40,9 @@ doubao sessions open 38439138239851266
 doubao sessions read 38439138239851266 --limit 5
 doubao sessions send 38439138239851266 "hello"
 doubao sessions send 38439138239851266 "hello" --wait
-doubao sessions stop 38439138239851266
+doubao sessions status 38439138239851266 --run 56325877314422786
+doubao sessions wait 38439138239851266 --run 56325877314422786 --timeout 600
+doubao sessions stop 38439138239851266 --run 56325877314422786
 doubao sessions send 38439138239851266 "compare these files" --attach ./one.pdf --attach ./two.pdf --wait
 doubao models
 doubao model
@@ -76,9 +78,30 @@ doubao cdp launch
 
 If Doubao is already running without CDP, the command asks for confirmation before quitting it and relaunching with the debugging port enabled. Scripts and `--json` mode never prompt; pass `doubao cdp launch --yes` to confirm the restart explicitly. The command returns only after both the CDP endpoint and authenticated chat renderer are ready. For Work, the equivalent manual sequence is to quit it completely and run `open -a /Applications/DoubaoWork.app --args --remote-debugging-port=9226`. Regular Doubao uses `/Applications/Doubao.app` and port `9225`.
 
-Set `DOUBAO_CDP_ENDPOINT` if using another port. `sessions send --wait` waits for and returns the completed assistant reply; a reply stream that ends without Doubao's completion event, or a reply that does not finish within `--timeout`, is reported as an error (with the partial text attached) rather than returned as success, and the CLI makes a best-effort attempt to stop the server-side generation afterwards. `sessions stop` cancels an in-flight generation explicitly.
+Set `DOUBAO_CDP_ENDPOINT` if using another port.
 
-`--expect-json` fails the command (exit code 1, `replyValid: false`) when the waited reply is not valid JSON; `--reply-schema <path>` additionally checks it against a JSON schema subset (`type`, `required`, `properties`, `enum`, `items`). Both require a message and `--wait`. Invalid options or an unreadable/malformed schema fail before sending.
+### Task completion and recovery
+
+Requires CLI 0.11.0 or newer.
+
+`create` and `send` return a `runId` for the accepted user message. `--wait` follows that turn's organizer and subagents, then returns the final main reply. Text, attachment and MCP turns use the same result: `status`, `reply`, `progress`, `artifacts`, `tasks` counts, and `pending` questions or approval controls. `reply` is only populated on success; progress is not a final answer.
+
+```bash
+doubao sessions create "Compare these approaches using two subagents" --json
+# Use the returned conversationId and runId.
+doubao sessions status <conversation-id> --run <run-id> --json
+doubao sessions wait <conversation-id> --run <run-id> --timeout 600 --json
+doubao sessions stop <conversation-id> --run <run-id> --json
+```
+
+- `status` reads the current state; `wait` can run in a new CLI process. Both return `completed`, `running`, `waiting_input`, `failed`, `cancelled`, or `unknown`. Without `--run`, the command selects the latest submitted turn once.
+- Timeout defaults to 120 seconds and **does not cancel the task**. A timeout or unavailable connection exits nonzero with the known IDs. Continue with `sessions wait`; do not resend a request that may already have used a tool.
+- `waiting_input` returns questions/approval choices and exits nonzero from a waiting command. Respond in Doubao, then wait again. The CLI does not submit approvals.
+- `stop` targets the specified turn and its linked task tree, then reads back the states. `stopped:true` means no tracked task is running. A cancellation request without complete confirmation returns `stopped:false` and exits nonzero. Cancelling a task does not undo completed tool effects.
+- `tasks` reflects server thread states. Doubao can mark interrupted subthreads completed; the CLI preserves its confirmed cancellation so the overall turn remains `cancelled`.
+- Recovery receipts are scoped to app, active profile and account under `DOUBAO_CLI_CONFIG_DIR/turns` (default: `~/Library/Application Support/doubao-cli/turns`). Files have mode 0600 and contain request content, control blocks and stream cursors. Keep them to resume accepted requests; they contain no copied cookies or request signatures.
+
+`--expect-json` fails the command (exit code 1, `replyValid: false`) when the final reply is not valid JSON; `--reply-schema <path>` also checks `type`, `required`, `properties`, `enum` and `items`. Use them on `create`/`send` with a message and `--wait`, or on `sessions wait`. Invalid options or schemas fail before sending.
 
 `--workspace <path>` sets the agent workspace instead of `~/DoubaoWork/chats/<date>` (regular Doubao: `~/Doubao/chats/<date>`), and `--no-skills` omits default local skill paths. These apply to new conversations and every MCP turn; ordinary follow-ups do not resend them. Agent mode stays enabled.
 
@@ -176,7 +199,7 @@ CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normal
 - Opening a session targets the selected app and its registered `doubaowork://` or `doubao://` deep-link router.
 - Sending and creating sessions issue `chat/completion` requests directly inside the authenticated renderer, where the app's own request-signing hook attaches its risk-control parameters; the reply is parsed from the SSE event stream rather than scraped from the DOM.
 - Model choices and request parameters come from the selected app's live menu. Existing-session model changes use `im/conversation/modify` and verify `batch_get`; draft changes use the menu.
-- Stopping uses `im/message/break_stream_msg` and verifies the latest server message, including when the page still shows an older turn.
+- Task tracking follows async stream handoffs and reads the turn plus linked thread histories. Recovery uses the original request identity or async cursor. Stopping uses `im/message/break_stream_msg` and the app's task-termination API, then verifies parent and child states.
 - Attachments are transferred into the renderer through its drop-upload path; file contents and credentials are never printed.
 
 No hard-coded UI coordinates, image recognition, Cookie extraction, or private credential copying are involved.
@@ -184,6 +207,8 @@ No hard-coded UI coordinates, image recognition, Cookie extraction, or private c
 ## Limits
 
 Message send/create and model selection use Doubao's own HTTP APIs from inside the authenticated renderer; message read and attachment upload use stable DOM attributes over localhost CDP. A Doubao update can change either surface. The CLI treats image previews and file cards separately, waits for their respective upload completion signals, and verifies both the exact user message and sent attachment count before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
+
+Task history lookup currently covers the latest 100 main-conversation messages and up to 100 linked threads (20 pages per thread). Missing history or unknown states fail explicitly; they are not interpreted as completion. `sessions read` remains a view of rendered messages, not an export of all task histories. Full subagent listing and event streaming are not exposed. See [task lifecycle verification](docs/subagent-e2e.md).
 
 ## Development
 
