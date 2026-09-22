@@ -37,7 +37,9 @@ Pass `--json` to every data-returning command when another program consumes the 
 | Create session with first message | `doubao sessions create "..." --wait --json` |
 | Blank draft session | `doubao sessions create --json` (returns `conversationId: null`) |
 | Send to a session | `doubao sessions send <id> "..." --wait --json` |
-| Stop a generating reply | `doubao sessions stop <id> --json` |
+| Query a turn | `doubao sessions status <id> --run <run-id> --json` |
+| Resume waiting | `doubao sessions wait <id> --run <run-id> --timeout 600 --json` |
+| Stop a turn and its tasks | `doubao sessions stop <id> --run <run-id> --json` |
 | Register a local MCP server | `doubao mcp register <name> --command <path> [--arg X]... [--env K=V]... --json` |
 | List / remove MCP connectors | `doubao mcp list --json` / `doubao mcp remove <connector-id> --json` |
 | Send with MCP tools | add `--mcp <connector-id> --wait` to each `sessions create`/`sessions send` |
@@ -50,8 +52,12 @@ Pass `--json` to every data-returning command when another program consumes the 
 
 ## Behavior notes
 
-- Add `--wait` to block until the assistant reply completes and return it as `reply`; omit it to return once the user message is accepted (`reply: null`). Default timeout is 120 s; raise with `--timeout <seconds>`. A reply whose stream ends without Doubao's completion event fails with `incomplete_stream` instead of returning a partial answer; on `timeout`/`incomplete_stream` failures the CLI tries to stop the server-side generation, and the process exits non-zero. `sessions stop <id>` cancels an in-flight generation explicitly.
-- `--expect-json` (with a message and `--wait`) exits 1 when the reply is not valid JSON; `--reply-schema <path>` also checks `type`/`required`/`properties`/`enum`/`items`. Both mark the JSON output with `replyValid`; schema files are validated before sending.
+- Task tracking requires CLI 0.11.0 or newer. Check `doubao --version` and run `doubao update` before using `sessions status/wait` or `stop --run` on an older installation.
+- Save both `conversationId` and `runId` from each accepted send. `--wait` follows organizer/subagents and returns only the final main reply in `reply`; interim text is `progress`, produced files are `artifacts`, and `tasks` gives server thread counts. Omit `--wait` to return on acceptance with `reply: null` (MCP still requires `--wait`).
+- Timeout defaults to 120 s; set `--timeout <seconds>` when needed. Timeout or disconnection does not cancel work. Use `sessions wait <id> --run <run-id>` in a new process instead of resending; tools may already have executed. Keep the same app, account, profile and config directory for recovery receipts. Receipt files include request content and have mode 0600.
+- `waiting_input` includes `pending` questions or approval controls. Ask the user to respond in Doubao, then wait again; do not automatically choose or approve. Waiting commands exit nonzero for timeout, unknown state, waiting input, failure or cancellation. A `status` lookup itself exits zero when the lookup succeeds.
+- Explicit cancellation uses `sessions stop <id> --run <run-id>`. Confirm `stopped: true`; otherwise report unconfirmed cancellation. It does not undo tool effects. Without `--run`, status/wait/stop pin the latest submitted turn once; prefer the saved ID for automation. An already completed old turn can be queried/stopped without targeting a newer one.
+- `--expect-json` / `--reply-schema <path>` validate the final reply. Use them on create/send with a message and `--wait`, or on `sessions wait`. They mark `replyValid` and exit nonzero on invalid output. Pending/error states are not successful replies.
 - `--workspace <path>` sets the agent workspace; `--no-skills` omits default local skill paths. These apply to new conversations and MCP turns; ordinary follow-up messages do not resend them. Agent mode stays enabled; `--no-skills` is not a tool-permission sandbox.
 - Prefer `sessions create "first message"` over create-then-send: a conversation id exists only after the first message.
 - Ordinary session, model and MCP commands run in the background. Do not run `sessions open` before sending or reading; it uses a deep link and can briefly change focus. A missing chat page fails explicitly without opening a window. Launching or restarting the app with `cdp launch` may show its window.
@@ -112,5 +118,6 @@ Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `xhigh` (极
 - `Doubao CDP is unavailable` → use the CDP launch procedure above.
 - `Doubao connectors are not ready` → check the id with `mcp list` and the connector's local status in the app; list output alone does not prove READY.
 - `no Doubao chat page found` → CDP is up but no chat window exists. Ask the user to open a chat window in the selected app, then retry; do not silently run `sessions open` as recovery.
+- Missing requested turn in history → the lookup is limited to the latest 100 main-conversation messages; do not substitute a newer turn. Full child lists/event streaming are not CLI features yet.
 - Commands break after an app update → the app changed its DOM/API surface; run `doubao update check` for a fixed CLI release.
 - CDP is unauthenticated but bound to 127.0.0.1; quit and relaunch Doubao normally when automation is no longer needed.

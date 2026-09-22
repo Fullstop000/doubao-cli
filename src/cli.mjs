@@ -6,7 +6,7 @@ import { getDataDir, readProfiles, resolveProfile } from './storage.mjs';
 import { sessionIndex } from './sessions.mjs';
 import { cdpStatus, withChatClient } from './cdp.mjs';
 import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
-import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation } from './automation.mjs';
+import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation, taskStatus, waitConversation } from './automation.mjs';
 import { currentModel, listModels, selectModel } from './models.mjs';
 import {
   checkForUpdate,
@@ -31,7 +31,9 @@ const HELP = `Usage:
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
   doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
-  doubao sessions stop <conversation-id> [--json]
+  doubao sessions status <conversation-id> [--run <run-id>] [--json]
+  doubao sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions stop <conversation-id> [--run <run-id>] [--json]
   doubao mcp register <name> --command <path> [--arg <x>]... [--env K=V]... [--json]
   doubao mcp list [--json]
   doubao mcp remove <connector-id> [--json]
@@ -65,6 +67,7 @@ Environment:
 export function parseOptions(argv) {
   const args = [];
   let profile;
+  let runId;
   let app;
   let json = false;
   let yes = false;
@@ -93,6 +96,9 @@ export function parseOptions(argv) {
       yes = true;
     } else if (argv[index] === '--wait') {
       wait = true;
+    } else if (argv[index] === '--run') {
+      runId = argv[++index];
+      if (!/^\d{12,24}$/u.test(runId || '')) throw new Error('--run requires a numeric run id');
     } else if (argv[index] === '--app') {
       app = argv[++index];
       if (!['work', 'doubao'].includes(app)) throw new Error('--app requires work or doubao');
@@ -161,6 +167,7 @@ export function parseOptions(argv) {
       args.push(argv[index]);
     }
   }
+  if (runId && (args[0] !== 'sessions' || !['status', 'wait', 'stop'].includes(args[1]))) throw new Error('--run requires sessions status/wait/stop');
   if (permission !== undefined) {
     if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1]) || !mcps.length) {
       throw new Error('--permission requires sessions create/send with --mcp');
@@ -179,15 +186,15 @@ export function parseOptions(argv) {
     if (!wait) throw new Error('--mcp requires --wait so the local tool session stays connected');
   }
   if (expectJson || replySchema) {
-    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1])) {
-      throw new Error('--expect-json and --reply-schema require sessions create/send');
+    if (args[0] !== 'sessions' || !['create', 'send', 'wait'].includes(args[1])) {
+      throw new Error('--expect-json and --reply-schema require sessions create/send/wait');
     }
-    if (!wait) throw new Error('--expect-json and --reply-schema require --wait');
-    if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) {
+    if (!wait && args[1] !== 'wait') throw new Error('--expect-json and --reply-schema require --wait');
+    if (args[1] !== 'wait' && !args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) {
       throw new Error('--expect-json and --reply-schema require a message');
     }
   }
-  return { args, app, profile, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  return { args, app, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
 }
 
 function output(value, json) {
@@ -305,7 +312,7 @@ function loadReplySchema({ replySchema }) {
 }
 
 function validateReplyOption(result, { expectJson, replySchema }, schema) {
-  if (!expectJson && !replySchema) return result;
+  if (!expectJson && !replySchema || result.status && result.status !== 'completed') return result;
   const validation = validateReply(result.reply?.text || '', schema);
   if (!validation.ok) {
     for (const error of validation.errors || []) console.error(`doubao: reply validation failed: ${error}`);
@@ -322,16 +329,23 @@ export async function main(argv) {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
     const usesRenderer = ['models', 'model', 'mcp'].includes(command)
-      || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop'].includes(subcommand));
+      || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop', 'status', 'wait'].includes(subcommand));
     if (usesRenderer && app.profile !== readProfiles(app.dataDir).lastUsed) {
       throw new Error(`Profile ${app.profile} is not active in ${app.name}; switch profiles in the app before automating it`);
     }
   }
-  return withApp(app, () => run(options));
+  return withApp(app, async () => {
+    try { return await run(options); }
+    catch (error) {
+      if (!error.result) throw error;
+      output({ ...error.result, error: error.code || 'task_error', message: error.message }, options.json);
+      process.exitCode = 1;
+    }
+  });
 }
 
 async function run(options) {
-  const { args, profile: requestedProfile, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
+  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
   const isolation = { workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
@@ -417,6 +431,9 @@ async function run(options) {
       readMessages: cdp.available,
       sendMessages: cdp.available,
       stopGeneration: cdp.available,
+      taskStatus: cdp.available,
+      waitForTurn: cdp.available,
+      cancelTaskTree: cdp.available,
       mcpConnectors: cdp.available,
       uploadAttachments: cdp.available,
       selectModels: cdp.available,
@@ -437,6 +454,7 @@ async function run(options) {
       console.log(`messages read\t${capabilities.readMessages ? 'yes' : 'no'}`);
       console.log(`messages send\t${capabilities.sendMessages ? 'yes' : 'no'}`);
       console.log(`generation stop\t${capabilities.stopGeneration ? 'yes' : 'no'}`);
+      console.log(`sessions status/wait\t${capabilities.taskStatus ? 'yes' : 'no'}`);
       console.log(`mcp connectors\t${capabilities.mcpConnectors ? 'yes' : 'no'}`);
       console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
@@ -647,8 +665,10 @@ async function run(options) {
       mcps,
       ...isolation,
     }), { expectJson, replySchema }, options.schema);
+    if (result.status && result.status !== 'completed' && wait) process.exitCode = 1;
     if (json) output(result, true);
     else {
+      if (result.runId) console.log(`run\t${result.runId} (${result.status})`);
       console.log(`created\t${result.conversationId || 'draft'}`);
       if (result.model) console.log(`model\t${result.model}`);
       if (result.reasoning) console.log(`reasoning\t${result.reasoning}`);
@@ -675,9 +695,23 @@ async function run(options) {
     return;
   }
 
+  if (subcommand === 'status' || subcommand === 'wait') {
+    const id = validateId(operand);
+    const result = subcommand === 'status' ? await taskStatus(id, { runId })
+      : validateReplyOption(await waitConversation(id, { runId, timeoutMs }), { expectJson, replySchema }, options.schema);
+    if (json) output(result, true);
+    else {
+      console.log(`${result.runId}\t${result.status}`);
+      if (result.reply) console.log(result.reply.text);
+      for (const item of result.pending || []) console.log(`pending\t${JSON.stringify(item)}`);
+    }
+    if (subcommand === 'wait' && result.status !== 'completed') process.exitCode = 1;
+    return;
+  }
+
   if (subcommand === 'stop') {
     const id = validateId(operand);
-    const result = await stopConversation(id, { timeoutMs });
+    const result = await stopConversation(id, { timeoutMs, runId });
     if (json) output(result, true);
     else console.log(`stopped\t${result.stopped ? 'yes' : `no (${result.reason || 'unknown'})`}`);
     if (!result.stopped) process.exitCode = 1;
@@ -688,8 +722,10 @@ async function run(options) {
     const id = validateId(operand);
     const message = args.slice(3).join(' ');
     const result = validateReplyOption(await sendMessage(id, message, { attachments, waitForReply: wait, timeoutMs, model, reasoning, mcps, ...isolation }), { expectJson, replySchema }, options.schema);
+    if (result.status && result.status !== 'completed' && wait) process.exitCode = 1;
     if (json) output(result, true);
     else {
+      if (result.runId) console.log(`run\t${result.runId} (${result.status})`);
       console.log(`sent\t${result.sent.text}`);
       if (result.model) console.log(`model\t${result.model}`);
       if (result.reasoning) console.log(`reasoning\t${result.reasoning}`);

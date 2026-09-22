@@ -27,8 +27,7 @@ export function resolveApp(requested, env = process.env, exists = fs.existsSync)
 export function currentApp() { return context.getStore() || resolveApp(); }
 export function withApp(app, callback) { return context.run(app, callback); }
 
-export function agentWorkspace() {
-  const app = currentApp();
+export function activeProfile(app = currentApp()) {
   let profile = app.profile;
   if (!profile) {
     try {
@@ -36,7 +35,12 @@ export function agentWorkspace() {
       profile = state.profile?.last_used || Object.keys(state.profile?.info_cache || {})[0];
     } catch {}
   }
-  return path.join(app.dataDir, profile || 'Default', '.doubao', 'agent_mode', 'workspace');
+  return profile || 'Default';
+}
+
+export function agentWorkspace() {
+  const app = currentApp();
+  return path.join(app.dataDir, activeProfile(app), '.doubao', 'agent_mode', 'workspace');
 }
 
 export function isAppTarget(url, app = currentApp(), kind = 'chat') {

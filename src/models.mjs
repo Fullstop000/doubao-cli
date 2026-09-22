@@ -155,7 +155,7 @@ async function waitFor(client, expression, timeoutMs = 3000, errorMessage = 'Dou
 async function closeModelMenu(client, menuId) {
   await client.pressEscape();
   await waitFor(client, `(() => {
-    const trigger = document.querySelector(${JSON.stringify(MODEL_TRIGGER)});
+    const trigger = [...document.querySelectorAll(${JSON.stringify(MODEL_TRIGGER)})].find(item => item.getBoundingClientRect().width > 0 && item.getBoundingClientRect().height > 0);
     const controlledId = ${JSON.stringify(menuId || '')} || trigger?.getAttribute('aria-controls');
     const menu = controlledId ? document.getElementById(controlledId) : null;
     return trigger?.getAttribute('data-state') !== 'open'
@@ -166,7 +166,7 @@ async function closeModelMenu(client, menuId) {
 
 async function modelButtonState(client) {
   const state = await waitFor(client, `(() => {
-    const trigger = document.querySelector(${JSON.stringify(MODEL_TRIGGER)});
+    const trigger = [...document.querySelectorAll(${JSON.stringify(MODEL_TRIGGER)})].find(item => item.getBoundingClientRect().width > 0 && item.getBoundingClientRect().height > 0);
     const button = trigger?.querySelector(':scope > button');
     if (!button) return null;
     const lines = (button.innerText || button.textContent || '')
@@ -198,13 +198,13 @@ export async function currentModelFromClient(client) {
 
 async function openModelMenu(client) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    await waitFor(client, `Boolean(document.querySelector(${JSON.stringify(MODEL_TRIGGER)}))`,
+    await waitFor(client, `Boolean([...document.querySelectorAll(${JSON.stringify(MODEL_TRIGGER)})].find(item => item.getBoundingClientRect().width > 0 && item.getBoundingClientRect().height > 0))`,
       5000, 'Doubao model selector was not found');
     await closeModelMenu(client);
     await client.click(MODEL_TRIGGER);
     try {
       return await waitFor(client, `(() => {
-        const trigger = document.querySelector(${JSON.stringify(MODEL_TRIGGER)});
+        const trigger = [...document.querySelectorAll(${JSON.stringify(MODEL_TRIGGER)})].find(item => item.getBoundingClientRect().width > 0 && item.getBoundingClientRect().height > 0);
         const menuId = trigger?.getAttribute('aria-controls');
         const menu = menuId ? document.getElementById(menuId) : null;
         return menu?.getAttribute('data-state') === 'open' ? menuId : null;
@@ -298,7 +298,7 @@ export async function selectModelFromClient(client, value) {
     if (!marked) throw new Error(`Doubao model option "${name}" disappeared`);
     await client.click(`[data-doubao-cli-model-option="${marker}"]`);
     const selected = await waitFor(client, `(() => {
-      const trigger = document.querySelector(${JSON.stringify(MODEL_TRIGGER)});
+      const trigger = [...document.querySelectorAll(${JSON.stringify(MODEL_TRIGGER)})].find(item => item.getBoundingClientRect().width > 0 && item.getBoundingClientRect().height > 0);
       const button = trigger?.querySelector(':scope > button');
       const firstLine = (button?.innerText || button?.textContent || '').split('\\n')[0].trim();
       return firstLine === ${JSON.stringify(name)} ? true : null;

@@ -5,24 +5,10 @@ import { withChatClient } from './cdp.mjs';
 import { resolveModelFromClient, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
 import { sendWithConnectors } from './mcp.mjs';
 import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
-import { stopGeneration } from './sessions.mjs';
+import { refreshTurn, readTurn, waitTurn, stopTurn, receiptStore } from './turns.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
 const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
-const STOP_BUTTONS = '[data-testid="chat_input_local_break_button"], [data-testid="chat_input_end_button"]';
-
-const VISIBILITY_TEST = `((element) => {
-  const style = getComputedStyle(element);
-  const rect = element.getBoundingClientRect();
-  return style.display !== 'none'
-    && style.visibility !== 'hidden'
-    && Number(style.opacity) !== 0
-    && rect.width > 0
-    && rect.height > 0;
-})`;
-
-const GENERATING_EXPRESSION = `[...document.querySelectorAll(${JSON.stringify(STOP_BUTTONS)})].some(${VISIBILITY_TEST})`;
-
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -181,7 +167,7 @@ export function replyAfterLastUserMessage(messages, message) {
   const expected = normalizeMessageText(message);
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role !== 'user' || normalizeMessageText(messages[index].text) !== expected) continue;
-    return messages.slice(index + 1).find((item) => item.role === 'assistant' && item.text) || null;
+    return messages.slice(index + 1).findLast((item) => item.role === 'assistant' && item.text) || null;
   }
   return null;
 }
@@ -249,6 +235,30 @@ async function prepareComposer(client, options, timeoutMs) {
   return { selectedModel, attachments };
 }
 
+// Capture the app-generated local id before the composer sends. Matching the
+// exact request avoids attaching an upload wait to a concurrent/newer turn.
+async function clickAndIdentifyTurn(client, message) {
+  let localMessageId;
+  await client.send('Network.enable');
+  const unsubscribe = client.subscribe('Network.requestWillBeSent', ({ request }) => {
+    try {
+      if (new URL(request.url).pathname !== '/chat/completion' || !request.postData) return;
+      const body = JSON.parse(request.postData);
+      const sent = body.messages?.find(item => normalizeMessageText(
+        (item.content_block || []).map(block => block.content?.text_block?.text || '').join('\n'),
+      ) === normalizeMessageText(message));
+      if (sent?.local_message_id) localMessageId = sent.local_message_id;
+    } catch { /* Other app requests are not this send. */ }
+  });
+  try {
+    await client.click(SEND_BUTTON);
+    const deadline = Date.now() + 5000;
+    while (!localMessageId && Date.now() < deadline) await delay(50);
+    if (!localMessageId) throw new Error('The composer send could not be identified; inspect the session before retrying');
+    return localMessageId;
+  } finally { unsubscribe(); }
+}
+
 async function sendFromClient(client, requestedId, message, options, prepared) {
   const { selectedModel, attachments } = prepared;
   const timeoutMs = options.timeoutMs || 120_000;
@@ -283,7 +293,7 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
   }
   if (!ready) throw new Error('Doubao send button is unavailable');
   // Dispatch a native CDP click after the editor has committed its state.
-  await client.click(SEND_BUTTON);
+  const localMessageId = await clickAndIdentifyTurn(client, message);
 
   const deadline = Date.now() + timeoutMs;
   let messages = before;
@@ -308,55 +318,103 @@ async function sendFromClient(client, requestedId, message, options, prepared) {
     }
   }
 
-  const conversationId = requestedId || await waitForConversationId(client, Math.max(1, deadline - Date.now()));
+  let conversationId = requestedId;
+  if (!conversationId) {
+    try { conversationId = await waitForConversationId(client, Math.max(1, deadline - Date.now())); }
+    catch (error) {
+      error.result = { localMessageId, status: 'unknown', reply: null, sent };
+      error.message += '; acceptance could not be confirmed. Inspect the session before retrying';
+      throw error;
+    }
+  }
   const baseResult = {
     conversationId,
     ...(selectedModel ? { model: selectedModel.name } : {}),
     ...(attachments.length ? { attachments: publicAttachments(attachments) } : {}),
     sent,
   };
-  if (!waitForReply) return { ...baseResult, reply: null };
-
-  let stableText = '';
-  let stablePolls = 0;
-  while (Date.now() < deadline) {
-    messages = await readFromClient(client);
-    const reply = replyAfterLastUserMessage(messages, message);
-    const generating = await client.evaluate(GENERATING_EXPRESSION);
-    if (reply?.text && reply.text === stableText && !generating) stablePolls += 1;
-    else stablePolls = 0;
-    stableText = reply?.text || '';
-    if (reply && stablePolls >= 2) return { ...baseResult, reply };
-    await delay(500);
-  }
-  throw new Error(`Doubao reply did not complete within ${timeoutMs} ms`);
+  const store = await receiptStore(client);
+  const receipt = { conversationId, localMessageId };
+  let snapshot;
+  do {
+    try { snapshot = await readTurn(client, conversationId, { localMessageId, deadline }); break; }
+    catch (error) {
+      if (error.code !== 'turn_unavailable' || Date.now() >= deadline) {
+        error.result = { ...baseResult, localMessageId, status: 'unknown', reply: null };
+        throw error;
+      }
+      await delay(200);
+    }
+  } while (true);
+  receipt.runId = snapshot.result.runId;
+  store.save(receipt);
+  if (!waitForReply) return { ...baseResult, ...receipt, status: snapshot.result.status, reply: null };
+  const result = await waitTurn(client, conversationId, { receipt, deadline, onReceipt: r => store.save(r), loadReceipt: run => store.read(conversationId, run) });
+  return { ...baseResult, ...result };
 }
 
-// Stops an in-flight generation and confirms the latest server message has
-// finished or been interrupted. Best-effort cleanup: returns
-// { conversationId, stopped } instead of throwing when the page cannot be
-// reached or generation does not stop in time.
+// Explicitly stop one accepted turn and confirm all its known tasks are terminal.
 export async function stopConversation(id, options = {}) {
   const timeoutMs = options.timeoutMs || 15_000;
   try {
-    return await withChatClient(client => stopGeneration(client, id, timeoutMs));
+    return await withChatClient(async client => {
+      const store = await receiptStore(client);
+      const runId = options.runId || (await readTurn(client, id)).result.runId;
+      return stopTurn(client, id, { timeoutMs, runId, receipt: store.read(id, runId), onReceipt: r => store.save(r) });
+    });
   } catch (error) {
-    return { conversationId: id, stopped: false, reason: error.message };
+    return { ...error.result, conversationId: id, ...(options.runId ? { runId: options.runId } : {}), stopped: false, reason: error.message };
   }
 }
 
-// After a stream failure the model may still be generating server-side;
-// cancel it through the UI and record the outcome on the error.
-async function stopAfterStreamFailure(error, id) {
-  if (error.code !== 'timeout' && error.code !== 'incomplete_stream') return;
-  const target = error.conversationId || id;
-  if (!target) return;
-  const stop = await stopConversation(target, { timeoutMs: 10_000 });
-  error.stopped = stop.stopped;
+// A receipt identifies the accepted turn even if the streaming connection is lost.
+async function sendTracked(client, request, options) {
+  const deadline = Date.now() + request.timeoutMs;
+  const store = await receiptStore(client);
+  let receipt = {};
+  const onReceipt = next => {
+    receipt = { ...receipt, conversationId: next.conversationId, runId: next.runId,
+      localMessageId: next.localMessageId, handoffs: next.handoffs || receipt.handoffs || [],
+      liveMessages: next.liveMessages || receipt.liveMessages || [], requestBody: next.requestBody || receipt.requestBody };
+    store.save(receipt);
+  };
+  let stream;
+  try {
+    stream = options.mcps?.length ? await sendWithConnectors(client, { ...request, onReceipt }, options.mcps)
+      : await sendChatCompletion(client, { ...request, onReceipt });
+    onReceipt(stream);
+  } catch (error) {
+    if (error.receipt?.runId) onReceipt(error.receipt);
+    if (!receipt.runId || !['timeout', 'incomplete_stream', 'exception'].includes(error.code)) {
+      error.result ||= { conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId || error.receipt?.localMessageId, status: 'unknown', reply: null };
+      throw error;
+    }
+  }
+  if (!receipt.conversationId || !receipt.runId) throw new Error('Doubao did not identify the accepted turn');
+  if (!request.waitForReply) return { conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
+  return waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) });
+}
+
+export async function taskStatus(id, options = {}) {
+  return withChatClient(async client => {
+    const store = await receiptStore(client);
+    const runId = options.runId || (await readTurn(client, id)).result.runId;
+    const receipt = store.read(id, runId);
+    return (await refreshTurn(client, id, { ...options, runId, receipt, onReceipt: r => store.save(r) })).result;
+  });
+}
+export async function waitConversation(id, options = {}) {
+  const deadline = Date.now() + (options.timeoutMs || 120000);
+  return withChatClient(async client => {
+    const store = await receiptStore(client);
+    const runId = options.runId || (await readTurn(client, id)).result.runId;
+    const receipt = store.read(id, runId);
+    return waitTurn(client, id, { ...options, runId, receipt, deadline, onReceipt: r => store.save(r), loadReceipt: run => store.read(id, run) });
+  });
 }
 
 // Protocol-direct send: no conversation navigation, no composer DOM, reply
-// completion is decided by the SSE stream itself. Attachments still require
+// completion is verified against the server's turn/task states. Attachments require
 // the legacy UI path (upload flow has not been ported).
 async function sendMessageViaProtocol(id, message, options, timeoutMs) {
   const waitForReply = options.waitForReply || false;
@@ -379,19 +437,17 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
         conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
         workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission,
       };
-      const result = options.mcps?.length
-        ? await sendWithConnectors(client, request, options.mcps)
-        : await sendChatCompletion(client, request);
+      const result = await sendTracked(client, request, options);
       return {
+        ...result,
         conversationId: result.conversationId,
         ...(modelName ? { model: modelName } : {}),
         ...(effort ? { reasoning: effort.name } : {}),
         sent: { role: 'user', text: message },
-        reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
+        reply: result.reply,
       };
     });
   } catch (error) {
-    await stopAfterStreamFailure(error, id);
     throw error;
   }
 }
@@ -453,21 +509,19 @@ export async function createConversation(message, options = {}) {
           conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
           workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission,
         };
-        const result = options.mcps?.length
-          ? await sendWithConnectors(client, request, options.mcps)
-          : await sendChatCompletion(client, request);
+        const result = await sendTracked(client, request, options);
         return {
+          ...result,
           conversationId: result.conversationId,
           created: true,
           persisted: true,
           ...(modelName ? { model: modelName } : {}),
           ...(effort ? { reasoning: effort.name } : {}),
           sent: { role: 'user', text: message },
-          reply: waitForReply ? { role: 'assistant', text: result.answer } : null,
+          reply: result.reply,
         };
       });
     } catch (error) {
-      await stopAfterStreamFailure(error, null);
       throw error;
     }
   }

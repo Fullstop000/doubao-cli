@@ -62,6 +62,7 @@ export class CdpClient {
     this.nextId = 1;
     this.pending = new Map();
     this.socket = null;
+    this.listeners = new Map();
   }
 
   async connect() {
@@ -72,7 +73,10 @@ export class CdpClient {
     });
     this.socket.addEventListener('message', (event) => {
       const message = JSON.parse(String(event.data));
-      if (!message.id) return;
+      if (!message.id) {
+        for (const callback of this.listeners.get(message.method) || []) callback(message.params);
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -95,6 +99,12 @@ export class CdpClient {
     return promise;
   }
 
+  subscribe(event, callback) {
+    const callbacks = this.listeners.get(event) || new Set();
+    callbacks.add(callback); this.listeners.set(event, callbacks);
+    return () => callbacks.delete(callback);
+  }
+
   async evaluate(expression) {
     const result = await this.send('Runtime.evaluate', {
       expression,
@@ -110,7 +120,10 @@ export class CdpClient {
 
   async click(selector) {
     const point = await this.evaluate(`(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
+      const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(item => {
+        const rect = item.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && getComputedStyle(item).visibility !== 'hidden';
+      });
       if (!element) throw new Error('click target was not found');
       element.scrollIntoView({ block: 'center', inline: 'center' });
       const rect = element.getBoundingClientRect();
