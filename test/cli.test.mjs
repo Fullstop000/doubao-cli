@@ -30,6 +30,7 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /doubao mcp register <name> --command <path>/u);
   assert.match(result.stdout, /--mcp <connector-id>/u);
   assert.match(result.stdout, /--permission <mode>/u);
+  assert.match(result.stdout, /doubao projects create <name> \[--workspace <path>\]/u);
 });
 
 test('parses repeated attachments and option terminators', () => {

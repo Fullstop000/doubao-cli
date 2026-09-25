@@ -17,6 +17,18 @@ Verified 2026-09-25 using Node 22.16.0, DoubaoWork 2.30.5 (9226) and Doubao 2.31
 
 Tests used a folderless existing project for association and isolated directories for local commands. Existing project folder bindings were not changed. Current-device folder filtering and sandbox folder propagation are covered by automated tests; no new folder binding was created in the app. No app restart or foreground activation was requested. Test messages remain in their synthetic sessions.
 
+## Project creation
+
+Verified 2026-09-26 with the same app versions:
+
+- `projects create` created a folderless project and a directory-bound project in DoubaoWork. Both were independently read back by ID.
+- With the Work installation probe hidden, automatic fallback created a project in Doubao and bound the standard app's device ID.
+- Sessions using only the returned project ID selected the bound workspace. Work run `56661491511120642` and fallback run `56658194250012930` wrote distinct marker files; server context and file contents were read back independently.
+- All three test projects were removed through the official project service and confirmed absent. Existing projects were preserved; the two synthetic test conversations remain. Both app URLs, composer text and attachment counts matched their pre-test state.
+- 104 automated tests passed, including name/directory validation, app-device binding, moved module discovery, unknown flags, uncertain creation without retry and failed readback preserving the created ID. Package installation and command help were checked in an isolated prefix.
+
+Evidence: `.e2e/context/project-create/` (gitignored). No publication or global installation was performed.
+
 Internal module locations changed between these app versions. Module lookup checks the observed export/source contract and reports missing or ambiguous matches; future app updates still require validation. Account permissions and enterprise-search relevance remain controlled by Doubao.
 
 Local raw evidence is in `.e2e/context/` (gitignored), including sanitized request/conversation readback, reply JSON, test logs and MCP execution logs.

@@ -19,7 +19,7 @@ import {
 } from './update.mjs';
 import { validateReply, validateSchema } from './validate.mjs';
 import { resolvePermission } from './permissions.mjs';
-import { listProjects, runtimeAvailability, validateTaskOptions } from './context.mjs';
+import { createProject, listProjects, projectCreationInput, runtimeAvailability, validateTaskOptions } from './context.mjs';
 import { currentApp, resolveApp, withApp } from './app.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -28,6 +28,7 @@ const HELP = `Usage:
   doubao profiles [--json]
   doubao runtimes [--json]
   doubao projects list [--json]
+  doubao projects create <name> [--workspace <path>] [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
   doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
@@ -69,6 +70,7 @@ Environment:
 
 export function parseOptions(argv) {
   const args = [];
+  const unknownFlags = [];
   let profile;
   let runId;
   let app;
@@ -179,9 +181,17 @@ export function parseOptions(argv) {
       index += 1;
     } else {
       args.push(argv[index]);
+      if (argv[index].startsWith('-')) unknownFlags.push(argv[index]);
     }
   }
   if (runId && (args[0] !== 'sessions' || !['status', 'wait', 'stop'].includes(args[1]))) throw new Error('--run requires sessions status/wait/stop');
+  if (args[0] === 'projects' && args[1] === 'create') {
+    if (unknownFlags.length) throw new Error(`Unknown projects create option: ${unknownFlags[0]}. Run "doubao help"; use -- before a name starting with -`);
+    projectCreationInput(args.slice(2).join(' '), workspace);
+    if (attachments.length || model || reasoning || wait || noSkills || commandPath || commandArgs.length || envPairs.length) {
+      throw new Error('projects create accepts a name and optional --workspace, --app, --profile, --json');
+    }
+  }
   validateTaskOptions({ runtime, mcps, workspace, permission, noSkills });
   if (runtime !== undefined || project !== undefined || enterpriseKnowledge) {
     if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1])) throw new Error('Task context options require sessions create/send');
@@ -493,6 +503,12 @@ async function run(options) {
     const result = await withChatClient(listProjects);
     if (json) output(result, true);
     else for (const item of result) console.log(`${item.id}\t${item.name}`);
+    return;
+  }
+  if (command === 'projects' && subcommand === 'create') {
+    const result = await withChatClient(client => createProject(client, { name: args.slice(2).join(' '), workspace }));
+    if (json) output(result, true);
+    else console.log(`${result.id}\t${result.name}`);
     return;
   }
 

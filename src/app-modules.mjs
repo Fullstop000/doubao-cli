@@ -7,6 +7,8 @@ export function appModule(req, kind) {
     attachmentBlock: { ids: [907216, 613922], match: s => s.includes('S:') && s.includes('transform:') && s.includes('BLOCK_ATTACHMENT') && s.includes('attachmentStates:') },
     skills: { ids: [359531, 609347], match: s => s.includes('Sf:') && s.includes('SI:') },
     sandbox: { ids: [987391, 876207], match: s => s.includes('H:') && s.includes('resolvedSharedFolders:') && s.includes('projectFolders:') && s.length < 1500 },
+    projects: { ids: [847257, 175126], match: s => s.includes('th:') && s.includes('IM_PROJECT_SERVICE_UNAVAILABLE') && s.includes('async createProject(') },
+    projectDevice: { ids: [193447, 670245, 82197, 554995], match: s => s.includes('U:') && s.includes('project_shared_get_device_error') && s.includes('getDeviceInfo()') && s.length < 1500 },
   };
   if (kind === 'communication') {
     if (!req.m) return req(763283);

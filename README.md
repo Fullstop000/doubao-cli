@@ -108,6 +108,8 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 ```bash
 doubao runtimes --json                 # Local runtime readiness
 doubao projects list --json            # Project IDs, names and device-bound folders
+doubao projects create "Demo" --json   # Create a project
+doubao projects create "Code" --workspace /path/to/repo --json  # Bind an existing local folder
 doubao sessions create "Analyze this" --runtime local --project "My project" --enterprise-knowledge --wait
 doubao sessions send <id> "Continue" --wait                # Inherit runtime and project
 doubao sessions send <id> "Search internal docs" --enterprise-knowledge --wait
@@ -115,7 +117,8 @@ doubao sessions send <id> "Run in the cloud" --runtime cloud --project none --wa
 ```
 
 - `--runtime local|cloud` selects 本地电脑 or the cloud. New sessions default to `local`; follow-ups inherit the server's setting. Local execution provisions a real sandbox and defaults to `FullAccess`. Use `--runtime local --permission AlwaysAsk` or `AskOnRisk` to request approvals.
-- `--project <id-or-exact-name>` selects an existing Doubao project; `none` clears it. Duplicate names require an ID. Local tasks receive only folders bound to the selected app's current device. A project without matching folders uses the session workspace. This does not add or change project folders.
+- `projects create <name>` returns the new project's `id`, `name`, `folders` and `operationId`. Optional `--workspace` binds an existing directory as the current app/device's primary folder. Names allow 40 units (Chinese characters count as 2). If creation or readback fails, check `projects list` before repeating the command; it does not retry creation automatically.
+- `--project <id-or-exact-name>` selects a Doubao project; `none` clears it. Use the ID returned by `projects create` directly in `sessions create/send`. Duplicate names require an ID. Local tasks receive only folders bound to the selected app's current device. A project without matching folders uses the session workspace. Selecting a project does not change its folders.
 - `--enterprise-knowledge` selects the official 企业知识 skill for this turn. Its ID is read from the live catalog; unavailable accounts fail before sending. Repeat it on each turn that should select the skill. It is not a permission boundary for tools already available to the model.
 - All three options work with `--attach` and require a message. Results include `context` with the submitted runtime, project, workspace and enterprise-knowledge selection. Ordinary sends preserve the current composer text and do not navigate or raise the app.
 - `--workspace <path>` overrides the local working directory; otherwise use the selected project's primary folder, the inherited workspace, or a new app chat directory. `--no-skills` omits default local skill paths; repeat it when needed. Cloud cannot use `--mcp`, `--workspace`, `--no-skills` or `--permission`. Agent mode remains enabled.

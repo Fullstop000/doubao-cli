@@ -33,6 +33,7 @@ Pass `--json` to every data-returning command when another program consumes the 
 | Task | Command |
 | --- | --- |
 | List runtimes / projects | `doubao runtimes --json` / `doubao projects list --json` |
+| Create a project | `doubao projects create "name" [--workspace /absolute/directory] --json` |
 | Select task context | add `--runtime local\|cloud --project <id-or-name> --enterprise-knowledge` to create/send |
 | List sessions | `doubao sessions list --json` |
 | Current session | `doubao sessions current --json` |
@@ -61,7 +62,8 @@ Pass `--json` to every data-returning command when another program consumes the 
 - Explicit cancellation uses `sessions stop <id> --run <run-id>`. Confirm `stopped: true`; otherwise report unconfirmed cancellation. It does not undo tool effects. Without `--run`, status/wait/stop pin the latest submitted turn once; prefer the saved ID for automation. An already completed old turn can be queried/stopped without targeting a newer one.
 - `--expect-json` / `--reply-schema <path>` validate the final reply. Use them on create/send with a message and `--wait`, or on `sessions wait`. They mark `replyValid` and exit nonzero on invalid output. Pending/error states are not successful replies.
 - `--runtime local|cloud` selects execution on 本地电脑 or in the cloud. New sessions default to local with `FullAccess`; follow-ups inherit the server's runtime/project. An unavailable local runtime fails explicitly. Use `--runtime local --permission AlwaysAsk` or `AskOnRisk` to request Doubao approvals.
-- `--project <id-or-exact-name>` selects an existing project; `--project none` clears it. Resolve IDs with `projects list`; duplicate names require an ID. Only current-device project folders are granted to local tasks; folders bound to another app/device are not reused. Project folder bindings are not edited.
+- `projects create <name>` returns `id`, `name`, `folders` and `operationId`. Optional `--workspace` must be an existing directory and binds it as this app/device's primary folder. Names allow 40 units (Chinese characters count as 2). Creation is not retried automatically; an error retains `operationId` and any known `id`. Check `projects list` before repeating an uncertain create.
+- `--project <id-or-exact-name>` selects a project; `--project none` clears it. Use the ID from `projects create` or `projects list`; duplicate names require an ID. Only current-device project folders are granted to local tasks; folders bound to another app/device are not reused. Selecting a project does not edit its folders.
 - `--enterprise-knowledge` selects the official 企业知识 skill using the live catalog. Repeat it on each desired turn. Missing account/runtime availability fails before sending. Omitting it does not revoke tools or knowledge already available to the model.
 - All three context flags require a message and support attachments. The result's `context` records the submitted choice. Cloud rejects MCP, workspace, local skill and permission flags.
 - `--workspace <path>` overrides the local working directory. Otherwise use the project's current-device primary folder, inherited session workspace, or a new app chat directory. `--no-skills` omits default local skill paths; repeat it when wanted. Agent mode remains enabled; this is not a tool-permission sandbox.

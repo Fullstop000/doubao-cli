@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 import { currentApp } from './app.mjs';
 import { defaultWorkspace, evaluateWithWatchdog, runtimeParameters } from './protocol.mjs';
@@ -40,6 +41,60 @@ export async function listProjects(client) {
     cursors.add(cursor);
   } while (true);
   return [...projects.values()];
+}
+
+export function projectCreationInput(name, workspace) {
+  name = name?.trim();
+  if (!name) throw new Error('projects create requires a project name');
+  // Matches the desktop project dialog: characters above U+00FF count twice.
+  if ([...name].reduce((n, c) => n + (c.codePointAt(0) > 255 ? 2 : 1), 0) > 40) {
+    throw new Error('Project name exceeds 40 units (Chinese characters count as 2)');
+  }
+  if (workspace !== undefined) {
+    workspace = path.resolve(workspace);
+    if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`);
+  }
+  return { name, workspace };
+}
+
+export async function createProject(client, options) {
+  const { name, workspace } = projectCreationInput(options.name, options.workspace);
+  const identity = await runtimeParameters(client);
+  const device = await evaluateWithWatchdog(client, `(async () => {
+    ${CONTEXT_BOOTSTRAP}
+    ${APP_MODULE_BOOTSTRAP}
+    if (typeof appModule(req, 'projects').th().createProject !== 'function') throw new Error('Doubao project creation is unavailable');
+    return ${Boolean(workspace)} ? await appModule(req, 'projectDevice').U() : null;
+  })()`, 10000);
+  if (workspace && (!device?.deviceId || String(device.deviceId) !== identity.params.device_id)) {
+    throw new Error('Doubao project device identity is unavailable or does not match the selected app');
+  }
+  const folders = workspace ? [{ folderName: path.basename(workspace) || workspace, workspace, isPrimary: true,
+    folderDeviceId: String(device.deviceId), ...(device.deviceName ? { folderDeviceName: device.deviceName } : {}) }] : undefined;
+  const operationId = randomUUID();
+  let id;
+  try {
+    // Use the same service as the creation dialog to keep app stores in sync.
+    // Never retry this mutation automatically: a disconnected call can succeed.
+    const result = await evaluateWithWatchdog(client, `(async () => {
+      ${CONTEXT_BOOTSTRAP}
+      ${APP_MODULE_BOOTSTRAP}
+      return appModule(req, 'projects').th().createProject(${JSON.stringify({ name, folders })}, ${JSON.stringify({ operationId })});
+    })()`, 30000);
+    if (!result?.projectId) throw new Error('Create project response has no project id');
+    id = String(result.projectId);
+    const project = (await listProjects(client)).find(p => p.id === id);
+    if (!project || project.name !== name || (workspace ? !project.folders.some(f =>
+      f.path === workspace && f.deviceId === String(device.deviceId) && f.primary) : project.folders.length)) {
+      throw new Error('Project name or folder binding could not be confirmed');
+    }
+    return { ...project, operationId };
+  } catch (cause) {
+    const error = new Error(`${id ? 'Project ' + id + ' was created, but readback failed' : 'Project creation could not be confirmed'}: ${cause.message}. Check "doubao projects list" before repeating create.`, { cause });
+    error.code = id ? 'project_readback_failed' : 'project_create_unconfirmed';
+    error.result = { id: id || null, name, operationId, status: id ? 'created' : 'unknown', verified: false };
+    throw error;
+  }
 }
 
 export function selectProject(projects, value) {
