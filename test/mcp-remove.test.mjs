@@ -20,6 +20,7 @@ function clientFor({ disconnectDeletes = false, listFails = false, disableFails 
     },
   };
   const context = vm.createContext({
+    crypto,
     setTimeout: (callback) => setTimeout(callback, 0),
     clearTimeout,
     document: { querySelector: () => ({}) },

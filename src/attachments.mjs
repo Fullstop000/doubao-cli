@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 
 const DROP_AREA = '[data-testid="file_drop_area"]';
 const ATTACHMENT_AREA = '[data-testid="attachment_area"]';
@@ -202,4 +203,43 @@ export async function uploadAttachmentsFromClient(client, filePaths, options = {
   } finally {
     await client.evaluate(`delete globalThis[${JSON.stringify(stateKey)}]`).catch(() => {});
   }
+}
+
+// Reuse the app's uploaded attachment records and official wire formatter.
+// Only read/remove the uploads staged by this invocation, never another draft.
+export async function uploadedAttachmentBlocks(client, files) {
+  return client.evaluate(`(async () => {
+    const req = await new Promise(resolve => window['@flow-web/desktop:stable'].push([['doubao_attachment_' + crypto.randomUUID()], {}, resolve]));
+    ${APP_MODULE_BOOTSTRAP}
+    const chatId = appModule(req, 'stores').Wp('chatViewCoreStore').getState().currentChatViewConfig?.chatId;
+    const map = appModule(req, 'stores').Wp('attachmentsStore').getState().attachmentsMap?.[chatId] || {};
+    const groups = Object.entries(map).filter(([, list]) => list?.length);
+    if (groups.length !== 1) throw new Error('Cannot identify the staged attachments safely');
+    const [group, attachments] = groups[0];
+    const expected = ${JSON.stringify(files.map(f => ({ name: f.name, size: f.size })))};
+    if (attachments.length !== expected.length || attachments.some((a, i) =>
+      (a.fileName || a.file?.name) !== expected[i].name || Number(a.file?.size ?? a.size) !== expected[i].size)) {
+      throw new Error('Composer attachments changed; nothing was sent');
+    }
+    const params = { chatId, skillType: group.slice(1) };
+    const api = appModule(req, 'attachments');
+    const states = api.getAttachmentStates(params), keys = api.getAttachmentsKeys(params);
+    if (keys.some(k => !k)) throw new Error('Attachment upload identifiers are not ready');
+    const block = appModule(req, 'attachmentBlock').S({ attachments, attachmentKeys: keys, attachmentStates: states });
+    if (block?.content?.attachment_block?.attachments?.length !== expected.length) throw new Error('The app could not encode every attachment');
+    return { blocks: [block], params, localKeys: attachments.map(a => a.localKey) };
+  })()`);
+}
+
+export async function clearUploadedAttachments(client, snapshot) {
+  await client.evaluate(`(async () => {
+    const req = await new Promise(resolve => window['@flow-web/desktop:stable'].push([['doubao_attachment_cleanup_' + crypto.randomUUID()], {}, resolve]));
+    ${APP_MODULE_BOOTSTRAP}
+    const snapshot = ${JSON.stringify(snapshot)};
+    const api = appModule(req, 'attachments'), actions = api.getAttachmentActions(snapshot.params);
+    for (const key of snapshot.localKeys.slice().reverse()) {
+      const index = api.getAttachments(snapshot.params).findIndex(a => a.localKey === key);
+      if (index >= 0) await actions.deleteAttachment({ index });
+    }
+  })()`);
 }

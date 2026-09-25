@@ -42,6 +42,8 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
   const conversationId = '38439138239851266';
   const connectorId = '369247068674';
   const requireModule = (id) => {
+    if (id === 338905) return { sandboxEnvironmentController: { query: async () => ({ isReady: true, status: 'READY' }) } };
+    if (id === 82197) return { U: async () => ({ deviceId: 'test-device', deviceName: 'Test' }) };
     if (id === 987391) return { H: async (args) => {
       prepared.push(args);
       return { sandboxId: `sandbox-${prepared.length}`, resolvedSharedFolders: [directory] };
@@ -63,7 +65,7 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
     window: {
       '@flow-web/desktop:stable': { push: ([, , callback]) => callback(requireModule) },
       neotix: {
-        taskMode: { runtime: { queryRuntimeInfo: async () => ({ env: { environmentId: 'test-env' } }) } },
+        taskMode: { runtime: { queryRuntimeInfo: async () => ({ status: 'READY', env: { environmentId: 'test-env' } }) } },
         mcp: { getAllTools: async () => ({ connectors: [{ connectorId, toolsJson: JSON.stringify([
           { name: 'ping', inputSchema: { type: 'object' } },
         ]) }] }) },

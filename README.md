@@ -103,7 +103,23 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 
 `--expect-json` fails the command (exit code 1, `replyValid: false`) when the final reply is not valid JSON; `--reply-schema <path>` also checks `type`, `required`, `properties`, `enum` and `items`. Use them on `create`/`send` with a message and `--wait`, or on `sessions wait`. Invalid options or schemas fail before sending.
 
-`--workspace <path>` sets the agent workspace instead of `~/DoubaoWork/chats/<date>` (regular Doubao: `~/Doubao/chats/<date>`), and `--no-skills` omits default local skill paths. These apply to new conversations and every MCP turn; ordinary follow-ups do not resend them. Agent mode stays enabled.
+### Execution environment, projects and enterprise knowledge
+
+```bash
+doubao runtimes --json                 # Local runtime readiness
+doubao projects list --json            # Project IDs, names and device-bound folders
+doubao sessions create "Analyze this" --runtime local --project "My project" --enterprise-knowledge --wait
+doubao sessions send <id> "Continue" --wait                # Inherit runtime and project
+doubao sessions send <id> "Search internal docs" --enterprise-knowledge --wait
+doubao sessions send <id> "Run in the cloud" --runtime cloud --project none --wait
+```
+
+- `--runtime local|cloud` selects 本地电脑 or the cloud. New sessions default to `local`; follow-ups inherit the server's setting. Local execution provisions a real sandbox and defaults to `FullAccess`. Use `--runtime local --permission AlwaysAsk` or `AskOnRisk` to request approvals.
+- `--project <id-or-exact-name>` selects an existing Doubao project; `none` clears it. Duplicate names require an ID. Local tasks receive only folders bound to the selected app's current device. A project without matching folders uses the session workspace. This does not add or change project folders.
+- `--enterprise-knowledge` selects the official 企业知识 skill for this turn. Its ID is read from the live catalog; unavailable accounts fail before sending. Repeat it on each turn that should select the skill. It is not a permission boundary for tools already available to the model.
+- All three options work with `--attach` and require a message. Results include `context` with the submitted runtime, project, workspace and enterprise-knowledge selection. Ordinary sends preserve the current composer text and do not navigate or raise the app.
+- `--workspace <path>` overrides the local working directory; otherwise use the selected project's primary folder, the inherited workspace, or a new app chat directory. `--no-skills` omits default local skill paths; repeat it when needed. Cloud cannot use `--mcp`, `--workspace`, `--no-skills` or `--permission`. Agent mode remains enabled.
+
 
 ### Local MCP connectors
 
@@ -119,7 +135,7 @@ doubao mcp remove 369247068674
 
 `mcp register` waits until the app's native MCP runtime reports the connector READY and prints its connector id. Passing `--mcp <connector-id>` (repeatable) to `sessions create`/`sessions send` snapshots the connector's tool catalog into the request and prepares the local sandbox route, so model-issued tool calls execute against the local server. It requires a message and `--wait`, and is incompatible with `--attach`. Connectors are account-level and visible in the Doubao settings UI. `mcp remove` disconnects, disables if still present, and confirms both account state and local tool removal. Connector support depends on undocumented app internals (verified against Doubao 2.29.12, 2.30.1, 2.30.2, and DoubaoWork 2.30.5) and may break when the app updates.
 
-`--permission <mode>` sets the local task's execution permission for a turn with MCP tools. It requires `--mcp` and a message. Names are case-insensitive; hyphenated forms such as `ask-on-risk` also work.
+`--permission <mode>` sets the local task's execution permission. It requires `--mcp` or `--runtime local`, and a message. Names are case-insensitive; hyphenated forms such as `ask-on-risk` also work.
 
 | Mode | Doubao policy |
 | --- | --- |
@@ -127,7 +143,7 @@ doubao mcp remove 369247068674
 | `AskOnRisk` | Ask when Doubao classifies an operation as risky |
 | `AlwaysAsk` | Use Doubao's always-ask policy |
 
-Repeat `--mcp`, `--permission`, and any `--workspace` on each turn; omitting `--permission` returns to `FullAccess`. Approval is handled by Doubao, so a turn may wait for action in the app. Doubao 2.30.1 dispatches `connector.call` separately from the native command approval path: these modes do not guarantee approval for every MCP call or restrict the server process itself. Use `--wait` for MCP turns so the session binding completes.
+Repeat `--mcp` and `--permission` on each turn; omitting `--permission` returns to `FullAccess`. Approval is handled by Doubao, so a turn may wait for action in the app. Doubao 2.30.1 dispatches `connector.call` separately from the native command approval path: these modes do not guarantee approval for every MCP call or restrict the server process itself. Use `--wait` for MCP turns so the session binding completes.
 
 ### Updates
 
@@ -152,13 +168,13 @@ When automatic updates are off, the CLI still checks npm at most once every 24 h
 
 ### New sessions and attachments
 
-`sessions create` opens a clean composer. A numeric conversation id does not exist until the first message is sent, so `sessions create` without a message returns `conversationId: null`. Create and persist a session in one command by providing its first message:
+`sessions create` without a message opens a clean composer. A numeric conversation id does not exist until the first message is sent, so `sessions create` without a message returns `conversationId: null`. Create and persist a session in one command by providing its first message:
 
 ```bash
 doubao sessions create "Start a new task" --model gpt-5.6-sol --wait --json
 ```
 
-Attach one or more local files by repeating `--attach`. The CLI validates each path, transfers the file through the authenticated renderer, waits for Doubao to finish uploading it, and only then sends the message:
+Attach one or more local files by repeating `--attach`. The CLI validates each path, transfers the file through the authenticated renderer, waits for Doubao to finish uploading it, then uses the app's attachment formatter to send through the same protocol as text:
 
 ```bash
 doubao sessions create "Summarize these" --attach ./brief.pdf --attach ./notes.md --wait
@@ -188,7 +204,7 @@ doubao model select pro --reasoning max
 doubao sessions send 38439138239851266 "hello" --model turbo --reasoning low --wait
 ```
 
-Levels are `low` (低), `medium` (中), `high` (高), `xhigh` (极高), and `max` (最高); display names and raw API values work too. `--reasoning` on `sessions send` requires `--model`, and it is not supported together with `--attach`.
+Levels are `low` (低), `medium` (中), `high` (高), `xhigh` (极高), and `max` (最高); display names and raw API values work too. `--reasoning` on `sessions send` requires `--model`.
 
 CDP is unauthenticated but bound to `127.0.0.1`. Quit and relaunch Doubao normally when automation is no longer needed.
 
@@ -206,7 +222,7 @@ No hard-coded UI coordinates, image recognition, Cookie extraction, or private c
 
 ## Limits
 
-Message send/create and model selection use Doubao's own HTTP APIs from inside the authenticated renderer; message read and attachment upload use stable DOM attributes over localhost CDP. A Doubao update can change either surface. The CLI treats image previews and file cards separately, waits for their respective upload completion signals, and verifies both the exact user message and sent attachment count before reporting success. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
+Message send/create and model selection use Doubao's own HTTP APIs from inside the authenticated renderer; message read and attachment upload use stable DOM attributes over localhost CDP. A Doubao update can change either surface. The CLI treats image previews and file cards separately, waits for their respective upload completion signals, and encodes the uploaded files with the app's attachment formatter before sending. The CLI currently accepts up to 50 attachments per command and files up to 100 MiB each; the Doubao service can impose stricter type or size limits.
 
 Task history lookup currently covers the latest 100 main-conversation messages and up to 100 linked threads (20 pages per thread). Missing history or unknown states fail explicitly; they are not interpreted as completion. `sessions read` remains a view of rendered messages, not an export of all task histories. Full subagent listing and event streaming are not exposed. See [task lifecycle verification](docs/subagent-e2e.md).
 
