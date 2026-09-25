@@ -105,6 +105,8 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 
 ### Execution environment, projects and enterprise knowledge
 
+Requires CLI 0.12.0 or newer.
+
 ```bash
 doubao runtimes --json                 # Local runtime readiness
 doubao projects list --json            # Project IDs, names and device-bound folders
