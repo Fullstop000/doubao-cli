@@ -1,3 +1,4 @@
+import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 import { currentApp, agentWorkspace } from './app.mjs';
 // Protocol-direct messaging: issues chat/completion requests inside the
 // authenticated Doubao renderer, where the webmssdk fetch hook transparently
@@ -6,6 +7,7 @@ import { currentApp, agentWorkspace } from './app.mjs';
 // composer automation and UI-state timing entirely.
 
 import os from 'node:os';
+import path from 'node:path';
 import { resolvePermission } from './permissions.mjs';
 
 const HOME = os.homedir();
@@ -63,6 +65,8 @@ export function modelProtocol(modelId) {
 export function conversationExt(model, localMessageId, workspace, options = {}) {
   const skillPaths = options.skillPaths || [`${HOME}/${currentApp().name}/skills`, `${HOME}/.agents/skills`];
   const sandboxAuthType = resolvePermission(options.permission);
+  const context = options.taskContext;
+  const cloud = context?.runtime === 'cloud';
   const gtp = {
     action: 0,
     thread_local_message_id: [localMessageId],
@@ -83,10 +87,10 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
     agent_task_param: {
       runtime_type: 2,
       sandbox_auth_type: sandboxAuthType,
-      device_name: os.hostname(),
-      folder_name: '',
+      device_name: context?.deviceName || os.hostname(),
+      folder_name: context ? path.basename(workspace || '') : '',
       local_app_id: currentApp().aid,
-      local_device_id: options.deviceId || '',
+      local_device_id: context?.deviceId || options.deviceId || '',
       workspace,
     },
     // MCP follow-ups apply this turn's permission even when the UI has stale state.
@@ -96,10 +100,34 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
       agents_md: { files: [], state: 2 },
       schema_version: 1,
       home_dir: HOME,
-      project_context: {},
+      project_context: context?.projectContext || {},
       localConnectors: options.localConnectors || [],
     }),
   };
+  if (context) {
+    if (cloud) {
+      gtp.runtime_type = 1;
+      gtp.agent_task_param = { runtime_type: 1 };
+      delete gtp.client_option;
+      gtp.task_input_json = JSON.stringify({ schema_version: 1, project_context: context.projectContext || {} });
+    }
+    const previous = context.previousAgentParam || {};
+    const next = gtp.agent_task_param;
+    const existing = Boolean(options.existingConversation);
+    gtp.agent_task_param_change = {
+      runtime_changed: existing && previous.runtime_type !== next.runtime_type,
+      device_changed: existing && ((previous.local_device_id || '') !== (next.local_device_id || '') || (previous.local_app_id || '') !== (next.local_app_id || '')),
+      sandbox_auth_type_changed: existing && previous.sandbox_auth_type !== next.sandbox_auth_type,
+    };
+    const projectChanged = existing && (context.previousProjectId || '') !== (context.projectId || '');
+    if (projectChanged) gtp.project_id = context.projectId || '';
+    gtp.need_modify_conversation = existing && (projectChanged || Object.keys(next).some(key => previous[key] !== next[key]));
+    if (context.enterpriseSkill) {
+      const skill = context.enterpriseSkill;
+      gtp.selected_skills = [skill.name];
+      gtp.skill_selections = [{ name: skill.name, skill_type: skill.type, skill_id: skill.externalId }];
+    }
+  }
   return {
     general_task_param: JSON.stringify(gtp),
     use_deep_think: String(model.ndt),
@@ -107,7 +135,7 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
     sub_conv_firstmet_type: '1',
     collection_id: '',
     is_finish: '1',
-    conversation_init_option: '{"need_ack_conversation":true}',
+    conversation_init_option: JSON.stringify({ need_ack_conversation: true, ...(context?.projectId ? { project_id: context.projectId } : {}) }),
     commerce_credit_config_enable: '0',
   };
 }
@@ -191,6 +219,7 @@ export function reduceStreamEvent(state, event, data, options) {
 // Evaluated inside the chat page. Returns
 // { conversationId, answer, thinking } or { error, detail }.
 const SEND_EXPRESSION = `(async () => {
+  ${APP_MODULE_BOOTSTRAP}
   const reduceStreamEvent = %REDUCER%;
   const updateLiveControls = %LIVE_CONTROLS%;
   const args = %ARGS%;
@@ -219,7 +248,7 @@ const SEND_EXPRESSION = `(async () => {
       },
       messages: [{
         local_message_id: localMessageId,
-        content_block: [{
+        content_block: [...(args.attachmentBlocks || []), {
           block_type: 10000,
           content: { text_block: { text: args.message } },
           block_id: crypto.randomUUID(),
@@ -236,9 +265,10 @@ const SEND_EXPRESSION = `(async () => {
         is_old_user: true,
         message_from: 0,
         sse_recv_event_options: { support_chunk_delta: true },
-        conversation_init_option: !args.conversationId ? { need_ack_conversation: true } : undefined,
+        conversation_init_option: !args.conversationId ? JSON.parse(args.ext.conversation_init_option) : undefined,
         conversation_init_ext: !args.conversationId
-          ? { model_item_key: args.model.key, reasoning_effort: args.reasoningEffort || '5', mode_id: '3' }
+          ? { model_item_key: args.model.key, reasoning_effort: args.reasoningEffort || '5', mode_id: '3',
+            ...(args.ext ? { agent_task_param: JSON.stringify(JSON.parse(args.ext.general_task_param).agent_task_param) } : {}) }
           : undefined,
         model_config: args.reasoningEffort
           ? { model_item_key: args.model.key, reasoning_effort: Number(args.reasoningEffort) }
@@ -255,6 +285,7 @@ const SEND_EXPRESSION = `(async () => {
       args.ext.general_task_param = args.ext.general_task_param.replace(
         '%LOCAL_MESSAGE_ID%', localMessageId);
       body.ext = args.ext;
+      body.option.general_task_param = JSON.parse(args.ext.general_task_param);
       body.user_context = [];
     }
     requestBody = args.resumeRequest || body;
@@ -299,8 +330,6 @@ const SEND_EXPRESSION = `(async () => {
         }
         const signal = reduceStreamEvent(state, event, data, args);
         if (event === 'SSE_ACK' || event === 'FETCH_STREAM' || controlsBefore !== JSON.stringify(state.liveMessages)) checkpoint();
-        if (waitingInput) { state.waitingInput = true; break outer; }
-        if (signal === 'stop') break outer;
         // A provisioned sandbox starts out bound to the local conversation
         // id; once the server assigns the real id, bind it or local tool
         // calls fail with sandbox_profile_conversation_id_missing.
@@ -315,13 +344,13 @@ const SEND_EXPRESSION = `(async () => {
                 // already-loaded chunk ids and the runtime callback would
                 // never fire again.
                 const req = await new Promise((res) => {
-                  window['@flow-web/desktop:stable'].push([['probe_rec_' + Date.now()], {}, (r) => res(r)]);
+                  window['@flow-web/desktop:stable'].push([['probe_rec_' + crypto.randomUUID()], {}, (r) => res(r)]);
                 });
                 step('require');
                 // Bind the sandbox route to the real conversation id. The bus
                 // invoke returns { ok }; module 410467's helper swallows it,
                 // so call the bus directly. instanceId means the sandboxId.
-                const comm = req(763283)._();
+                const comm = appModule(req, 'communication')._();
                 step('invoke');
                 const upd = await comm.invoke('cua.local_file.sandbox_instance.update_conversation', {
                   instanceId: args.sandboxId,
@@ -338,9 +367,12 @@ const SEND_EXPRESSION = `(async () => {
             ]);
             if (args.debug) trace.push({ event: 'RECONCILE_OK', data: state.conversationId });
           } catch (e) {
-            if (args.debug) trace.push({ event: 'RECONCILE_FAIL', data: String(e?.message || e) });
+            state.failed = { error: 'sandbox_reconcile_failed', detail: String(e?.message || e) + '; the turn was accepted; inspect it before retrying' };
+            break outer;
           }
         }
+        if (waitingInput) { state.waitingInput = true; break outer; }
+        if (signal === 'stop') break outer;
       }
     }
     try { reader.cancel(); } catch {}
@@ -433,11 +465,17 @@ export async function evaluateWithWatchdog(client, expression, timeoutMs) {
   }
 }
 
+export function skillMessage(message, skill) {
+  if (!skill) return message;
+  const mention = `[${skill.displayName}](skill://${skill.name}?type=${skill.type}&id=${skill.externalId})`;
+  return message.includes(mention) ? message : `${mention} ${message}`;
+}
+
 export function defaultWorkspace() {
   return `${HOME}/${currentApp().name}/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt, onReceipt, resumeRequest, runId }) {
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt, onReceipt, resumeRequest, runId, taskContext, attachmentBlocks }) {
   const runtime = await runtimeParameters(client);
   localMessageId ||= crypto.randomUUID();
   const receiptBinding = client.subscribe && onReceipt ? '__doubaoReceipt_' + crypto.randomUUID().replaceAll('-', '') : null;
@@ -457,7 +495,8 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     url: `${CHAT_URL}?${runtime.query}`,
     botId: BOT_ID,
     conversationId: conversationId || null,
-    message,
+    message: skillMessage(message, taskContext?.enterpriseSkill),
+    attachmentBlocks,
     model,
     reasoningEffort: reasoningEffort || null,
     timeoutMs: Math.max(1, timeoutMs || 120_000),
@@ -466,10 +505,10 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     localMessageId: localMessageId || null,
     sandboxId: sandboxId || null,
     debug: Boolean(debug),
-    ext: !resumeRequest && (createNew || withExt)
+    ext: !resumeRequest && (createNew || withExt || taskContext)
       ? conversationExt(model, localMessageId || '%LOCAL_MESSAGE_ID%',
         workspace || defaultWorkspace(),
-        { clientEnvId: runtime.clientEnvId, deviceId: runtime.params.device_id, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
+        { taskContext, existingConversation: !createNew, clientEnvId: runtime.clientEnvId, deviceId: runtime.params.device_id, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
       : null,
   });
   let result;

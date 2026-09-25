@@ -30,6 +30,7 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /doubao mcp register <name> --command <path>/u);
   assert.match(result.stdout, /--mcp <connector-id>/u);
   assert.match(result.stdout, /--permission <mode>/u);
+  assert.match(result.stdout, /doubao projects create <name> \[--workspace <path>\]/u);
 });
 
 test('parses repeated attachments and option terminators', () => {
@@ -116,8 +117,8 @@ test('rejects invalid or ignored MCP permissions before calling the app', () => 
   for (const value of ['', '--wait', 'typo', '0', '3']) {
     assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', '123456', '--permission', value]), /permission/u);
   }
-  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--permission', 'AlwaysAsk']), /requires sessions create\/send with --mcp/u);
-  assert.throws(() => parseOptions(['mcp', 'list', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires sessions create\/send with --mcp/u);
+  assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--permission', 'AlwaysAsk']), /requires sessions create\/send with --runtime local or --mcp/u);
+  assert.throws(() => parseOptions(['mcp', 'list', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires sessions create\/send with --runtime local or --mcp/u);
   assert.throws(() => parseOptions(['sessions', 'create', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires a message/u);
   assert.throws(() => parseOptions(['sessions', 'send', '38439138239851266', '--mcp', '123456', '--permission', 'AlwaysAsk']), /requires a message/u);
   assert.throws(() => parseOptions(['sessions', 'create', 'hi', '--mcp', '123456', '--permission', 'AlwaysAsk', '--attach', '/tmp/a']), /not supported with attachments/u);

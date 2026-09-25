@@ -1,14 +1,14 @@
 import { currentApp } from './app.mjs';
 import { spawn, spawnSync } from 'node:child_process';
-import { uploadAttachmentsFromClient } from './attachments.mjs';
+import { uploadAttachmentsFromClient, uploadedAttachmentBlocks, clearUploadedAttachments } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
 import { resolveModelFromClient, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
-import { sendWithConnectors } from './mcp.mjs';
+import { sendWithConnectors, prepareToolSandbox } from './mcp.mjs';
+import { resolveTaskContext, publicTaskContext, validateTaskOptions } from './context.mjs';
 import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
 import { refreshTurn, readTurn, waitTurn, stopTurn, receiptStore } from './turns.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
-const SEND_BUTTON = '[data-testid="chat_input_send_button"]';
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -119,16 +119,6 @@ async function waitForBlankConversation(client, timeoutMs) {
   throw new Error(`Doubao did not open a blank conversation within ${timeoutMs} ms`);
 }
 
-async function waitForConversationId(client, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const id = conversationIdFromUrl(await client.evaluate('location.href'));
-    if (id) return id;
-    await delay(100);
-  }
-  throw new Error(`Doubao did not assign a conversation id within ${timeoutMs} ms`);
-}
-
 const READ_MESSAGES_EXPRESSION = `(() => [...document.querySelectorAll('[data-testid="union_message"]')]
   .map((element) => {
     const role = element.querySelector('[data-testid="send_message"]')
@@ -235,124 +225,6 @@ async function prepareComposer(client, options, timeoutMs) {
   return { selectedModel, attachments };
 }
 
-// Capture the app-generated local id before the composer sends. Matching the
-// exact request avoids attaching an upload wait to a concurrent/newer turn.
-async function clickAndIdentifyTurn(client, message) {
-  let localMessageId;
-  await client.send('Network.enable');
-  const unsubscribe = client.subscribe('Network.requestWillBeSent', ({ request }) => {
-    try {
-      if (new URL(request.url).pathname !== '/chat/completion' || !request.postData) return;
-      const body = JSON.parse(request.postData);
-      const sent = body.messages?.find(item => normalizeMessageText(
-        (item.content_block || []).map(block => block.content?.text_block?.text || '').join('\n'),
-      ) === normalizeMessageText(message));
-      if (sent?.local_message_id) localMessageId = sent.local_message_id;
-    } catch { /* Other app requests are not this send. */ }
-  });
-  try {
-    await client.click(SEND_BUTTON);
-    const deadline = Date.now() + 5000;
-    while (!localMessageId && Date.now() < deadline) await delay(50);
-    if (!localMessageId) throw new Error('The composer send could not be identified; inspect the session before retrying');
-    return localMessageId;
-  } finally { unsubscribe(); }
-}
-
-async function sendFromClient(client, requestedId, message, options, prepared) {
-  const { selectedModel, attachments } = prepared;
-  const timeoutMs = options.timeoutMs || 120_000;
-  const waitForReply = options.waitForReply || false;
-  const before = await readFromClient(client);
-  const expectedMessage = normalizeMessageText(message);
-  const isSentUserMessage = (item) => item.role === 'user' && normalizeMessageText(item.text) === expectedMessage;
-  const matchingUserCountBefore = before.filter(isSentUserMessage).length;
-  const encodedMessage = JSON.stringify(message);
-
-  const draft = await client.evaluate(`(async () => {
-    const editor = document.querySelector(${JSON.stringify(CHAT_INPUT)});
-    if (!editor) throw new Error('Doubao message editor was not found');
-    editor.focus();
-    document.execCommand('selectAll', false, null);
-    document.execCommand('insertText', false, ${encodedMessage});
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    return (editor.innerText || '').replace(/\\n$/, '');
-  })()`);
-  if (normalizeMessageText(draft) !== expectedMessage) throw new Error('Doubao editor did not accept the complete message');
-
-  const readyDeadline = Date.now() + Math.min(5000, timeoutMs);
-  let ready = false;
-  while (Date.now() < readyDeadline) {
-    ready = await client.evaluate(`(() => {
-      const button = document.querySelector(${JSON.stringify(SEND_BUTTON)});
-      return Boolean(button && !button.disabled && button.getAttribute('aria-disabled') !== 'true'
-        && button.getAttribute('data-disabled') !== 'true' && button.getAttribute('data-loading') !== 'true');
-    })()`);
-    if (ready) break;
-    await delay(100);
-  }
-  if (!ready) throw new Error('Doubao send button is unavailable');
-  // Dispatch a native CDP click after the editor has committed its state.
-  const localMessageId = await clickAndIdentifyTurn(client, message);
-
-  const deadline = Date.now() + timeoutMs;
-  let messages = before;
-  while (Date.now() < deadline) {
-    messages = await readFromClient(client);
-    const matchingUserCount = messages.filter(isSentUserMessage).length;
-    if (matchingUserCount > matchingUserCountBefore) break;
-    await delay(250);
-  }
-  const matchingUserMessages = messages.filter(isSentUserMessage);
-  const matched = matchingUserMessages.length > matchingUserCountBefore ? matchingUserMessages.at(-1) : null;
-  const sent = matched ? { ...matched, text: message } : null;
-  if (!sent) throw new Error(`Doubao did not confirm a new sent message within ${timeoutMs} ms`);
-
-  if (attachments.length) {
-    while (Date.now() < deadline && !attachmentsConfirmed(before, messages, attachments)) {
-      await delay(250);
-      messages = await readFromClient(client);
-    }
-    if (!attachmentsConfirmed(before, messages, attachments)) {
-      throw new Error(`Doubao did not confirm the sent attachments within ${timeoutMs} ms`);
-    }
-  }
-
-  let conversationId = requestedId;
-  if (!conversationId) {
-    try { conversationId = await waitForConversationId(client, Math.max(1, deadline - Date.now())); }
-    catch (error) {
-      error.result = { localMessageId, status: 'unknown', reply: null, sent };
-      error.message += '; acceptance could not be confirmed. Inspect the session before retrying';
-      throw error;
-    }
-  }
-  const baseResult = {
-    conversationId,
-    ...(selectedModel ? { model: selectedModel.name } : {}),
-    ...(attachments.length ? { attachments: publicAttachments(attachments) } : {}),
-    sent,
-  };
-  const store = await receiptStore(client);
-  const receipt = { conversationId, localMessageId };
-  let snapshot;
-  do {
-    try { snapshot = await readTurn(client, conversationId, { localMessageId, deadline }); break; }
-    catch (error) {
-      if (error.code !== 'turn_unavailable' || Date.now() >= deadline) {
-        error.result = { ...baseResult, localMessageId, status: 'unknown', reply: null };
-        throw error;
-      }
-      await delay(200);
-    }
-  } while (true);
-  receipt.runId = snapshot.result.runId;
-  store.save(receipt);
-  if (!waitForReply) return { ...baseResult, ...receipt, status: snapshot.result.status, reply: null };
-  const result = await waitTurn(client, conversationId, { receipt, deadline, onReceipt: r => store.save(r), loadReceipt: run => store.read(conversationId, run) });
-  return { ...baseResult, ...result };
-}
-
 // Explicitly stop one accepted turn and confirm all its known tasks are terminal.
 export async function stopConversation(id, options = {}) {
   const timeoutMs = options.timeoutMs || 15_000;
@@ -370,6 +242,20 @@ export async function stopConversation(id, options = {}) {
 // A receipt identifies the accepted turn even if the streaming connection is lost.
 async function sendTracked(client, request, options) {
   const deadline = Date.now() + request.timeoutMs;
+  const resolved = await resolveTaskContext(client, request.conversationId, options);
+  Object.assign(request, resolved);
+  if (resolved.taskContext.runtime === 'local' && !options.mcps?.length) {
+    request.localMessageId = crypto.randomUUID();
+    request.localConversationId = `local_${Date.now()}`;
+    const sendContext = request.conversationId ? { conversationId: request.conversationId, localMessageId: request.localMessageId }
+      : { localConversationId: request.localConversationId, localMessageId: request.localMessageId };
+    const sandbox = await prepareToolSandbox(client, { workspace: resolved.workspace, sendContext,
+      permission: request.permission, createWorkspace: request.createWorkspace, projectFolders: resolved.taskContext.projectContext.folders?.map(f => f.path) || [] });
+    request.sandboxId = sandbox.sandboxId;
+    request.sharedFolderPath = sandbox.resolvedSharedFolders;
+  }
+  request.timeoutMs = remainingMilliseconds(deadline, request.timeoutMs);
+  const taskContext = publicTaskContext(resolved.taskContext, resolved.workspace);
   const store = await receiptStore(client);
   let receipt = {};
   const onReceipt = next => {
@@ -391,8 +277,8 @@ async function sendTracked(client, request, options) {
     }
   }
   if (!receipt.conversationId || !receipt.runId) throw new Error('Doubao did not identify the accepted turn');
-  if (!request.waitForReply) return { conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
-  return waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) });
+  if (!request.waitForReply) return { context: taskContext, conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
+  return { ...await waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) }), context: taskContext };
 }
 
 export async function taskStatus(id, options = {}) {
@@ -414,8 +300,8 @@ export async function waitConversation(id, options = {}) {
 }
 
 // Protocol-direct send: no conversation navigation, no composer DOM, reply
-// completion is verified against the server's turn/task states. Attachments require
-// the legacy UI path (upload flow has not been ported).
+// completion is verified against the server's turn/task states. Attachments
+// are uploaded through the composer and encoded with the app's formatter.
 async function sendMessageViaProtocol(id, message, options, timeoutMs) {
   const waitForReply = options.waitForReply || false;
   const effort = options.reasoning ? resolveReasoningEffort(options.reasoning) : null;
@@ -435,7 +321,7 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
       }
       const request = {
         conversationId: id, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
-        workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission,
+        workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission, attachmentBlocks: options.attachmentBlocks,
       };
       const result = await sendTracked(client, request, options);
       return {
@@ -459,10 +345,31 @@ export async function setConversationReasoning(id, value) {
   return withConversationPage(id, 15_000, (client) => setReasoningForConversation(client, id, value), { force: true });
 }
 
+async function withProtocolAttachments(options, send) {
+  const timeoutMs = options.timeoutMs || 120000, deadline = Date.now() + timeoutMs;
+  return withChatClient(async client => {
+    await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10000));
+    const files = await uploadAttachmentsFromClient(client, options.attachments, { timeoutMs: Math.min(remainingMilliseconds(deadline, timeoutMs), 60000) });
+    const snapshot = await uploadedAttachmentBlocks(client, files);
+    let result, sendError;
+    try {
+      result = await send({ ...options, timeoutMs: remainingMilliseconds(deadline, timeoutMs), attachments: [], attachmentBlocks: snapshot.blocks });
+    } catch (error) { sendError = error; }
+    try { await clearUploadedAttachments(client, snapshot); }
+    catch (error) {
+      // Cleanup must never hide an accepted turn or prompt an unsafe resend.
+      if (result) result.attachmentCleanupWarning = String(error.message || error);
+      if (sendError) sendError.attachmentCleanupWarning = String(error.message || error);
+    }
+    if (sendError) throw sendError;
+    return { ...result, attachments: publicAttachments(files) };
+  });
+}
+
 export async function sendMessage(id, message, options = {}) {
   const timeoutMs = options.timeoutMs || 120_000;
-  const deadline = Date.now() + timeoutMs;
   validateMessage(message);
+  validateTaskOptions(options);
 
   if (options.mcps?.length && options.attachments?.length) {
     throw new Error('--mcp is not supported with attachments');
@@ -470,16 +377,7 @@ export async function sendMessage(id, message, options = {}) {
   if (!options.attachments?.length) {
     return sendMessageViaProtocol(id, message, options, timeoutMs);
   }
-  if (options.reasoning) throw new Error('--reasoning is not supported with attachments');
-
-  return withConversationPage(id, Math.min(remainingMilliseconds(deadline, timeoutMs), 15_000), async (client) => {
-    await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
-    const prepared = await prepareComposer(client, options, remainingMilliseconds(deadline, timeoutMs));
-    return sendFromClient(client, id, message, {
-      ...options,
-      timeoutMs: remainingMilliseconds(deadline, timeoutMs),
-    }, prepared);
-  });
+  return withProtocolAttachments(options, staged => sendMessageViaProtocol(id, message, staged, staged.timeoutMs));
 }
 
 export async function createConversation(message, options = {}) {
@@ -487,6 +385,10 @@ export async function createConversation(message, options = {}) {
   const deadline = Date.now() + timeoutMs;
   const hasMessage = typeof message === 'string' && message.length > 0;
   if (hasMessage) validateMessage(message);
+  validateTaskOptions(options);
+  if (hasMessage && options.attachments?.length && !options.mcps?.length) {
+    return withProtocolAttachments(options, staged => createConversation(message, staged));
+  }
   if (options.mcps?.length && options.attachments?.length) {
     throw new Error('--mcp is not supported with attachments');
   }
@@ -507,7 +409,7 @@ export async function createConversation(message, options = {}) {
         }
         const request = {
           conversationId: null, message, model, reasoningEffort: effort?.effort, timeoutMs, waitForReply,
-          workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission,
+          workspace: options.workspace, skillPaths: options.skillPaths, permission: options.permission, attachmentBlocks: options.attachmentBlocks,
         };
         const result = await sendTracked(client, request, options);
         return {
@@ -526,7 +428,7 @@ export async function createConversation(message, options = {}) {
     }
   }
 
-  if (options.reasoning) throw new Error('--reasoning requires sending a message without attachments');
+  if (options.reasoning) throw new Error('--reasoning requires sending a message');
 
   return withChatClient(async (client, target) => {
     // Navigating to the bare chat route yields a blank conversation without
@@ -539,20 +441,13 @@ export async function createConversation(message, options = {}) {
       await waitForDropTarget(client, Math.min(remainingMilliseconds(deadline, timeoutMs), 10_000));
     }
     const prepared = await prepareComposer(client, options, remainingMilliseconds(deadline, timeoutMs));
-    if (!hasMessage) {
-      return {
-        conversationId: null,
-        created: true,
-        persisted: false,
-        route,
-        ...(prepared.selectedModel ? { model: prepared.selectedModel.name } : {}),
-        ...(prepared.attachments.length ? { attachments: publicAttachments(prepared.attachments) } : {}),
-      };
-    }
-    const result = await sendFromClient(client, null, message, {
-      ...options,
-      timeoutMs: remainingMilliseconds(deadline, timeoutMs),
-    }, prepared);
-    return { ...result, created: true, persisted: true };
+    return {
+      conversationId: null,
+      created: true,
+      persisted: false,
+      route,
+      ...(prepared.selectedModel ? { model: prepared.selectedModel.name } : {}),
+      ...(prepared.attachments.length ? { attachments: publicAttachments(prepared.attachments) } : {}),
+    };
   });
 }

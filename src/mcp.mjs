@@ -1,3 +1,4 @@
+import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 import { currentApp, agentWorkspace } from './app.mjs';
 // Local MCP connector support: registers stdio personal connectors through
 // the app's own API client, waits for the native MCP runtime to spawn them,
@@ -6,6 +7,7 @@ import { currentApp, agentWorkspace } from './app.mjs';
 // docs in README. All page-side code runs inside the authenticated renderer
 // (or background page) over CDP.
 
+import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { withBackgroundClient } from './cdp.mjs';
 import { defaultWorkspace, evaluateWithWatchdog, sendChatCompletion } from './protocol.mjs';
@@ -29,26 +31,15 @@ function doubaoAppVersion() {
 // common query params, request signing and response unwrapping); module
 // 987391 prepares sandbox execution contexts in the background page.
 const RUNTIME_BOOTSTRAP = `
+  ${APP_MODULE_BOOTSTRAP}
   const __readyDeadline = Date.now() + 10000;
   while (!document.querySelector('[data-testid="chat_input_input"]')) {
     if (Date.now() >= __readyDeadline) throw new Error('Doubao chat renderer is not ready');
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const __req = await new Promise((resolve) => {
-    window['@flow-web/desktop:stable'].push([['doubao_cli_' + Date.now()], {}, (r) => resolve(r)]);
+    window['@flow-web/desktop:stable'].push([['doubao_cli_' + crypto.randomUUID()], {}, (r) => resolve(r)]);
   });
-  const __mod = async (id, chunk) => {
-    // Requiring an unloaded webpack module can leave an empty cache entry.
-    // Load its chunk first, including on a freshly navigated renderer.
-    let timer;
-    try {
-      await Promise.race([
-        __req.e(String(chunk)),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('chunk ' + chunk + ' load timeout')), 10000); }),
-      ]);
-    } finally { clearTimeout(timer); }
-    return __req(id);
-  };
 `;
 
 function buildExpression(template, args) {
@@ -58,7 +49,8 @@ function buildExpression(template, args) {
 const REGISTER_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
   const args = %ARGS%;
-  const api = (await __mod(359531, 1383)).Sf;
+  if (!__req.m || !__req.m[359531] && !__req.m[609347]) await __req.e('1383');
+  const api = appModule(__req, 'skills').Sf;
   const created = await api.AGWManageCreatePersonalConnector({
     name: args.name,
     mcp_config: {
@@ -87,7 +79,8 @@ const REGISTER_EXPRESSION = `(async () => {
 
 const LIST_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
-  const api = (await __mod(359531, 1383)).Sf;
+  if (!__req.m || !__req.m[359531] && !__req.m[609347]) await __req.e('1383');
+  const api = appModule(__req, 'skills').Sf;
   const result = await api.AGWManageListUserConnectors({ keyword: '', page_size: 100, page_token: '' });
   if (result?.code || !Array.isArray(result?.data?.items)) throw new Error('Doubao connector list could not be read');
   if (result.data.has_more) throw new Error('Doubao connector list is incomplete; narrow the account catalog before retrying');
@@ -103,7 +96,8 @@ const LIST_EXPRESSION = `(async () => {
 const REMOVE_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
   const args = %ARGS%;
-  const api = (await __mod(359531, 1383)).Sf;
+  if (!__req.m || !__req.m[359531] && !__req.m[609347]) await __req.e('1383');
+  const api = appModule(__req, 'skills').Sf;
   const result = { connectorId: args.connectorId, removed: false };
   const verify = async () => {
     const response = await api.AGWManageListUserConnectors({ keyword: '', page_size: 100, page_token: '' });
@@ -170,13 +164,14 @@ const PREPARE_SANDBOX_EXPRESSION = `(async () => {
   const args = %ARGS%;
   const runtime = await window.neotix.taskMode.runtime.queryRuntimeInfo({ env: true });
   const envId = runtime?.env?.environmentId || '';
-  const prepare = (await __mod(987391, 28037)).H;
+  if (!__req.m || !__req.m[987391] && !__req.m[876207]) await __req.e('28037');
+  const prepare = appModule(__req, 'sandbox').H;
   const out = await prepare({
     cwd: args.workspace,
     envId,
     from: 'main',
     globalSkillPath: args.agentWorkspace,
-    projectFolders: [],
+    projectFolders: args.projectFolders,
     sandboxAuthType: args.sandboxAuthType,
     sendContext: args.sendContext,
   });
@@ -243,9 +238,13 @@ export async function connectorsSnapshot(client, connectorIds) {
 
 // Registers a sandbox execution context in the background page. Without this
 // route the model's local tool calls fail with sandbox_not_provisioned.
-export async function prepareToolSandbox(client, { workspace, sendContext, permission }) {
+export async function prepareToolSandbox(client, { workspace, sendContext, permission, projectFolders = [], createWorkspace = false }) {
+  resolvePermission(permission);
+  if (createWorkspace) fs.mkdirSync(workspace, { recursive: true });
+  if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`);
   const result = await evaluateWithWatchdog(client, buildExpression(PREPARE_SANDBOX_EXPRESSION, {
     workspace,
+    projectFolders,
     agentWorkspace: agentWorkspace(),
     sendContext,
     sandboxAuthType: resolvePermission(permission),
@@ -270,12 +269,14 @@ export async function sendWithConnectors(client, request, connectorIds) {
   await installConnectorCompatPatch();
   const localConnectors = await connectorsSnapshot(client, connectorIds);
   const workspace = request.workspace || defaultWorkspace();
-  const localConversationId = `local_${Date.now()}`;
-  const localMessageId = crypto.randomUUID();
+  const localConversationId = request.localConversationId || `local_${Date.now()}`;
+  const localMessageId = request.localMessageId || crypto.randomUUID();
   const sendContext = request.conversationId
     ? { conversationId: request.conversationId, localMessageId }
     : { localConversationId, localMessageId };
-  const sandbox = await prepareToolSandbox(client, { workspace, sendContext, permission: request.permission });
+  const sandbox = request.sandboxId ? { sandboxId: request.sandboxId, resolvedSharedFolders: request.sharedFolderPath || [] }
+    : await prepareToolSandbox(client, { workspace, sendContext, permission: request.permission,
+      projectFolders: request.taskContext?.projectContext?.folders?.map(f => f.path) || [], createWorkspace: request.createWorkspace ?? !request.workspace });
   return sendChatCompletion(client, {
     ...request,
     workspace,

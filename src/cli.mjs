@@ -19,18 +19,22 @@ import {
 } from './update.mjs';
 import { validateReply, validateSchema } from './validate.mjs';
 import { resolvePermission } from './permissions.mjs';
+import { createProject, listProjects, projectCreationInput, runtimeAvailability, validateTaskOptions } from './context.mjs';
 import { currentApp, resolveApp, withApp } from './app.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
   doubao status [--profile <name>] [--json]
   doubao profiles [--json]
+  doubao runtimes [--json]
+  doubao projects list [--json]
+  doubao projects create <name> [--workspace <path>] [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
-  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
-  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions status <conversation-id> [--run <run-id>] [--json]
   doubao sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions stop <conversation-id> [--run <run-id>] [--json]
@@ -48,7 +52,7 @@ const HELP = `Usage:
   doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
 
-Local task execution permission (requires --mcp):
+Local task execution permission (requires --runtime local or --mcp):
   --permission <mode>  AlwaysAsk | AskOnRisk | FullAccess (default)
                       Repeat on each turn; approval is handled by Doubao.
                       This does not guarantee approval for each MCP call.
@@ -66,6 +70,7 @@ Environment:
 
 export function parseOptions(argv) {
   const args = [];
+  const unknownFlags = [];
   let profile;
   let runId;
   let app;
@@ -78,6 +83,9 @@ export function parseOptions(argv) {
   let reasoning;
   let workspace;
   let permission;
+  let runtime;
+  let project;
+  let enterpriseKnowledge = false;
   let noSkills = false;
   let expectJson = false;
   let replySchema;
@@ -127,6 +135,14 @@ export function parseOptions(argv) {
       if (!attachment || attachment.startsWith('--')) throw new Error('--attach requires a file path');
       attachments.push(attachment);
       index += 1;
+    } else if (argv[index] === '--runtime') {
+      runtime = argv[++index];
+      if (!['local', 'cloud'].includes(runtime)) throw new Error('--runtime requires local or cloud');
+    } else if (argv[index] === '--project') {
+      project = argv[++index];
+      if (!project?.trim() || project.startsWith('--')) throw new Error('--project requires a project id or exact name (none to clear)');
+    } else if (argv[index] === '--enterprise-knowledge') {
+      enterpriseKnowledge = true;
     } else if (argv[index] === '--workspace') {
       workspace = argv[index + 1];
       if (!workspace || workspace.startsWith('--')) throw new Error('--workspace requires a directory path');
@@ -165,14 +181,26 @@ export function parseOptions(argv) {
       index += 1;
     } else {
       args.push(argv[index]);
+      if (argv[index].startsWith('-')) unknownFlags.push(argv[index]);
     }
   }
   if (runId && (args[0] !== 'sessions' || !['status', 'wait', 'stop'].includes(args[1]))) throw new Error('--run requires sessions status/wait/stop');
-  if (permission !== undefined) {
-    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1]) || !mcps.length) {
-      throw new Error('--permission requires sessions create/send with --mcp');
+  if (args[0] === 'projects' && args[1] === 'create') {
+    if (unknownFlags.length) throw new Error(`Unknown projects create option: ${unknownFlags[0]}. Run "doubao help"; use -- before a name starting with -`);
+    projectCreationInput(args.slice(2).join(' '), workspace);
+    if (attachments.length || model || reasoning || wait || noSkills || commandPath || commandArgs.length || envPairs.length) {
+      throw new Error('projects create accepts a name and optional --workspace, --app, --profile, --json');
     }
-    if (attachments.length) throw new Error('--permission is not supported with attachments');
+  }
+  validateTaskOptions({ runtime, mcps, workspace, permission, noSkills });
+  if (runtime !== undefined || project !== undefined || enterpriseKnowledge) {
+    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1])) throw new Error('Task context options require sessions create/send');
+    if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) throw new Error('Task context options require a message');
+  }
+  if (permission !== undefined) {
+    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1]) || (!mcps.length && runtime !== 'local')) {
+      throw new Error('--permission requires sessions create/send with --runtime local or --mcp');
+    }
     if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) {
       throw new Error('--permission requires a message');
     }
@@ -194,7 +222,7 @@ export function parseOptions(argv) {
       throw new Error('--expect-json and --reply-schema require a message');
     }
   }
-  return { args, app, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  return { args, app, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
 }
 
 function output(value, json) {
@@ -328,7 +356,7 @@ export async function main(argv) {
   if (options.profile) {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
-    const usesRenderer = ['models', 'model', 'mcp'].includes(command)
+    const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects'].includes(command)
       || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop', 'status', 'wait'].includes(subcommand));
     if (usesRenderer && app.profile !== readProfiles(app.dataDir).lastUsed) {
       throw new Error(`Profile ${app.profile} is not active in ${app.name}; switch profiles in the app before automating it`);
@@ -345,8 +373,8 @@ export async function main(argv) {
 }
 
 async function run(options) {
-  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
-  const isolation = { workspace, skillPaths: noSkills ? [] : undefined, permission };
+  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
+  const isolation = { runtime, project, enterpriseKnowledge, workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
   const dataDir = getDataDir();
 
@@ -462,6 +490,25 @@ async function run(options) {
       console.log('automatic updates\tyes');
       console.log(`note\t${capabilities.note}`);
     }
+    return;
+  }
+
+  if (command === 'runtimes') {
+    const result = await withChatClient(runtimeAvailability);
+    if (json) output(result, true);
+    else for (const item of result.runtimes) console.log(`${item.id}\t${item.name}\t${item.available ? 'ready' : item.status}`);
+    return;
+  }
+  if (command === 'projects' && subcommand === 'list') {
+    const result = await withChatClient(listProjects);
+    if (json) output(result, true);
+    else for (const item of result) console.log(`${item.id}\t${item.name}`);
+    return;
+  }
+  if (command === 'projects' && subcommand === 'create') {
+    const result = await withChatClient(client => createProject(client, { name: args.slice(2).join(' '), workspace }));
+    if (json) output(result, true);
+    else console.log(`${result.id}\t${result.name}`);
     return;
   }
 
