@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { readUsage, formatUsage } from './usage.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
@@ -25,6 +26,7 @@ const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import
 
 const HELP = `Usage:
   doubao status [--profile <name>] [--json]
+  doubao usage [--profile <name>] [--json]
   doubao profiles [--json]
   doubao runtimes [--json]
   doubao projects list [--json]
@@ -356,7 +358,7 @@ export async function main(argv) {
   if (options.profile) {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
-    const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects'].includes(command)
+    const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage'].includes(command)
       || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop', 'status', 'wait'].includes(subcommand));
     if (usesRenderer && app.profile !== readProfiles(app.dataDir).lastUsed) {
       throw new Error(`Profile ${app.profile} is not active in ${app.name}; switch profiles in the app before automating it`);
@@ -465,6 +467,7 @@ async function run(options) {
       mcpConnectors: cdp.available,
       uploadAttachments: cdp.available,
       selectModels: cdp.available,
+      usage: cdp.available,
       selfUpdate: true,
       automaticUpdates: true,
       cdp,
@@ -486,10 +489,18 @@ async function run(options) {
       console.log(`mcp connectors\t${capabilities.mcpConnectors ? 'yes' : 'no'}`);
       console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
+      console.log(`usage\t${capabilities.usage ? 'yes' : 'no'}`);
       console.log('self update\tyes');
       console.log('automatic updates\tyes');
       console.log(`note\t${capabilities.note}`);
     }
+    return;
+  }
+
+  if (command === 'usage') {
+    if (subcommand) throw new Error('usage accepts no subcommand. Run \"doubao help\".');
+    const result = await withChatClient(readUsage);
+    output(json ? result : formatUsage(result), json);
     return;
   }
 

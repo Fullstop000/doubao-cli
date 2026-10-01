@@ -32,6 +32,7 @@ Pass `--json` to every data-returning command when another program consumes the 
 
 | Task | Command |
 | --- | --- |
+| Show usage quota (CLI 0.13.0+) | `doubao usage --json` |
 | List runtimes / projects | `doubao runtimes --json` / `doubao projects list --json` |
 | Create a project | `doubao projects create "name" [--workspace /absolute/directory] --json` |
 | Select task context | add `--runtime local\|cloud --project <id-or-name> --enterprise-knowledge` to create/send |

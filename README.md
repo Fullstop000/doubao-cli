@@ -209,3 +209,13 @@ npx skills add Fullstop000/doubao-cli
 ## License
 
 MIT © 2026 Fullstop000
+
+### 使用额度
+
+```bash
+doubao usage
+doubao usage --json
+doubao --app work usage
+```
+
+通过当前登录应用的真实额度接口查询订阅、个人/企业使用窗口、额度包和奖励额度。展示已用/剩余百分比及重置时间（UTC）；小于 1% 的用量保留 `<1%`，未知用量不推算剩余额度。`--json` 返回结构化字段，未知值为 `null`。需要已开启 CDP；不支持该接口的应用版本会明确报错。不会发送消息或消耗模型额度。
