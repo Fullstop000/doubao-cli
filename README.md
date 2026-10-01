@@ -1,12 +1,8 @@
 # doubao CLI
 
-Control Doubao desktop sessions from the terminal: send messages, attach files, track tasks and use local MCP tools.
-
-[Install](#install) · [Commands](#commands) · [Tasks](#resume-or-stop) · [Projects](#projects-and-runtime) · [MCP](#mcp) · [Configuration](#configuration)
-
 ## Install
 
-Requires macOS, Node.js 22+, and a signed-in DoubaoWork.app or Doubao.app.
+Requirements: macOS, Node.js 22+, signed-in DoubaoWork.app or Doubao.app.
 
 ```bash
 npm install --global doubao-cli@latest
@@ -14,9 +10,10 @@ doubao cdp launch
 doubao status
 ```
 
-`cdp launch` enables local Chrome DevTools Protocol (CDP) and waits for the authenticated chat renderer. If the app needs restarting, confirm interactively. Scripts and `--json` mode require `doubao cdp launch --yes`.
+- Restart confirmation: interactive prompt; scripts require `cdp launch --yes`.
+- Chat window: must remain open.
 
-Without a global install:
+Without global installation:
 
 ```bash
 npx --yes doubao-cli@latest status
@@ -32,36 +29,52 @@ doubao sessions current
 doubao sessions create "Summarize this" --attach ./brief.pdf --wait
 doubao sessions read <conversation-id> --limit 5
 doubao sessions send <conversation-id> "Continue" --wait
-doubao models
-doubao sessions send <conversation-id> "Review this" --model pro --reasoning high --wait
 ```
 
-Run `doubao help` for all commands and options. Data-returning commands support `--json`.
+Data-returning commands: `--json`.
 
 ### App and profile
 
-Work is selected when installed; regular Doubao is used only when Work is absent. Login or connection failures do not switch apps. Keep the same app throughout a conversation.
-
 ```bash
-doubao --app doubao status --json
 doubao --app work cdp launch
+doubao --app doubao status --json
 doubao profiles
+doubao --profile "Profile 1" sessions list
 ```
 
-Use `--profile <name>` to select a profile. Messaging, model and MCP commands require the selected profile to be active and a chat window to be open. They run in the background; the CLI does not switch accounts. `sessions open <conversation-id>` navigates to the session and may change focus.
+- Default app: Work when installed; otherwise Doubao.
+- Login or connection failure: no app fallback.
+- Conversation: use the same app on every turn.
+- Messaging, models and MCP: selected profile must be active in the app.
+- `sessions open <conversation-id>`: navigate to session; may change focus.
 
-### Sessions, attachments and models
-
-Include a first message to persist a new session. `sessions create` without a message opens a composer and returns `conversationId: null`. Repeat `--attach` for multiple files; the CLI waits for uploads before sending.
+### Attachments and models
 
 ```bash
 doubao sessions create "Compare these" --attach ./one.pdf --attach ./two.pdf --wait
+doubao models
 doubao model select pro --reasoning max
 doubao model reasoning high
+doubao sessions send <conversation-id> "Review this" --model pro --reasoning high --wait
 doubao sessions create -- "Explain --model literally"
 ```
 
-Use `doubao models` for available model IDs, display names and aliases. `model select` changes the active model; `send --model` selects it before sending. Reasoning levels: `low`, `medium`, `high`, `xhigh`, `max`; `send --reasoning` requires `--model`.
+- `create` without a message: `conversationId: null`.
+- Attachments: repeat `--attach`; maximum 50 files, 100 MiB each. Service limits may be lower.
+- Models: ID, display name or alias from `doubao models`.
+- Reasoning: `low`, `medium`, `high`, `xhigh`, `max`; `send --reasoning` requires `--model`.
+- Message containing option names: precede with `--`.
+
+### Usage quota
+
+```bash
+doubao usage
+doubao usage --json
+doubao --app work usage
+```
+
+- Requires CDP and an app version supporting quota queries.
+- Reset times: UTC. Unknown values: `null`. Usage below 1%: `<1%`.
 
 ## Resume or stop
 
@@ -71,21 +84,28 @@ doubao sessions wait <conversation-id> --run <run-id> --timeout 600 --json
 doubao sessions stop <conversation-id> --run <run-id> --json
 ```
 
-`create` and `send` return the accepted message's `runId`. `--wait` follows that turn and its subagents. Results include `status`, `reply`, `progress`, `artifacts`, `tasks` and `pending`; `reply` is populated only on success.
+- `runId`: returned by `create` / `send`.
+- Omitted `--run`: latest submitted turn, selected once.
+- `--wait`: waits for the turn and subagents; final `reply` only on success.
+- Default timeout: 120 seconds. Timeout does not cancel.
+- Timeout or connection failure: resume with the same IDs; do not resend.
+- `waiting_input`: respond in Doubao, then wait again.
+- `stopped: true`: no tracked task running. `stopped: false`: cancellation unconfirmed, nonzero exit.
+- Cancellation: completed tool effects remain.
 
-| State / result | Next action |
+| State | Action |
 | --- | --- |
-| `completed` | Read the final `reply` |
+| `completed` | Read `reply` |
 | `running` | Continue with `wait` |
-| `waiting_input` | Answer or approve in Doubao, then wait again |
-| `failed`, `cancelled`, `unknown` | Inspect the result before retrying |
-| Timeout or connection failure | Resume with the same IDs; do not resend |
+| `waiting_input` | Respond in the app |
+| `failed`, `cancelled`, `unknown` | Inspect result before retrying |
 
-- Default timeout: **120 seconds**. Timeout does not cancel the task. Waiting commands exit nonzero on timeout, pending input or failure.
-- Omit `--run` to select the latest submitted turn once. `wait` can resume in a new CLI process.
-- `stop` targets the turn and linked task tree. `stopped: true` confirms no tracked task is running; incomplete confirmation returns `stopped: false` and exits nonzero. Cancellation does not undo completed tool effects.
+Reply validation with `create/send --wait` or `sessions wait`:
 
-For structured replies, add `--expect-json` or `--reply-schema <path>` to `create/send --wait` or `sessions wait`. Invalid replies exit with code 1 and `replyValid: false`. Supported schema fields: `type`, `required`, `properties`, `enum`, `items`. Invalid options and schemas fail before sending.
+- `--expect-json`: valid JSON required.
+- `--reply-schema <path>`: supports `type`, `required`, `properties`, `enum`, `items`.
+- Invalid reply: exit 1, `replyValid: false`.
+- Invalid options or schema: fail before sending.
 
 ## Projects and runtime
 
@@ -95,28 +115,16 @@ doubao projects list --json
 doubao projects create "Code" --workspace /path/to/repo --json
 doubao sessions create "Analyze this" --runtime local --project <project-id> --permission AskOnRisk --wait
 doubao sessions send <conversation-id> "Search internal docs" --enterprise-knowledge --wait
-```
-
-| Option | Values / behavior |
-| --- | --- |
-| `--runtime` | `local` (new-session default) or `cloud`; follow-ups inherit |
-| `--project` | ID, exact name or `none`; follow-ups inherit; duplicate names require ID |
-| `--workspace` | Local working directory; project folders must match app/device |
-| `--permission` | `FullAccess` (default), `AskOnRisk`, `AlwaysAsk`; repeat each turn |
-| `--enterprise-knowledge` | 企业知识 skill; repeat each applicable turn |
-| `--no-skills` | Omit default local skill paths |
-
-`projects create` returns `id`, `name`, `folders` and `operationId`. `--workspace` binds an existing directory to the current app/device. Names allow 40 units; Chinese characters count as 2. If creation or readback fails, check `projects list` before retrying.
-
-Selecting a project does not change its folders. Without `--workspace`, local tasks use the project's primary folder, inherited workspace or a new chat directory. Projects without matching device folders use the session workspace.
-
-```bash
 doubao sessions send <conversation-id> "Run in the cloud" --runtime cloud --project none --wait
 ```
 
-Runtime, project and enterprise-knowledge options require a message and support attachments. Results include the submitted `context`. Enterprise knowledge requires an available account skill; it does not restrict tools already available to the model.
-
-Cloud cannot use `--mcp`, `--workspace`, `--no-skills` or `--permission`. Local tasks default to **FullAccess**; repeat `--permission` and `--no-skills` on each turn where needed.
+- Runtime: `local` by default for new sessions; follow-ups inherit runtime and project.
+- Project: ID or exact name; duplicate names require ID; `none` clears selection.
+- Workspace: `--workspace` override, project folder on current app/device, inherited workspace, or new chat directory.
+- Project creation failure: check `projects list` before retrying.
+- `--enterprise-knowledge`: available 企业知识 skill required; repeat each turn.
+- `--no-skills`: omit default local skill paths; repeat each turn.
+- Cloud: incompatible with `--mcp`, `--workspace`, `--no-skills`, `--permission`.
 
 ## MCP
 
@@ -127,17 +135,18 @@ doubao sessions create "Use my tool" --mcp <connector-id> --permission AskOnRisk
 doubao mcp remove <connector-id>
 ```
 
-`mcp register` registers a local stdio server and returns its connector ID after the app reports it ready. Add arguments with repeated `--arg` and environment variables with repeated `--env KEY=VALUE`. Connectors belong to the account and appear in app settings.
-
-Repeat `--mcp` on each turn; multiple connectors are supported. It requires a message and `--wait`, and cannot be combined with `--attach`. `mcp remove` verifies account state and local tool removal.
+- Registration: local stdio server; returns connector ID when ready.
+- Server arguments: repeat `--arg`; environment: repeat `--env KEY=VALUE`.
+- `--mcp`: repeat for multiple connectors and on each turn; requires message and `--wait`; incompatible with `--attach`.
 
 | Permission | Policy |
 | --- | --- |
 | `FullAccess` (default) | Execute without additional approval |
-| `AskOnRisk` | Ask when Doubao classifies an operation as risky |
-| `AlwaysAsk` | Use Doubao's always-ask policy |
+| `AskOnRisk` | Ask for operations Doubao classifies as risky |
+| `AlwaysAsk` | Doubao always-ask policy |
 
-Approval happens in Doubao. These modes do not guarantee approval for every MCP call or restrict the server process. Omitting `--permission` returns to `FullAccess`.
+- Local task permission: repeat `--permission` each turn; omitted value defaults to `FullAccess`.
+- Approvals: in Doubao; not guaranteed for every MCP call. Server process is unrestricted by these policies.
 
 ## Updates
 
@@ -149,9 +158,10 @@ doubao update auto status
 doubao update auto off
 ```
 
-`update check` checks npm without installing. `update` installs the latest release globally through npm when available.
-
-Automatic installation is off by default and checks at most once every 24 hours. Update failures do not block ordinary commands. With auto-update off, version reminders go to stderr; `--json` suppresses them. Network failures are silent.
+- `update check`: check only.
+- `update`: global npm installation.
+- Auto-update: off by default; checks at most once every 24 hours.
+- Version reminders: stderr; suppressed with `--json`.
 
 ## Configuration
 
@@ -163,21 +173,13 @@ Automatic installation is off by default and checks at most once every 24 hours.
 | `DOUBAO_CLI_CONFIG_DIR` | Settings and recovery directory |
 | `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` | Disable automatic updates and reminders |
 
-Default configuration directory: `~/Library/Application Support/doubao-cli`. Update settings are in `update.json`. Recovery receipts are in `turns/`, scoped to app, profile and account, with file mode 0600. They contain request content, control blocks and stream cursors; retain them to resume accepted tasks.
-
-## How it works
-
-- Session metadata comes from account IndexedDB snapshots; offline profiles may use the older disk cache.
-- Sending uses the authenticated renderer and the app's request-signing hook. Replies come from the SSE stream.
-- Model choices come from the live app menu. Message reading and attachment upload use DOM attributes over CDP.
-- Task tracking follows linked thread histories; recovery reuses the original request identity or stream cursor.
-
-The CLI does not extract cookies or copy private credentials.
+- Default directory: `~/Library/Application Support/doubao-cli`.
+- Update settings: `update.json`.
+- Recovery: `turns/`; app/profile/account scoped; mode 0600; contains request content. Retain for task recovery.
 
 ## Limits
 
 - App updates may break automation and MCP support.
-- Attachments: up to 50 files, 100 MiB each; service limits may be lower.
 - CDP: unauthenticated localhost access. Relaunch normally after automation.
 - Task lookup: latest 100 main messages, up to 100 linked threads, 20 pages per thread.
 - `sessions read`: rendered messages only. No full task-history export or event streaming.
@@ -190,11 +192,12 @@ npm run test:e2e -- --app work
 npm run test:e2e -- --fallback
 ```
 
-Run live tests against a signed-in, quiet app with CDP enabled. They send synthetic messages, upload fixtures and register a temporary MCP server, then remove the connector and restore the initial page. They do not restart the app.
-
-`--fallback` tests regular Doubao by hiding the Work installation probe in child processes; it does not move or uninstall Work. Results stay in ignored `.e2e/work/` or `.e2e/fallback/` directories.
-
-Rerun a stage with `--stage baseline|messages|models|attachments|stop|mcp|negative|update|cleanup`. Use `--fallback --stage selection` for app discovery and failure isolation.
+- E2E requirements: signed-in, quiet app with CDP.
+- E2E effects: synthetic messages, fixture uploads, temporary MCP connector.
+- Cleanup: remove connector; restore initial page.
+- Results: ignored `.e2e/work/` or `.e2e/fallback/`.
+- `--fallback`: regular Doubao.
+- `--stage`: `baseline`, `messages`, `models`, `attachments`, `stop`, `mcp`, `negative`, `update`, `cleanup`.
 
 [App tests](docs/doubaowork-e2e.md) · [Task tests](docs/subagent-e2e.md) · [Context tests](docs/task-context-e2e.md)
 
@@ -209,13 +212,3 @@ npx skills add Fullstop000/doubao-cli
 ## License
 
 MIT © 2026 Fullstop000
-
-### 使用额度
-
-```bash
-doubao usage
-doubao usage --json
-doubao --app work usage
-```
-
-通过当前登录应用的真实额度接口查询订阅、个人/企业使用窗口、额度包和奖励额度。展示已用/剩余百分比及重置时间（UTC）；小于 1% 的用量保留 `<1%`，未知用量不推算剩余额度。`--json` 返回结构化字段，未知值为 `null`。需要已开启 CDP；不支持该接口的应用版本会明确报错。不会发送消息或消耗模型额度。
