@@ -24,6 +24,21 @@ export function resolveApp(requested, env = process.env, exists = fs.existsSync)
   };
 }
 
+export function resolvePlatform(requested, env = process.env, exists = fs.existsSync) {
+  if (requested && !['work', 'doubao', 'web'].includes(requested)) {
+    throw new Error('--platform requires work, doubao, or web');
+  }
+  if (requested === 'web') {
+    return {
+      id: 'web', platform: 'web', name: 'Doubao Web', port: 9227,
+      appPath: null, dataDir: null,
+      endpoint: (env.DOUBAO_CDP_ENDPOINT || 'http://127.0.0.1:9227').replace(/\/$/u, ''),
+    };
+  }
+  const app = resolveApp(requested, env, exists);
+  return { ...app, platform: app.id };
+}
+
 export function currentApp() { return context.getStore() || resolveApp(); }
 export function withApp(app, callback) { return context.run(app, callback); }
 
@@ -46,6 +61,13 @@ export function agentWorkspace() {
 export function isAppTarget(url, app = currentApp(), kind = 'chat') {
   try {
     const parsed = new URL(url);
+    if (app.id === 'web') {
+      return kind === 'chat'
+        && parsed.protocol === 'https:'
+        && ['www.doubao.com', 'doubao.com'].includes(parsed.hostname)
+        && !parsed.username && !parsed.password && !parsed.port
+        && /^\/chat(?:\/(?:\d{12,24}\/?)?)?$/u.test(parsed.pathname);
+    }
     return [app.scheme + ':', 'chrome:'].includes(parsed.protocol)
       && parsed.hostname === `${app.scheme}-${kind}`
       && (kind !== 'chat' || /^\/chat(?:\/|$)/u.test(parsed.pathname));

@@ -1,7 +1,7 @@
 {
   "name": "doubao-cli",
-  "version": "0.13.0",
-  "description": "Programmatic control for local Doubao desktop sessions on macOS",
+  "version": "0.14.0",
+  "description": "Programmatic control for Doubao desktop and web sessions on macOS",
   "author": "Fullstop000 <fullstop1005@gmail.com>",
   "type": "module",
   "bin": {

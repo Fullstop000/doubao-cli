@@ -2,7 +2,7 @@
 
 ## Install
 
-Requirements: macOS, Node.js 22+, signed-in DoubaoWork.app or Doubao.app.
+Requirements: macOS and Node.js 22+. Desktop use requires signed-in DoubaoWork.app or Doubao.app; Web use requires Chrome and website sign-in through `doubao web login`.
 
 ```bash
 npm install --global doubao-cli@latest
@@ -48,6 +48,30 @@ doubao --profile "Profile 1" sessions list
 - Messaging, models and MCP: selected profile must be active in the app.
 - `sessions open <conversation-id>`: navigate to session; may change focus.
 
+### Web platform (experimental)
+
+```bash
+doubao web login
+# Complete sign-in in the opened browser; the command waits until the account is ready.
+doubao web status --json
+doubao web capabilities --json
+doubao web sessions create "Hello" --mode chat --wait --json
+doubao web sessions create "Write a short plan" --mode work --runtime cloud --wait --json
+doubao web sessions wait <conversation-id> --run <run-id> --json
+```
+
+- `doubao web <command>`: Web entry point with its own help (`doubao web help`). `--platform web` remains a compatibility alias. Desktop selectors (`--app` / `--platform work|doubao`) conflict with the Web namespace and fail before connecting.
+- Default remains Work when installed, otherwise Doubao. Web is opt-in, on port 9227.
+- `doubao web login` starts or reuses the browser; an already signed-in account returns immediately. Manual website sign-in stays in the browser. The default wait is 120 seconds (`--timeout` to adjust); timeout exits nonzero and keeps the browser open. No separate `cdp launch` step is needed; it remains available for advanced setup.
+- Web launch uses a separate Chrome data directory; it does not restart your normal browser or copy its login. Chrome 136+ requires a non-default directory for CDP.
+- Multiple matching tabs: use `--target <id>` from `cdp status --json`.
+- New sessions use `--mode chat|work` or the active composer mode. Accounts may expose different creation modes; choose the account in the browser. Work uses 云电脑, and `--runtime cloud` is optional.
+- Save `conversationId` and `runId`. Web wait/status/stop use server task state; timeout never resends. Recovery records are scoped by platform, browser endpoint and account. An account change fails explicitly.
+- `sessions list`: rendered sidebar only. `sessions read`: up to 100 recent main messages.
+- Web does not yet expose CLI attachment uploads, model/reasoning changes, project/enterprise-knowledge selection or quota queries. Local runtimes, MCP, workspace, skills, permission settings and desktop profiles are rejected before connecting.
+- Website support for uploads, models, projects and enterprise knowledge is separate from CLI adapter support. Sending uses the website's native configuration; CLI does not change these settings.
+- Live E2E covers Work on one selected account and ordinary chat on another, including create/send/read/wait, recovery, guards, identity isolation and target selection. Ordinary-chat cancellation was confirmed; Work stop confirmed a terminal completed tree, not child cancellation. Work editor hydration, ordinary-chat post-ACK routing, same-origin async stream recovery, and bounded wait/stop results were fixed and verified without resending accepted messages. Local tests passed 204/204; package dry-run includes both Web modules. Both modes were not tested on both accounts, and the installer upgrade branch was not triggered. See [acceptance results](docs/web-e2e-results.md) and [design and checks](docs/web-platform-design.md).
+
 ### Attachments and models
 
 ```bash
@@ -91,6 +115,7 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 - Timeout or connection failure: resume with the same IDs; do not resend.
 - `waiting_input`: respond in Doubao, then wait again.
 - `stopped: true`: no tracked task running. `stopped: false`: cancellation unconfirmed, nonzero exit.
+- For Web, `stopped: true` means the server task tree is terminal; inspect `status` to distinguish `cancelled` from work that completed naturally.
 - Cancellation: completed tool effects remain.
 
 | State | Action |
@@ -118,7 +143,7 @@ doubao sessions send <conversation-id> "Search internal docs" --enterprise-knowl
 doubao sessions send <conversation-id> "Run in the cloud" --runtime cloud --project none --wait
 ```
 
-- Runtime: `local` by default for new sessions; follow-ups inherit runtime and project.
+- Desktop runtime: `local` by default for new sessions; follow-ups inherit runtime and project.
 - Project: ID or exact name; duplicate names require ID; `none` clears selection.
 - Workspace: `--workspace` override, project folder on current app/device, inherited workspace, or new chat directory.
 - Project creation failure: check `projects list` before retrying.
@@ -169,20 +194,22 @@ doubao update auto off
 | --- | --- |
 | `DOUBAO_APP` | App path |
 | `DOUBAO_DATA_DIR` | App data directory |
-| `DOUBAO_CDP_ENDPOINT` | CDP endpoint; Work: 9226, Doubao: 9225 |
+| `DOUBAO_CDP_ENDPOINT` | CDP endpoint; Work: 9226, Doubao: 9225, Web: 9227 |
+| `DOUBAO_BROWSER_APP` | Web browser app; default `/Applications/Google Chrome.app` |
+| `DOUBAO_WEB_PROFILE_DIR` | Dedicated Web browser data directory; default settings directory + `web-browser` |
 | `DOUBAO_CLI_CONFIG_DIR` | Settings and recovery directory |
 | `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` | Disable automatic updates and reminders |
 
 - Default directory: `~/Library/Application Support/doubao-cli`.
 - Update settings: `update.json`.
-- Recovery: `turns/`; app/profile/account scoped; mode 0600; contains request content. Retain for task recovery.
+- Recovery: `turns/`; desktop records use app/profile/account scope, Web records use platform/endpoint/account scope. Files use mode 0600 and may contain task content. Retain for task recovery.
 
 ## Limits
 
 - App updates may break automation and MCP support.
 - CDP: unauthenticated localhost access. Relaunch normally after automation.
 - Task lookup: latest 100 main messages, up to 100 linked threads, 20 pages per thread.
-- `sessions read`: rendered messages only. No full task-history export or event streaming.
+- Desktop `sessions read`: rendered messages only. Web reads up to 100 recent server messages. No full task-history export or event streaming.
 
 ## Development
 

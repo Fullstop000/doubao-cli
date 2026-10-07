@@ -5,17 +5,105 @@ import { createHash } from 'node:crypto';
 import { currentApp, activeProfile } from './app.mjs';
 import { runtimeParameters, evaluateWithWatchdog, updateLiveControls, sendChatCompletion } from './protocol.mjs';
 
+function webIdentityGuard(runtime) {
+  if (currentApp().id !== 'web') return { setup: '', check: '', rethrow: '' };
+  const accountId = currentApp().accountId || runtime.accountId;
+  if (!accountId || accountId === '0') throw new Error('Doubao Web account identity is unavailable; sign in and retry');
+  return {
+    setup: `const assertWebIdentity = () => {
+      const fail = message => { throw Object.assign(new Error(message), { code: 'web_identity_changed' }); };
+      if (!['https://www.doubao.com', 'https://doubao.com'].includes(location.origin)
+        || !/^\\/chat(?:\\/(?:\\d{12,24}\\/?)?)?$/.test(location.pathname)) {
+        fail('Selected web target left the Doubao chat origin');
+      }
+      if (localStorage.getItem('flow_tea_user_id') !== ${JSON.stringify(accountId)}) {
+        fail('Doubao Web account changed; select the originally authenticated account');
+      }
+    };`,
+    check: 'assertWebIdentity();',
+    rethrow: "if (error.code === 'web_identity_changed') throw error;",
+  };
+}
+
+function webRequestBudget(deadline) {
+  const timeoutMs = Math.floor(deadline - Date.now());
+  if (timeoutMs <= 0) throw Object.assign(new Error('Doubao Web request deadline elapsed before submitting the request'), { code: 'timeout' });
+  return timeoutMs;
+}
+
+// A background tab can delay timers by a second. Leave room for its abort and
+// CDP serialization, and preserve the socket if the caller's budget wins first.
+const webBrowserTimeout = budgetMs => budgetMs - Math.min(1000, Math.floor(budgetMs / 2));
+const webObservationClient = client => ({ evaluate: expression => client.evaluate(expression), close() {} });
+const isWebIdentityError = error => error.code === 'web_identity_changed'
+  || /Doubao Web account changed|account identity is unavailable|runtime identity is unavailable outside|left the Doubao chat origin/u.test(error.message);
+
+async function webJsonRequest(client, runtime, url, body, contentType, errorPrefix, deadline) {
+  const identity = webIdentityGuard(runtime);
+  const budgetMs = webRequestBudget(deadline);
+  const browserDeadline = deadline - (budgetMs - webBrowserTimeout(budgetMs));
+  return evaluateWithWatchdog(webObservationClient(client), `(async () => {
+    ${identity.setup}
+    ${identity.check}
+    const deadline = ${browserDeadline};
+    const controller = new AbortController();
+    let timer;
+    const deadlineError = () => Object.assign(new Error(${JSON.stringify(errorPrefix + ': request deadline elapsed')}), { code: 'timeout' });
+    const boundary = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { ${identity.check} }
+        catch (error) { controller.abort(); reject(error); return; }
+        controller.abort(); reject(deadlineError());
+      }, Math.max(1, deadline - Date.now()));
+    });
+    boundary.catch(() => {});
+    const observe = async operation => {
+      ${identity.check}
+      if (Date.now() >= deadline) throw deadlineError();
+      const value = await Promise.race([operation(), boundary]);
+      ${identity.check}
+      if (Date.now() >= deadline) throw deadlineError();
+      return value;
+    };
+    try {
+      const response = await observe(() => fetch(${JSON.stringify(url)}, {
+        method: 'POST', credentials: 'include', headers: { 'content-type': ${JSON.stringify(contentType)} },
+        signal: controller.signal, body: ${JSON.stringify(body)},
+      }));
+      if (!response.ok) throw new Error(${JSON.stringify(errorPrefix + ': HTTP ')} + response.status);
+      return await observe(() => response.json());
+    } finally { clearTimeout(timer); controller.abort(); }
+  })()`, webRequestBudget(deadline));
+}
+
 export async function imRequest(client, route, cmd, key, body, timeoutMs = 10000) {
-  const { query } = await runtimeParameters(client);
+  const web = currentApp().id === 'web';
+  const deadline = web ? Date.now() + timeoutMs : undefined;
+  if (web) webRequestBudget(deadline);
+  const runtime = await runtimeParameters(web ? webObservationClient(client) : client, web ? { timeoutMs } : undefined);
+  const { query } = runtime;
+  if (web) {
+    const result = await webJsonRequest(client, runtime, 'https://www.doubao.com/im/' + route + '?' + query,
+      JSON.stringify({ cmd, uplink_body: { [key]: body }, sequence_id: crypto.randomUUID(), channel: 2, version: '1' }),
+      'application/json; encoding=utf-8', 'Doubao task lookup failed', deadline);
+    if (result.status_code) throw new Error('Doubao task lookup failed: ' + result.status_desc);
+    return result.downlink_body;
+  }
+  const identity = webIdentityGuard(runtime);
+  const fetchTimeoutMs = Math.max(1, timeoutMs);
   return evaluateWithWatchdog(client, `(async () => {
+    ${identity.setup}
+    ${identity.check}
     const response = await fetch(${JSON.stringify('https://www.doubao.com/im/' + route + '?' + query)}, {
       method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json; encoding=utf-8' },
-      signal: AbortSignal.timeout(${Math.max(1, timeoutMs)}),
+      signal: AbortSignal.timeout(${fetchTimeoutMs}),
       body: JSON.stringify({ cmd: ${cmd}, uplink_body: { [${JSON.stringify(key)}]: ${JSON.stringify(body)} },
         sequence_id: crypto.randomUUID(), channel: 2, version: '1' }),
     });
+    ${identity.check}
     if (!response.ok) throw new Error('Doubao task lookup failed: HTTP ' + response.status);
     const result = await response.json();
+    ${identity.check}
     if (result.status_code) throw new Error('Doubao task lookup failed: ' + result.status_desc);
     return result.downlink_body;
   })()`, timeoutMs + 1000);
@@ -112,7 +200,8 @@ export function summarizeTurn(conversationId, root, messages, nodes, receipt = {
   // A sync reply may finish while its organizer is still producing the final main-chat summary.
   const firstDelegation = runMessages.find(m => taskLinks([m]).length);
   if (status === 'completed' && nodes.length && latest?.message_id === firstDelegation?.message_id) status = 'running';
-  if (receipt.cancellation?.confirmed && !tasks.running && !tasks.unknown || receipt.cancellation?.accepted && status === 'completed') status = 'cancelled';
+  if (receipt.cancellation?.confirmed && !tasks.running && !tasks.unknown
+    || currentApp().id !== 'web' && receipt.cancellation?.accepted && status === 'completed') status = 'cancelled';
   if (pending.length && !['failed', 'cancelled'].includes(status)) status = 'waiting_input';
   if (['cancelled', 'failed'].includes(status)) pending = [];
   const reply = status === 'completed' ? { role: 'assistant', text: messageText(latest), messageId: latest?.message_id } : null;
@@ -121,7 +210,9 @@ export function summarizeTurn(conversationId, root, messages, nodes, receipt = {
     ...(status !== 'completed' && latest ? { progress: messageText(latest) } : {}) };
 }
 
-const remaining = deadline => Math.max(1, Math.min(10000, deadline ? deadline - Date.now() : 10000));
+const remaining = deadline => currentApp().id === 'web' && deadline
+  ? Math.min(10000, webRequestBudget(deadline))
+  : Math.max(1, Math.min(10000, deadline ? deadline - Date.now() : 10000));
 
 async function conversationMessages(client, conversationId, deadline) {
   const body = await imRequest(client, 'conversation/batch_get', 1111, 'batch_get_conv_info_uplink_body', {
@@ -154,6 +245,11 @@ export async function readTurn(client, conversationId, { runId, localMessageId, 
     if (stored) mergeControlBlocks(stored, message);
   }
   const queue = taskLinks(own), seen = new Set(), nodes = [];
+  for (const handoff of receipt.handoffs || []) {
+    const threadId = String(handoff.threadId || '');
+    if (!threadId || threadId === '0' || queue.some(link => link.threadId === threadId)) continue;
+    queue.push({ threadId, title: '', type: 'organizer', sourceMessageId: '' });
+  }
   for (const link of queue) {
     if (seen.has(link.threadId)) continue;
     if (seen.size >= 100) throw new Error('Task tree exceeds 100 threads; completion cannot be confirmed');
@@ -184,14 +280,27 @@ export async function readTurn(client, conversationId, { runId, localMessageId, 
     nodes.push({ ...link, status, messages: threadMessages, children: children.map(c => c.threadId), job: parse(latest?.ext?.async_job) });
     queue.push(...children);
   }
-  return { result: summarizeTurn(conversationId, root, messages, nodes, receipt), root, messages: own, nodes, conversation };
+  const result = summarizeTurn(conversationId, root, messages, nodes, receipt);
+  if (currentApp().id === 'web' && result.status === 'completed'
+    && !result.reply?.text?.trim() && !result.artifacts.length) {
+    result.status = 'running';
+    result.reply = null;
+    result.completionPending = true;
+  }
+  return { result, root, messages: own, nodes, conversation };
 }
 
 export async function receiptStore(client) {
   const uid = await client.evaluate('localStorage.getItem("flow_tea_user_id")');
   if (!uid || uid === '0') throw new Error('Sign in to the selected Doubao app');
   const app = currentApp();
-  const scope = createHash('sha256').update(JSON.stringify([app.id, path.resolve(app.dataDir), activeProfile(app), uid])).digest('hex').slice(0, 24);
+  if (app.id === 'web' && app.accountId && uid !== app.accountId) {
+    throw new Error('Doubao Web account changed; select the originally authenticated account');
+  }
+  const identity = app.id === 'web'
+    ? [app.id, app.endpoint, uid]
+    : [app.id, path.resolve(app.dataDir), activeProfile(app), uid];
+  const scope = createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 24);
   const dir = path.join(process.env.DOUBAO_CLI_CONFIG_DIR || path.join(os.homedir(), 'Library/Application Support/doubao-cli'), 'turns', scope);
   const validate = id => { if (!/^\d{12,24}$/u.test(id || '')) throw new Error('Invalid run id'); return id; };
   return {
@@ -289,7 +398,7 @@ export async function waitTurn(client, conversationId, options = {}) {
     }
     if (Date.now() >= deadline) break;
     try {
-      if (!resumed && receipt.requestBody && !receipt.handoffs?.length && !receipt.liveMessages?.some(m => pendingInputs([m]).length)) {
+      if (currentApp().id !== 'web' && !resumed && receipt.requestBody && !receipt.handoffs?.length && !receipt.liveMessages?.some(m => pendingInputs([m]).length)) {
         resumed = true;
         try {
           const result = await sendChatCompletion(client, { conversationId, runId: receipt.runId,
@@ -324,22 +433,49 @@ export async function refreshTurn(client, conversationId, options = {}) {
   handoffsFromSnapshot(snapshot, receipt);
   if (['running', 'unknown'].includes(snapshot.result.status) && receipt.handoffs.some(task => !task.completed)) {
     await followTaskStreams(client, receipt, Math.min(1500, remaining(options.deadline)), options.onReceipt);
-    snapshot = await readTurn(client, conversationId, { ...options, runId: receipt.runId, receipt });
+    if (currentApp().id !== 'web' || !options.deadline || Date.now() < options.deadline) {
+      snapshot = await readTurn(client, conversationId, { ...options, runId: receipt.runId, receipt });
+    }
   }
   options.onReceipt?.(receipt);
   return snapshot;
 }
 
 export async function stopTurn(client, conversationId, options = {}) {
-  const deadline = Date.now() + (options.timeoutMs || 15000);
   options.receipt ||= {};
-  let snapshot = await refreshTurn(client, conversationId, { ...options, deadline });
+  const web = currentApp().id === 'web';
+  const deadline = web ? Math.min(options.deadline || Infinity, Date.now() + (options.timeoutMs || 15000))
+    : Date.now() + (options.timeoutMs || 15000);
+  const receipt = options.receipt;
+  let snapshot;
+  const stopped = new Set(), failed = new Set(), errors = [];
+  const unresolved = () => ({ ...(snapshot?.result || {
+    conversationId, runId: options.runId || receipt.runId, localMessageId: options.localMessageId || receipt.localMessageId,
+    status: 'unknown', reply: null,
+  }), stopped: false,
+    reason: web && receipt.taskTrackingIncomplete && !snapshot?.nodes.length
+      ? 'Web task tracking was incomplete; the task tree could not be confirmed'
+      : receipt.cancellation?.requestedAt ? 'Cancellation requested, but not all task states could be confirmed'
+        : 'Could not confirm selected task state; cancellation was not submitted', ...(errors.length ? { errors } : {}) });
+  const recordError = (error, identifiers) => {
+    errors.push({ ...identifiers, message: error.message });
+    if (web && isWebIdentityError(error)) { error.result = unresolved(); throw error; }
+  };
+  try { snapshot = await refreshTurn(client, conversationId, { ...options, deadline }); }
+  catch (error) {
+    if (!web) throw error;
+    recordError(error, { runId: options.runId || receipt.runId });
+    return unresolved();
+  }
   const runId = snapshot.result.runId;
   const terminal = result => ['completed', 'failed', 'cancelled'].includes(result.status)
     && !result.tasks.running && !result.tasks.unknown;
-  if (terminal(snapshot.result)) return { ...snapshot.result, stopped: true };
-  const stopped = new Set(), errors = [];
-  const receipt = options.receipt;
+  const trackingUnproven = () => web && receipt.taskTrackingIncomplete && snapshot.nodes.length === 0;
+  if (terminal(snapshot.result)) {
+    if (trackingUnproven()) return { ...snapshot.result, stopped: false,
+      reason: 'Web task tracking was incomplete; the task tree could not be confirmed' };
+    return { ...snapshot.result, stopped: true };
+  }
   receipt.conversationId = conversationId; receipt.runId = runId;
   receipt.cancellation = { requestedAt: new Date().toISOString(), accepted: false };
   options.onReceipt?.(receipt);
@@ -350,62 +486,131 @@ export async function stopTurn(client, conversationId, options = {}) {
       conversation_type: snapshot.conversation.conversation_type, break_reason: 7,
     }, remaining(deadline));
     receipt.cancellation.accepted = true; options.onReceipt?.(receipt);
-  } catch (error) { errors.push({ runId, message: error.message }); }
+  } catch (error) { recordError(error, { runId }); }
   do {
     for (const node of snapshot.nodes) {
       if (Date.now() >= deadline) break;
-      if (['completed', 'cancelled', 'failed'].includes(node.status) || stopped.has(node.threadId)) continue;
+      if (['completed', 'cancelled', 'failed'].includes(node.status)
+        || stopped.has(node.threadId) || failed.has(node.threadId)) continue;
       try {
         const timeout = remaining(deadline);
-        const result = await evaluateWithWatchdog(client, `(async () => {
+        const result = web
+          ? await (async () => {
+            const requestDeadline = Math.min(deadline, Date.now() + timeout);
+            const runtime = await runtimeParameters(webObservationClient(client), { timeoutMs: timeout });
+            const { query } = runtime;
+            const threadId = String(node.threadId);
+            if (!/^[1-9]\d{11,23}$/u.test(threadId)) throw new Error('Web task cancellation has an invalid thread id');
+            // The endpoint requires a JSON number. Keep the validated decimal
+            // digits as source text so IDs above MAX_SAFE_INTEGER aren't rounded.
+            const body = `{"thread_id":${threadId}}`;
+            return webJsonRequest(client, runtime, 'https://www.doubao.com/alice/generaltask/terminate?' + query,
+              body, 'application/json', 'Web task cancellation failed', requestDeadline);
+          })()
+          : await evaluateWithWatchdog(client, `(async () => {
           const req = await new Promise(resolve => window['@flow-web/desktop:stable'].push([['doubao_stop_' + crypto.randomUUID()], {}, resolve]));
           await req.e('1383');
           return req(359531).iv.AGWTaskTerminate({ thread_id: ${JSON.stringify(node.threadId)} });
         })()`, timeout + 1000);
-        if (result.code !== 0) throw new Error('Task cancellation rejected: ' + (result.message || result.msg || result.code));
+        if (result.code !== 0) throw new Error(web ? 'Web task cancellation was rejected' : 'Task cancellation rejected: ' + (result.message || result.msg || result.code));
         stopped.add(node.threadId);
         receipt.cancellation.accepted = true; options.onReceipt?.(receipt);
-      } catch (error) { errors.push({ threadId: node.threadId, message: error.message }); }
+      } catch (error) {
+        if (web && /HTTP 400\b/u.test(error.message)) failed.add(node.threadId);
+        recordError(error, { threadId: node.threadId });
+      }
     }
+    if (web && Date.now() >= deadline) break;
     try { snapshot = await readTurn(client, conversationId, { runId, receipt: options.receipt, deadline }); }
-    catch (error) { errors.push({ runId, message: error.message }); break; }
-    if (terminal(snapshot.result)) {
-      receipt.cancellation.confirmed = true; options.onReceipt?.(receipt);
-      return { ...snapshot.result, status: 'cancelled', reply: null, pending: [], stopped: true };
+    catch (error) { recordError(error, { runId }); break; }
+    if (terminal(snapshot.result) && !trackingUnproven()) {
+      if (!web) {
+        receipt.cancellation.confirmed = true; options.onReceipt?.(receipt);
+        return { ...snapshot.result, status: 'cancelled', reply: null, pending: [], stopped: true };
+      }
+      const confirmedCancelled = snapshot.result.status === 'cancelled'
+        && !snapshot.result.tasks.running && !snapshot.result.tasks.unknown;
+      if (confirmedCancelled) { receipt.cancellation.confirmed = true; options.onReceipt?.(receipt); }
+      return confirmedCancelled
+        ? { ...snapshot.result, status: 'cancelled', reply: null, pending: [], stopped: true }
+        : { ...snapshot.result, stopped: true };
     }
     if (Date.now() >= deadline) break;
     await new Promise(resolve => setTimeout(resolve, Math.min(500, deadline - Date.now())));
   } while (Date.now() < deadline);
-  return { ...snapshot.result, stopped: false,
-    reason: 'Cancellation requested, but not all task states could be confirmed', ...(errors.length ? { errors } : {}) };
+  return unresolved();
 }
 
 // Consume each asynchronous handoff without submitting another user message.
 // Server snapshots remain authoritative for final text, task state and artifacts.
 export async function followTaskStreams(client, receipt, timeoutMs, onReceipt = () => {}) {
   if (!receipt.handoffs?.length) return;
-  const { query } = await runtimeParameters(client);
-  const result = await evaluateWithWatchdog(client, `(async () => {
+  const web = currentApp().id === 'web';
+  const deadline = web ? Date.now() + timeoutMs : undefined;
+  if (web) webRequestBudget(deadline);
+  const runtime = await runtimeParameters(web ? webObservationClient(client) : client, web ? { timeoutMs } : undefined);
+  const { query } = runtime;
+  const identity = webIdentityGuard(runtime);
+  const streamBudgetMs = web ? webRequestBudget(deadline) : Math.max(1, timeoutMs);
+  // Background-page timers and CDP serialization need more allowance than an HTTP response.
+  const streamTimeoutMs = web ? streamBudgetMs - Math.min(1000, Math.floor(streamBudgetMs / 2)) : streamBudgetMs;
+  const streamControl = web ? `
+    let streamStopped = false, stopStream, deadlineTimer, identityTimer;
+    const controllers = new Set();
+    const boundary = new Promise((_, reject) => {
+      stopStream = error => {
+        if (streamStopped) return;
+        streamStopped = true;
+        for (const controller of controllers) controller.abort();
+        reject(error);
+      };
+      deadlineTimer = setTimeout(() => {
+        try { ${identity.check} }
+        catch (error) { stopStream(error); return; }
+        stopStream(Object.assign(new Error('Async stream polling deadline reached'), { code: 'web_stream_deadline' }));
+      }, Math.max(1, deadline - Date.now()));
+      const inspectIdentity = () => {
+        if (streamStopped) return;
+        try { ${identity.check} }
+        catch (error) { stopStream(error); return; }
+        identityTimer = setTimeout(inspectIdentity, Math.max(1, Math.min(50, deadline - Date.now())));
+      };
+      identityTimer = setTimeout(inspectIdentity, Math.max(1, Math.min(50, deadline - Date.now())));
+    });
+    boundary.catch(() => {});
+    const withinStream = promise => Promise.race([promise, boundary]);
+  ` : 'const withinStream = promise => promise;';
+  const result = await evaluateWithWatchdog(web ? webObservationClient(client) : client, `(async () => {
+    ${identity.setup}
+    ${identity.check}
     const tasks = ${JSON.stringify(receipt.handoffs)};
     const state = { liveMessages: ${JSON.stringify(receipt.liveMessages || [])} };
     const updateLiveControls = ${updateLiveControls.toString()};
-    const deadline = Date.now() + ${Math.max(1, timeoutMs)};
+    const deadline = ${web ? deadline - (streamBudgetMs - streamTimeoutMs) : `Date.now() + ${streamTimeoutMs}`};
+    ${streamControl}
     const seen = new Set(), pending = [];
     const read = async task => {
       if (seen.has(task.taskId) || task.completed) return;
       seen.add(task.taskId);
       delete task.waitingInput;
-      while (Date.now() < deadline && !task.completed) {
-        const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), Math.max(1, deadline - Date.now()));
+      while (${web ? '!streamStopped && ' : ''}Date.now() < deadline && !task.completed) {
+        const ac = new AbortController();
+        ${web ? 'controllers.add(ac); const timer = undefined;' : 'const timer = setTimeout(() => ac.abort(), Math.max(1, deadline - Date.now()));'}
         try {
-          const response = await fetch(${JSON.stringify('https://api5-normal-gl.doubao.com/chat/async/chunk_stream?' + query)}, {
+          ${identity.check}
+          const response = await withinStream(fetch(${web
+            ? `location.origin + ${JSON.stringify('/chat/async/chunk_stream?' + query)}`
+            : JSON.stringify('https://api5-normal-gl.doubao.com/chat/async/chunk_stream?' + query)}, {
             method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ task_id: task.taskId, seq_start: task.seq || 0, append_scene: task.appendScene, ext: {} }), signal: ac.signal,
-          });
+          }));
+          ${identity.check}
           if (!response.ok) throw new Error('Async stream HTTP ' + response.status);
+          ${web ? 'delete task.connectionError;' : ''}
           const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
           try { while (!task.completed) {
-            const part = await reader.read(); if (part.done) break;
+            const part = await withinStream(reader.read()); if (part.done) break;
+            ${identity.check}
             buffer += decoder.decode(part.value, { stream: true }).replaceAll('\\r\\n', '\\n');
             let end;
             while ((end = buffer.indexOf('\\n\\n')) >= 0) {
@@ -421,22 +626,34 @@ export async function followTaskStreams(client, receipt, timeoutMs, onReceipt = 
               if (event === 'FETCH_STREAM' && data.fetch_type === 2 && data.fetch_key && !tasks.some(t => t.taskId === String(data.fetch_key))) {
                 if (tasks.length >= 100) throw new Error('Async task stream limit exceeded');
                 const child = { taskId: String(data.fetch_key), appendScene: data.append_scene, threadId: data.thread_id || '', seq: 0 };
-                tasks.push(child); pending.push(read(child));
+                tasks.push(child); const childRead = read(child); ${web ? 'childRead.catch(() => {});' : ''} pending.push(childRead);
               }
               if (event === 'SSE_REPLY_END' && data.end_type === 3) task.completed = true;
               if (event === 'STREAM_ERROR' || event === 'gateway-error') { task.error = data.error_msg || data.error_code || event; task.completed = true; }
             }
             if (task.waitingInput) break;
-          } } finally { await reader.cancel().catch(() => {}); }
-        } catch (error) { task.connectionError = String(error.message || error); }
-        finally { clearTimeout(timer); }
+          } } finally { ${web
+            ? 'try { Promise.resolve(reader.cancel()).catch(() => {}); } catch {}'
+            : 'await reader.cancel().catch(() => {});'} }
+        } catch (error) {
+          ${identity.rethrow}
+          task.connectionError = String(error.message || error);
+          ${web ? "if (error.code === 'web_stream_deadline') break;" : ''}
+        }
+        finally { clearTimeout(timer); ${web ? 'controllers.delete(ac); ac.abort();' : ''} }
         if (task.waitingInput) break;
-        if (!task.completed && Date.now() < deadline) await new Promise(r => setTimeout(r, 300));
+        if (!task.completed && ${web ? '!streamStopped && ' : ''}Date.now() < deadline) {
+          try { await withinStream(new Promise(r => setTimeout(r, ${web ? 'Math.min(300, Math.max(1, deadline - Date.now()))' : '300'}))); }
+          catch (error) { ${identity.rethrow} ${web ? "if (error.code === 'web_stream_deadline') break;" : ''} throw error; }
+        }
       }
     };
-    for (const task of tasks) pending.push(read(task));
-    for (let index = 0; index < pending.length; index++) await pending[index];
-    return { tasks, liveMessages: state.liveMessages };
-  })()`, Math.max(1, timeoutMs) + 1000);
+    try {
+      for (const task of tasks) { const taskRead = read(task); ${web ? 'taskRead.catch(() => {});' : ''} pending.push(taskRead); }
+      for (let index = 0; index < pending.length; index++) await pending[index];
+      ${identity.check}
+      return { tasks, liveMessages: state.liveMessages };
+    } finally { ${web ? 'streamStopped = true; clearTimeout(deadlineTimer); clearTimeout(identityTimer); for (const controller of controllers) controller.abort();' : ''} }
+  })()`, web ? webRequestBudget(deadline) : Math.max(1, timeoutMs) + 1000);
   receipt.handoffs = result.tasks; receipt.liveMessages = result.liveMessages; onReceipt(receipt);
 }

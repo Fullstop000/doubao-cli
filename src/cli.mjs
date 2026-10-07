@@ -21,7 +21,8 @@ import {
 import { validateReply, validateSchema } from './validate.mjs';
 import { resolvePermission } from './permissions.mjs';
 import { createProject, listProjects, projectCreationInput, runtimeAvailability, validateTaskOptions } from './context.mjs';
-import { currentApp, resolveApp, withApp } from './app.mjs';
+import { currentApp, resolvePlatform, withApp } from './app.mjs';
+import { executeWeb, validateWebOptions } from './web.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
@@ -53,6 +54,7 @@ const HELP = `Usage:
   doubao update check [--json]
   doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
+  doubao web <command> [options]  Web commands; run "doubao web help"
 
 Local task execution permission (requires --runtime local or --mcp):
   --permission <mode>  AlwaysAsk | AskOnRisk | FullAccess (default)
@@ -61,13 +63,55 @@ Local task execution permission (requires --runtime local or --mcp):
 
 Application:
   --app work|doubao  Select an app (default: Work if installed, otherwise Doubao)
+  --platform work|doubao|web  Select a backend; --platform web is a compatibility alias for "doubao web"
+  --target <id>  Select a Doubao web CDP page when several tabs match
+  --mode chat|work  Select the mode for a new web conversation
 
 Environment:
   DOUBAO_APP       Override the application path
   DOUBAO_DATA_DIR  Override the Doubao user-data directory
-  DOUBAO_CDP_ENDPOINT  CDP endpoint (Work: 9226; Doubao: 9225)
+  DOUBAO_CDP_ENDPOINT  CDP endpoint (Work: 9226; Doubao: 9225; Web: 9227)
+  DOUBAO_BROWSER_APP  Web browser app path (default: Google Chrome.app)
+  DOUBAO_WEB_PROFILE_DIR  Dedicated browser data directory for web launch
   DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
   DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip configured automatic updates
+`;
+
+const WEB_HELP = `Usage:
+  doubao web login [--timeout <seconds>] [--json]
+  doubao web status [--json]
+  doubao web capabilities [--json]
+  doubao web sessions list [--json]
+  doubao web sessions current [--json]
+  doubao web sessions open <conversation-id> [--json]
+  doubao web sessions read <conversation-id> [--limit <count>] [--json]
+  doubao web sessions create [message] [--mode chat|work] [--runtime cloud] [--wait] [--json]
+  doubao web sessions send <conversation-id> <message> [--runtime cloud] [--wait] [--json]
+  doubao web sessions status <conversation-id> [--run <run-id>] [--json]
+  doubao web sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--expect-json] [--reply-schema <path>] [--json]
+  doubao web sessions stop <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
+  doubao web --version
+
+Options:
+  --target <id>  Select a browser page when several Doubao tabs match
+  --mode chat|work  Select the mode for a new conversation
+  --runtime cloud  Work conversations only; local execution is unsupported
+  --timeout <seconds>  Request or wait budget (default: 120)
+  --expect-json / --reply-schema <path>  Validate the final reply; create/send require --wait
+  --  Treat the remaining arguments as message text
+
+Browser:
+  Run "doubao web login" once, then complete sign-in in the opened browser.
+  It starts or reuses the browser and waits for login (default: 120 seconds).
+  Uses the signed-in dedicated browser; credentials are not copied.
+  The browser connection is managed internally (default: http://127.0.0.1:9227).
+  DOUBAO_CDP_ENDPOINT, DOUBAO_BROWSER_APP and DOUBAO_WEB_PROFILE_DIR configure it.
+  Attachments, model selection and desktop task settings are unsupported.
+
+Compatibility:
+  doubao --platform web <command> remains supported.
+  doubao web cdp status / cdp launch remain available for advanced setup.
+  Run "doubao help" for desktop and update commands.
 `;
 
 export function parseOptions(argv) {
@@ -76,6 +120,10 @@ export function parseOptions(argv) {
   let profile;
   let runId;
   let app;
+  let platform;
+  let webNamespace = false;
+  let targetId;
+  let mode;
   let json = false;
   let yes = false;
   let wait = false;
@@ -112,6 +160,15 @@ export function parseOptions(argv) {
     } else if (argv[index] === '--app') {
       app = argv[++index];
       if (!['work', 'doubao'].includes(app)) throw new Error('--app requires work or doubao');
+    } else if (argv[index] === '--platform') {
+      platform = argv[++index];
+      if (!['work', 'doubao', 'web'].includes(platform)) throw new Error('--platform requires work, doubao, or web');
+    } else if (argv[index] === '--target') {
+      targetId = argv[++index];
+      if (!targetId || targetId.startsWith('-')) throw new Error('--target requires a CDP target id');
+    } else if (argv[index] === '--mode') {
+      mode = argv[++index];
+      if (!['chat', 'work'].includes(mode)) throw new Error('--mode requires chat or work');
     } else if (argv[index] === '--profile') {
       profile = argv[index + 1];
       if (!profile) throw new Error('--profile requires a value');
@@ -181,11 +238,23 @@ export function parseOptions(argv) {
       if (!pair || !pair.includes('=')) throw new Error('--env requires a KEY=VALUE pair');
       envPairs.push(pair);
       index += 1;
+    } else if (!args.length && !webNamespace && argv[index] === 'web') {
+      webNamespace = true;
     } else {
       args.push(argv[index]);
       if (argv[index].startsWith('-')) unknownFlags.push(argv[index]);
     }
   }
+  if (webNamespace) {
+    if (platform && platform !== 'web') throw new Error(`doubao web conflicts with --platform ${platform}`);
+    if (app) throw new Error(`doubao web conflicts with --app ${app}`);
+    platform = 'web';
+  }
+  if (app && platform && app !== platform) throw new Error('--app and --platform select different backends');
+  const unknownWebFlags = unknownFlags.filter(flag => flag !== args[0] || !['--help', '-h', '--version', '-v'].includes(flag));
+  if (platform === 'web' && unknownWebFlags.length) throw new Error(`Unknown Web option: ${unknownWebFlags[0]}; use -- before literal option text`);
+  if (targetId && platform !== 'web') throw new Error('--target requires doubao web (or --platform web)');
+  if (mode && (platform !== 'web' || args[0] !== 'sessions' || args[1] !== 'create')) throw new Error('--mode requires doubao web sessions create (or --platform web sessions create)');
   if (runId && (args[0] !== 'sessions' || !['status', 'wait', 'stop'].includes(args[1]))) throw new Error('--run requires sessions status/wait/stop');
   if (args[0] === 'projects' && args[1] === 'create') {
     if (unknownFlags.length) throw new Error(`Unknown projects create option: ${unknownFlags[0]}. Run "doubao help"; use -- before a name starting with -`);
@@ -224,7 +293,9 @@ export function parseOptions(argv) {
       throw new Error('--expect-json and --reply-schema require a message');
     }
   }
-  return { args, app, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  const options = { args, app, platform, targetId, mode, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  if (platform === 'web') validateWebOptions(options);
+  return options;
 }
 
 function output(value, json) {
@@ -354,8 +425,9 @@ function validateReplyOption(result, { expectJson, replySchema }, schema) {
 export async function main(argv) {
   const options = parseOptions(argv);
   options.schema = loadReplySchema(options);
-  const app = resolveApp(options.app);
-  if (options.profile) {
+  const app = resolvePlatform(options.platform || options.app);
+  if (options.targetId) app.targetId = options.targetId;
+  if (options.profile && app.id !== 'web') {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
     const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage'].includes(command)
@@ -368,7 +440,8 @@ export async function main(argv) {
     try { return await run(options); }
     catch (error) {
       if (!error.result) throw error;
-      output({ ...error.result, error: error.code || 'task_error', message: error.message }, options.json);
+      if (app.id === 'web' && options.args[0] === 'login' && !options.json) console.error(`doubao: ${error.message}`);
+      else output({ ...error.result, error: error.code || 'task_error', message: error.message }, options.json);
       process.exitCode = 1;
     }
   });
@@ -381,7 +454,7 @@ async function run(options) {
   const dataDir = getDataDir();
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
-    console.log(HELP);
+    console.log(currentApp().id === 'web' ? WEB_HELP : HELP);
     return;
   }
   if (command === 'version' || command === '--version' || command === '-v') {
@@ -436,6 +509,16 @@ async function run(options) {
   }
 
   await runConfiguredAutoUpdate(command, json);
+
+  if (currentApp().id === 'web') {
+    const result = await executeWeb(options);
+    const validated = validateReplyOption(result, { expectJson, replySchema }, options.schema);
+    if ((wait || command === 'sessions' && subcommand === 'wait') && validated.status && validated.status !== 'completed') process.exitCode = 1;
+    if (command === 'cdp' && subcommand === 'status' && !validated.available) process.exitCode = 1;
+    if (command === 'sessions' && subcommand === 'stop' && validated.stopped === false) process.exitCode = 1;
+    output(command === 'login' && !json ? 'Doubao Web is signed in and ready.' : validated, json);
+    return;
+  }
 
   if (command === 'profiles') {
     const { readProfiles } = await import('./storage.mjs');

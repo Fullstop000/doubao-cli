@@ -33,6 +33,54 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /doubao projects create <name> \[--workspace <path>\]/u);
 });
 
+test('web namespace preserves the legacy backend options and literal message text', () => {
+  for (const operation of [
+    ['login'], ['status'], ['capabilities'], ['cdp', 'status'], ['cdp', 'launch'],
+    ['sessions', 'list'], ['sessions', 'current'],
+    ['sessions', 'create', '--mode', 'work', '--runtime', 'cloud', '--wait', '--', 'web', '--model'],
+    ['sessions', 'send', '38439138239851266', 'web', '--wait', '--expect-json'],
+    ...['open', 'read', 'status', 'wait', 'stop'].map(command => ['sessions', command, '38439138239851266']),
+  ]) {
+    const flags = ['--json', '--target', 'selected-web-tab', '--timeout', '3'];
+    assert.deepEqual(parseOptions(['web', ...flags, ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
+    assert.deepEqual(parseOptions(['--json', 'web', '--target', 'selected-web-tab', '--timeout', '3', ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
+  }
+  assert.deepEqual(parseOptions(['sessions', 'create', 'web']).args, ['sessions', 'create', 'web']);
+  const literal = parseOptions(['--', 'web', 'status']);
+  assert.equal(literal.platform, undefined);
+  assert.deepEqual(literal.args, ['web', 'status']);
+});
+
+test('web namespace rejects conflicting desktop selectors and unsupported options before connection', () => {
+  for (const selector of [['--app', 'work'], ['--app', 'doubao'], ['--platform', 'work'], ['--platform', 'doubao']]) {
+    assert.throws(() => parseOptions(['web', ...selector, 'status']), /doubao web conflicts/u);
+    assert.throws(() => parseOptions([...selector, 'web', 'status']), /doubao web conflicts/u);
+  }
+  assert.equal(parseOptions(['web', '--platform', 'web', 'status']).platform, 'web');
+  assert.throws(() => parseOptions(['web', 'sessions', 'create', 'must not send', '--model', 'Turbo']), /not supported/u);
+  assert.throws(() => parseOptions(['web', 'status', '--unknown']), /Unknown Web option/u);
+  assert.throws(() => parseOptions(['web', 'login', 'someone']), /accepts no positional arguments/u);
+  assert.throws(() => parseOptions(['web', 'login', '--wait']), /--wait requires sessions create\/send/u);
+  assert.throws(() => parseOptions(['web', 'sessions', 'read', '38439138239851266', '--mode', 'work']), /--mode requires/u);
+});
+
+test('web help is scoped and runs without connecting to a browser', () => {
+  for (const args of [['web'], ['web', 'help'], ['web', '--help'], ['--platform', 'web', 'help']]) {
+    const result = spawnSync(process.execPath, [cliPath.pathname, ...args], {
+      encoding: 'utf8', env: { ...process.env, DOUBAO_CDP_ENDPOINT: 'http://127.0.0.1:1', DOUBAO_CLI_DISABLE_AUTO_UPDATE: '1' },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /doubao web sessions create/u);
+    assert.match(result.stdout, /doubao web login \[--timeout <seconds>\]/u);
+    assert.match(result.stdout, /doubao web sessions wait/u);
+    assert.match(result.stdout, /--platform web <command> remains supported/u);
+    assert.doesNotMatch(result.stdout, /doubao profiles|doubao mcp register|--permission <mode>/u);
+  }
+  const version = spawnSync(process.execPath, [cliPath.pathname, 'web', '--version'], { encoding: 'utf8' });
+  assert.equal(version.status, 0, version.stderr);
+  assert.equal(version.stdout.trim(), packageJson.version);
+});
+
 test('parses repeated attachments and option terminators', () => {
   const parsed = parseOptions([
     'sessions', 'send', '38439138239851266', 'review',

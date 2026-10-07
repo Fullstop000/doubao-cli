@@ -19,13 +19,43 @@ export const CONNECTOR_API_BASE = 'https://www.doubao.com/alice/office/skills/ma
 
 // Read only the common, non-secret request parameters from this renderer.
 // Never copy signature/token fields or use another application's device ids.
-export async function runtimeParameters(client) {
-  const runtime = await evaluateWithWatchdog(client, `(async () => {
-    const keys = ['aid', 'real_aid', 'channel', 'chromium_version', 'client_platform',
-      'device_id', 'device_platform', 'doubao_device_platform', 'doubao_pc_version',
-      'fp', 'language', 'pc_version', 'pkg_type', 'region', 'runtime', 'runtime_version',
-      'samantha_web', 'sys_region', 'tea_uuid', 'tz_name', 'use-olympus-account',
-      'version_code', 'web_id', 'web_platform', 'web_tab_id'];
+export async function runtimeParameters(client, { timeoutMs = 10_000 } = {}) {
+  const web = currentApp().id === 'web';
+  const expectedAccountId = web ? currentApp().accountId : undefined;
+  const webBudgetMs = Math.max(1, Math.min(10_000, timeoutMs));
+  // Allow the browser to report a hydration deadline before the CDP watchdog.
+  const returnGraceMs = Math.min(100, Math.floor(webBudgetMs / 5));
+  const hydrationMs = Math.min(3_000, webBudgetMs - returnGraceMs);
+  const identityExpression = web ? `
+    const initialAccountId = ${JSON.stringify(expectedAccountId || '')} || localStorage.getItem('flow_tea_user_id');
+    const deadline = Date.now() + ${hydrationMs};
+    for (;;) {
+      if (!['https://www.doubao.com', 'https://doubao.com'].includes(location.origin)
+        || !/^\\/chat(?:\\/(?:\\d{12,24}\\/?)?)?$/.test(location.pathname)) {
+        throw new Error('Doubao Web runtime identity is unavailable outside the chat origin');
+      }
+      const accountId = localStorage.getItem('flow_tea_user_id');
+      if (!accountId || accountId === '0') throw new Error('Doubao Web account identity is unavailable; sign in and retry');
+      if (accountId !== initialAccountId) {
+        throw new Error('Doubao Web account changed; select the originally authenticated account');
+      }
+      if (Date.now() >= deadline) throw new Error('Doubao Web runtime parameters are not ready before the deadline; open a chat and retry');
+      const entry = performance.getEntriesByType('resource').slice().reverse().find(entry => {
+        try {
+          const u = new URL(entry.name), p = u.searchParams;
+          return u.origin === 'https://www.doubao.com' && u.pathname.startsWith('/im/')
+            && p.get('aid') === '497858' && (p.has('device_id') || p.has('web_id'));
+        } catch { return false; }
+      });
+      if (entry) {
+        const source = new URL(entry.name).searchParams;
+        const params = Object.fromEntries(keys.filter(key => source.has(key)).map(key => [key, source.get(key)]));
+        return { params, clientEnvId: '', accountId };
+      }
+      if (Date.now() >= deadline) throw new Error('Doubao Web runtime parameters are not ready before the deadline; open a chat and retry');
+      await new Promise(resolve => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+    }
+  ` : `
     const entry = performance.getEntriesByType('resource').slice().reverse().find(entry => {
       try { const u = new URL(entry.name); return u.origin === 'https://www.doubao.com'
         && u.pathname.startsWith('/im/') && u.searchParams.has('device_id') && u.searchParams.has('aid'); }
@@ -36,8 +66,18 @@ export async function runtimeParameters(client) {
     const params = Object.fromEntries(keys.filter(key => source.has(key)).map(key => [key, source.get(key)]));
     const runtime = await window.neotix.taskMode.runtime.queryRuntimeInfo({ env: true });
     return { params, clientEnvId: runtime?.env?.environmentId || '' };
-  })()`, 10_000);
-  if (runtime?.params?.aid !== currentApp().aid || !runtime.params.device_id) {
+  `;
+  const runtime = await evaluateWithWatchdog(client, `(async () => {
+    const keys = ['aid', 'real_aid', 'channel', 'chromium_version', 'client_platform',
+      'device_id', 'device_platform', 'doubao_device_platform', 'doubao_pc_version',
+      'fp', 'language', 'pc_version', 'pkg_type', 'region', 'runtime', 'runtime_version',
+      'samantha_web', 'sys_region', 'tea_uuid', 'tz_name', 'use-olympus-account',
+      'version_code', 'web_id', 'web_platform', 'web_tab_id'];
+    ${identityExpression}
+  })()`, web ? hydrationMs + returnGraceMs : 10_000);
+  const validWebIdentity = runtime?.params?.aid === '497858' && (runtime.params.device_id || runtime.params.web_id)
+    && (!expectedAccountId || runtime.accountId === expectedAccountId);
+  if (web ? !validWebIdentity : runtime?.params?.aid !== currentApp().aid || !runtime.params.device_id) {
     throw new Error(`Runtime identity does not match ${currentApp().name}`);
   }
   return { ...runtime, query: new URLSearchParams(runtime.params).toString() };

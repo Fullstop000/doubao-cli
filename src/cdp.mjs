@@ -16,10 +16,42 @@ async function fetchJson(url, timeoutMs = 3000) {
   }
 }
 
-export async function cdpStatus(endpoint = cdpEndpoint()) {
+function webChatTargets(targets) {
+  return targets.filter(target => target.type === 'page' && isAppTarget(target.url));
+}
+
+function targetIds(targets) {
+  return targets.map(target => target.id).filter(id => typeof id === 'string' && id);
+}
+
+function missingWebTargetError(endpoint, targets, targetId) {
+  const available = targetIds(targets).join(', ') || 'none';
+  return targetId
+    ? `Doubao Web target ${targetId} was not found at ${endpoint}; available matching target IDs: ${available}`
+    : `no matching Doubao Web chat page found at ${endpoint}; open https://www.doubao.com/chat/ in this browser`;
+}
+
+export async function cdpStatus(endpoint = cdpEndpoint(), timeoutMs = undefined) {
+  const deadline = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+  const budget = () => {
+    if (deadline === null) return 3000;
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error('Browser discovery timed out');
+    return Math.min(3000, ms);
+  };
   try {
-    const version = await fetchJson(`${endpoint}/json/version`);
-    const targets = await fetchJson(`${endpoint}/json/list`);
+    const version = await fetchJson(`${endpoint}/json/version`, budget());
+    const targets = await fetchJson(`${endpoint}/json/list`, budget());
+    if (currentApp().id === 'web') {
+      const matching = webChatTargets(targets);
+      const targetId = currentApp().targetId;
+      if (!matching.length || targetId && !matching.some(target => target.id === targetId)) {
+        return { app: 'web', available: false, endpoint, identityMismatch: true,
+          targetIds: targetIds(matching), error: missingWebTargetError(endpoint, matching, targetId) };
+      }
+      return { app: 'web', available: true, endpoint, browser: version.Browser,
+        protocolVersion: version['Protocol-Version'], targetIds: targetIds(matching), ...(targetId ? { targetId } : {}) };
+    }
     if (!targets.some((target) => isAppTarget(target.url) || isAppTarget(target.url, currentApp(), 'background'))) {
       return { available: false, endpoint, identityMismatch: true, error: `CDP endpoint ${endpoint} does not belong to ${currentApp().name}; select the correct --app or endpoint` };
     }
@@ -32,18 +64,39 @@ export async function cdpStatus(endpoint = cdpEndpoint()) {
 export async function findChatTarget(endpoint = cdpEndpoint(), timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   do {
-    const targets = await fetchJson(`${endpoint}/json/list`);
+    const targets = await fetchJson(`${endpoint}/json/list`, Math.min(3000, Math.max(1, deadline - Date.now())));
+    if (currentApp().id === 'web') {
+      const matching = webChatTargets(targets);
+      const targetId = currentApp().targetId;
+      if (targetId) {
+        const selected = matching.find(target => target.id === targetId);
+        if (!selected) throw new Error(missingWebTargetError(endpoint, matching, targetId));
+        if (!selected.webSocketDebuggerUrl) throw new Error(`Doubao Web target ${targetId} has no CDP WebSocket debugger URL`);
+        return selected;
+      }
+      if (matching.length > 1) {
+        throw new Error(`multiple Doubao Web chat pages found at ${endpoint}; select --target <id>. Matching target IDs: ${targetIds(matching).join(', ')}`);
+      }
+      if (matching[0]) {
+        if (!matching[0].webSocketDebuggerUrl) throw new Error(`Doubao Web target ${matching[0].id} has no CDP WebSocket debugger URL`);
+        return matching[0];
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+      continue;
+    }
     const target = targets.find(
       (item) => item.type === 'page' && isAppTarget(item.url),
     );
     if (target?.webSocketDebuggerUrl) return target;
     await new Promise((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
+  if (currentApp().id === 'web') throw new Error(missingWebTargetError(endpoint, []));
   throw new Error(`no Doubao chat page found at ${endpoint}; open a chat window in ${currentApp().name} explicitly, then retry`);
 }
 
 // The background page hosts the local-tool dispatch (connector.call routing).
 export async function findBackgroundTarget(endpoint = cdpEndpoint(), timeoutMs = 5000) {
+  if (currentApp().id === 'web') throw new Error('Doubao Web does not support desktop background-page operations');
   const deadline = Date.now() + timeoutMs;
   do {
     const targets = await fetchJson(`${endpoint}/json/list`);
@@ -171,6 +224,9 @@ export class CdpClient {
 export async function withChatClient(callback, endpoint = cdpEndpoint()) {
   const status = await cdpStatus(endpoint);
   if (!status.available) {
+    if (currentApp().id === 'web') {
+      throw new Error(status.identityMismatch ? status.error : `Doubao Web browser is unavailable at ${endpoint}. Run "doubao web login" to start a browser with remote debugging enabled and sign in.`);
+    }
     throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --app ${currentApp().id} cdp launch" to enable CDP.`);
   }
   const target = await findChatTarget(endpoint);
@@ -183,6 +239,7 @@ export async function withChatClient(callback, endpoint = cdpEndpoint()) {
 }
 
 export async function withBackgroundClient(callback, endpoint = cdpEndpoint()) {
+  if (currentApp().id === 'web') throw new Error('Doubao Web does not support desktop background-page operations');
   const status = await cdpStatus(endpoint);
   if (!status.available) {
     throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --app ${currentApp().id} cdp launch" to enable CDP.`);
