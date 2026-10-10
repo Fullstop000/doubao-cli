@@ -103,7 +103,7 @@ test('MCP CLI forwards permissions through preparation, requests, and follow-up 
     ['create', 'AlwaysAsk', 0], ['create', 'AskOnRisk', 1],
   ];
   for (const [command, mode, expected] of turns) {
-    await main(['sessions', command, ...(command === 'send' ? [conversationId] : []), 'ping',
+    await main(['--app', 'doubao', 'sessions', command, ...(command === 'send' ? [conversationId] : []), 'ping',
       '--mcp', connectorId, '--workspace', directory, '--no-skills', '--wait', '--json',
       ...(mode ? ['--permission', mode] : []),
     ]);

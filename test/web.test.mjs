@@ -209,7 +209,7 @@ test('platform selection preserves the app alias and deterministic desktop defau
 test('web target and mode options are accepted only in their supported scope', () => {
   assert.equal(parseOptions(['--platform', 'web', '--target', 'tab-A', 'status']).targetId, 'tab-A');
   for (const argv of [
-    ['--target', 'tab-A', 'status'], ['--platform', 'work', '--target', 'tab-A', 'status'],
+    ['--platform', 'work', '--target', 'tab-A', 'status'],
     ['--app', 'doubao', '--target', 'tab-A', 'status'],
   ]) assert.throws(() => parseOptions(argv), /--target requires doubao web/u);
   assert.throws(() => parseOptions(['--platform', 'web', '--target']), /requires a CDP target id/u);
@@ -220,11 +220,12 @@ test('web target and mode options are accepted only in their supported scope', (
   const work = parseOptions(['--platform', 'web', 'sessions', 'create', 'test', '--mode', 'work', '--runtime', 'cloud', '--wait']);
   assert.equal(work.runtime, 'cloud');
   assert.equal(work.mode, 'work');
+  assert.equal(parseOptions(['--platform', 'headless', 'sessions', 'create', 'test', '--mode', 'chat']).mode, 'chat');
   for (const argv of [
-    ['sessions', 'create', '--mode', 'chat'], ['--platform', 'doubao', 'sessions', 'create', '--mode', 'work'],
+    ['--platform', 'work', 'sessions', 'create', '--mode', 'chat'], ['--platform', 'doubao', 'sessions', 'create', '--mode', 'work'],
     ['--platform', 'web', 'status', '--mode', 'chat'],
     ['--platform', 'web', 'sessions', 'send', conversationId, 'test', '--mode', 'work'],
-  ]) assert.throws(() => parseOptions(argv), /--mode requires doubao web sessions create/u);
+  ]) assert.throws(() => parseOptions(argv), /--mode requires/u);
   assert.throws(() => parseOptions(['--platform', 'web', 'sessions', 'create', '--mode', '3']), /--mode requires chat or work/u);
   for (const action of ['status', 'wait', 'stop']) {
     const parsed = parseOptions(['--platform', 'web', 'sessions', action, conversationId, '--run', '56325877314422786']);

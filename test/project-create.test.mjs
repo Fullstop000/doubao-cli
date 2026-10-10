@@ -52,15 +52,15 @@ test('project input validates official weighted name limit and existing director
   assert.throws(() => projectCreationInput('demo', '/does-not-exist-doubao-project'), /not a directory/);
   assert.throws(() => projectCreationInput('demo', import.meta.filename), /not a directory/);
   assert.equal(projectCreationInput('demo', '.').workspace, process.cwd());
-  assert.throws(() => parseOptions(['projects', 'create']), /requires a project name/);
-  assert.deepEqual(parseOptions(['projects', 'create', '--help']).helpPath, ['projects', 'create']);
-  assert.throws(() => parseOptions(['projects', 'create', 'demo', '--workspce', '.']), /Unknown projects create option/);
-  assert.deepEqual(parseOptions(['projects', 'create', '--', '--a-name']).args, ['projects', 'create', '--a-name']);
-  assert.throws(() => parseOptions(['projects', 'create', 'demo', '--workspace']), /requires a directory/);
+  assert.throws(() => parseOptions(['--platform', 'work', 'projects', 'create']), /requires a project name/);
+  assert.deepEqual(parseOptions(['--platform', 'work', 'projects', 'create', '--help']).helpPath, ['projects', 'create']);
+  assert.throws(() => parseOptions(['--platform', 'work', 'projects', 'create', 'demo', '--workspce', '.']), /Unknown projects create option/);
+  assert.deepEqual(parseOptions(['--platform', 'work', 'projects', 'create', '--', '--a-name']).args, ['projects', 'create', '--a-name']);
+  assert.throws(() => parseOptions(['--platform', 'work', 'projects', 'create', 'demo', '--workspace']), /requires a directory/);
   for (const flags of [['--attach', '/tmp/a'], ['--wait'], ['--model', 'auto'], ['--no-skills'], ['--runtime', 'local'], ['--project', 'demo'], ['--enterprise-knowledge']]) {
-    assert.throws(() => parseOptions(['projects', 'create', 'demo', ...flags]));
+    assert.throws(() => parseOptions(['--platform', 'work', 'projects', 'create', 'demo', ...flags]));
   }
-  assert.equal(parseOptions(['projects', 'create', 'demo', '--workspace', '.', '--json']).workspace, '.');
+  assert.equal(parseOptions(['--platform', 'work', 'projects', 'create', 'demo', '--workspace', '.', '--json']).workspace, '.');
 });
 
 test('folderless creation uses the official service once and verifies its exact id', async () => {

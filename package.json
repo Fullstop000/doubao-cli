@@ -1,7 +1,7 @@
 {
   "name": "doubao-cli",
-  "version": "0.14.1",
-  "description": "Programmatic control for Doubao desktop and web sessions on macOS",
+  "version": "0.15.0",
+  "description": "Doubao CLI with Linux headless HTTP and macOS desktop and web backends",
   "author": "Fullstop000 <fullstop1005@gmail.com>",
   "type": "module",
   "bin": {
@@ -9,7 +9,8 @@
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "docs/headless.md"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
@@ -30,8 +31,13 @@
     "doubao",
     "cli",
     "macos",
+    "linux",
+    "headless",
     "automation",
     "cdp"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0"
+  }
 }

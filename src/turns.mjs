@@ -1,9 +1,9 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { currentApp, activeProfile } from './app.mjs';
 import { runtimeParameters, evaluateWithWatchdog, updateLiveControls, sendChatCompletion } from './protocol.mjs';
+import { configDirectory } from './config.mjs';
 
 function webIdentityGuard(runtime) {
   if (currentApp().id !== 'web') return { setup: '', check: '', rethrow: '' };
@@ -77,6 +77,7 @@ async function webJsonRequest(client, runtime, url, body, contentType, errorPref
 }
 
 export async function imRequest(client, route, cmd, key, body, timeoutMs = 10000) {
+  if (client.imRequest) return client.imRequest(route, cmd, key, body, timeoutMs);
   const web = currentApp().id === 'web';
   const deadline = web ? Date.now() + timeoutMs : undefined;
   if (web) webRequestBudget(deadline);
@@ -121,8 +122,18 @@ export function messageBlocks(message) {
 }
 export function messageText(message) {
   const blocks = messageBlocks(message);
-  if (!Array.isArray(blocks)) return '';
-  return blocks.filter(block => !block.control_info?.collapse_block_id)
+  // The HTTP API can return legacy JSON text with an empty content_block array.
+  if (!Array.isArray(blocks) || !blocks.length) {
+    const text = parse(message.content)?.text;
+    return typeof text === 'string' ? text.trim() : '';
+  }
+  const hidden = new Set(blocks.filter(block => block.content?.thinking_block).map(block => block.block_id));
+  for (let pass = 0; pass < blocks.length; pass++) {
+    let added = false;
+    for (const block of blocks) if (hidden.has(block.parent_id) && !hidden.has(block.block_id)) { hidden.add(block.block_id); added = true; }
+    if (!added) break;
+  }
+  return blocks.filter(block => !hidden.has(block.block_id) && !block.control_info?.collapse_block_id)
     .map(block => block.content?.text_block?.text || '').filter(Boolean).join('\n').trim();
 }
 export function taskLinks(messages) {
@@ -201,7 +212,7 @@ export function summarizeTurn(conversationId, root, messages, nodes, receipt = {
   const firstDelegation = runMessages.find(m => taskLinks([m]).length);
   if (status === 'completed' && nodes.length && latest?.message_id === firstDelegation?.message_id) status = 'running';
   if (receipt.cancellation?.confirmed && !tasks.running && !tasks.unknown
-    || currentApp().id !== 'web' && receipt.cancellation?.accepted && status === 'completed') status = 'cancelled';
+    || !['web', 'headless'].includes(currentApp().id) && receipt.cancellation?.accepted && status === 'completed') status = 'cancelled';
   if (pending.length && !['failed', 'cancelled'].includes(status)) status = 'waiting_input';
   if (['cancelled', 'failed'].includes(status)) pending = [];
   const reply = status === 'completed' ? { role: 'assistant', text: messageText(latest), messageId: latest?.message_id } : null;
@@ -210,7 +221,7 @@ export function summarizeTurn(conversationId, root, messages, nodes, receipt = {
     ...(status !== 'completed' && latest ? { progress: messageText(latest) } : {}) };
 }
 
-const remaining = deadline => currentApp().id === 'web' && deadline
+const remaining = deadline => ['web', 'headless'].includes(currentApp().id) && deadline
   ? Math.min(10000, webRequestBudget(deadline))
   : Math.max(1, Math.min(10000, deadline ? deadline - Date.now() : 10000));
 
@@ -281,7 +292,7 @@ export async function readTurn(client, conversationId, { runId, localMessageId, 
     queue.push(...children);
   }
   const result = summarizeTurn(conversationId, root, messages, nodes, receipt);
-  if (currentApp().id === 'web' && result.status === 'completed'
+  if (['web', 'headless'].includes(currentApp().id) && result.status === 'completed'
     && !result.reply?.text?.trim() && !result.artifacts.length) {
     result.status = 'running';
     result.reply = null;
@@ -291,17 +302,17 @@ export async function readTurn(client, conversationId, { runId, localMessageId, 
 }
 
 export async function receiptStore(client) {
-  const uid = await client.evaluate('localStorage.getItem("flow_tea_user_id")');
+  const uid = client.accountId || await client.evaluate('localStorage.getItem("flow_tea_user_id")');
   if (!uid || uid === '0') throw new Error('Sign in to the selected Doubao app');
   const app = currentApp();
   if (app.id === 'web' && app.accountId && uid !== app.accountId) {
     throw new Error('Doubao Web account changed; select the originally authenticated account');
   }
-  const identity = app.id === 'web'
+  const identity = ['web', 'headless'].includes(app.id)
     ? [app.id, app.endpoint, uid]
     : [app.id, path.resolve(app.dataDir), activeProfile(app), uid];
   const scope = createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 24);
-  const dir = path.join(process.env.DOUBAO_CLI_CONFIG_DIR || path.join(os.homedir(), 'Library/Application Support/doubao-cli'), 'turns', scope);
+  const dir = path.join(configDirectory(), 'turns', scope);
   const validate = id => { if (!/^\d{12,24}$/u.test(id || '')) throw new Error('Invalid run id'); return id; };
   return {
     save(receipt) {
@@ -401,7 +412,8 @@ export async function waitTurn(client, conversationId, options = {}) {
       if (currentApp().id !== 'web' && !resumed && receipt.requestBody && !receipt.handoffs?.length && !receipt.liveMessages?.some(m => pendingInputs([m]).length)) {
         resumed = true;
         try {
-          const result = await sendChatCompletion(client, { conversationId, runId: receipt.runId,
+          const send = client.resumeCompletion || ((options) => sendChatCompletion(client, options));
+          const result = await send({ conversationId, runId: receipt.runId,
             localMessageId: receipt.localMessageId, model: {}, resumeRequest: receipt.requestBody,
             timeoutMs: Math.max(1, deadline - Date.now()), waitForReply: true,
             onReceipt: next => { Object.assign(receipt, next); options.onReceipt?.(receipt); } });
@@ -433,7 +445,7 @@ export async function refreshTurn(client, conversationId, options = {}) {
   handoffsFromSnapshot(snapshot, receipt);
   if (['running', 'unknown'].includes(snapshot.result.status) && receipt.handoffs.some(task => !task.completed)) {
     await followTaskStreams(client, receipt, Math.min(1500, remaining(options.deadline)), options.onReceipt);
-    if (currentApp().id !== 'web' || !options.deadline || Date.now() < options.deadline) {
+    if (!['web', 'headless'].includes(currentApp().id) || !options.deadline || Date.now() < options.deadline) {
       snapshot = await readTurn(client, conversationId, { ...options, runId: receipt.runId, receipt });
     }
   }
@@ -443,7 +455,7 @@ export async function refreshTurn(client, conversationId, options = {}) {
 
 export async function stopTurn(client, conversationId, options = {}) {
   options.receipt ||= {};
-  const web = currentApp().id === 'web';
+  const web = ['web', 'headless'].includes(currentApp().id);
   const deadline = web ? Math.min(options.deadline || Infinity, Date.now() + (options.timeoutMs || 15000))
     : Date.now() + (options.timeoutMs || 15000);
   const receipt = options.receipt;
@@ -494,7 +506,7 @@ export async function stopTurn(client, conversationId, options = {}) {
         || stopped.has(node.threadId) || failed.has(node.threadId)) continue;
       try {
         const timeout = remaining(deadline);
-        const result = web
+        const result = client.terminateTask ? await client.terminateTask(node.threadId, timeout) : web
           ? await (async () => {
             const requestDeadline = Math.min(deadline, Date.now() + timeout);
             const runtime = await runtimeParameters(webObservationClient(client), { timeoutMs: timeout });
@@ -545,6 +557,7 @@ export async function stopTurn(client, conversationId, options = {}) {
 // Server snapshots remain authoritative for final text, task state and artifacts.
 export async function followTaskStreams(client, receipt, timeoutMs, onReceipt = () => {}) {
   if (!receipt.handoffs?.length) return;
+  if (client.followTaskStreams) return client.followTaskStreams(receipt, timeoutMs, onReceipt);
   const web = currentApp().id === 'web';
   const deadline = web ? Date.now() + timeoutMs : undefined;
   if (web) webRequestBudget(deadline);

@@ -23,6 +23,7 @@ import { resolvePermission } from './permissions.mjs';
 import { createProject, listProjects, projectCreationInput, runtimeAvailability, validateTaskOptions } from './context.mjs';
 import { currentApp, resolvePlatform, withApp } from './app.mjs';
 import { executeWeb, validateWebOptions } from './web.mjs';
+import { executeHeadless, validateHeadlessOptions } from './headless.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
@@ -56,6 +57,7 @@ const HELP = `Usage:
   doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
   doubao web <command> [options]  Web commands; run "doubao web help"
+  doubao headless <command> [options]  Headless cloud commands; run "doubao headless help"
 
 Help:
   Add --help or -h to any command, or use help <command>.
@@ -68,9 +70,9 @@ Local task execution permission (requires --runtime local or --mcp):
 
 Application:
   --app work|doubao  Select an app (default: Work if installed, otherwise Doubao)
-  --platform work|doubao|web  Select a backend; --platform web is a compatibility alias for "doubao web"
+  --platform work|doubao|web|headless  Select a backend; web and headless namespaces are compatibility aliases
   --target <id>  Select a Doubao web CDP page when several tabs match
-  --mode chat|work  Select the mode for a new web conversation
+  --mode chat|work  Select the mode for a new web or headless conversation
 
 Environment:
   DOUBAO_APP       Override the application path
@@ -80,6 +82,47 @@ Environment:
   DOUBAO_WEB_PROFILE_DIR  Dedicated browser data directory for web launch
   DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
   DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip configured automatic updates
+`;
+
+const HEADLESS_HELP = `Usage:
+  doubao headless login [--cookie-file <path>] [--timeout <seconds>] [--json]
+  doubao headless logout [--json]
+  doubao headless status [--json]
+  doubao headless capabilities [--json]
+  doubao headless sessions list [--limit <count>] [--json]
+  doubao headless sessions read <conversation-id> [--limit <count>] [--json]
+  doubao headless sessions create <message> [--mode chat|work] [--model <id-or-name>] [--wait] [--timeout <seconds>] [--json]
+  doubao headless sessions send <conversation-id> <message> [--model <id-or-name>] [--wait] [--timeout <seconds>] [--json]
+  doubao headless sessions status <conversation-id> [--run <run-id>] [--json]
+  doubao headless sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
+  doubao headless sessions stop <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
+  doubao headless models [--json]
+  doubao headless update [--json]
+  doubao headless update check [--json]
+  doubao headless update auto <on|off|status> [--json]
+
+Help:
+  Add --help or -h to any command, or use help <command>.
+  --  Treat the remaining arguments as literal text, including help and --help.
+
+Options:
+  --mode chat|work  Select the mode for a new conversation
+  --model <id-or-name>  Select an available model from headless models
+  --runtime cloud  Work conversations only (default)
+  --timeout <seconds>  Request or wait budget (default: 120)
+  --expect-json / --reply-schema <path>  Validate the final reply; create/send require --wait
+  --json  Output results as JSON
+  --  Treat the remaining arguments as message text
+
+Account:
+  Account login is required. Run "doubao headless login" and scan the terminal QR code with the Doubao mobile app.
+  --cookie-file imports session cookies for unattended setup; cookie files are secrets. No installed browser or local Doubao app is required.
+  Cloud Work is supported; local task execution is unsupported.
+  DOUBAO_HEADLESS_COOKIE supplies an existing session without saving it.
+
+Compatibility:
+  doubao --platform headless <command> remains supported.
+  Run "doubao help" for desktop and update commands.
 `;
 
 const WEB_HELP = `Usage:
@@ -130,9 +173,11 @@ Compatibility:
 
 function helpEntries(platform) {
   const web = platform === 'web';
-  const prefix = web ? '  doubao web ' : '  doubao ';
-  return (web ? WEB_HELP : HELP).split('\n\n')[0].split('\n').slice(1)
-    .filter(line => line.startsWith(prefix) && (web || !line.startsWith('  doubao web ')))
+  const headless = platform === 'headless';
+  const prefix = web ? '  doubao web ' : headless ? '  doubao headless ' : '  doubao ';
+  const helpText = web ? WEB_HELP : headless ? HEADLESS_HELP : HELP;
+  return helpText.split('\n\n')[0].split('\n').slice(1)
+    .filter(line => line.startsWith(prefix) && (web || headless || !line.startsWith('  doubao web ') && !line.startsWith('  doubao headless ')))
     .map(line => {
       const tokens = line.slice(prefix.length).split(' ');
       const end = tokens.findIndex(token => ['<', '[', '-'].some(prefix => token.startsWith(prefix)));
@@ -155,14 +200,17 @@ function helpCommandPath(args, platform) {
 
 function commandHelp(helpPath, platform) {
   const web = platform === 'web';
-  if (!helpPath.length) return web ? WEB_HELP : HELP;
+  const headless = platform === 'headless';
+  if (!helpPath.length) return web ? WEB_HELP : headless ? HEADLESS_HELP : HELP;
   const lines = helpPath[0] === 'version'
-    ? [`  doubao${web ? ' web' : ''} --version`]
+    ? [`  doubao${web ? ' web' : headless ? ' headless' : ''} --version`]
     : helpEntries(platform).filter(entry => helpPath.every((token, index) => entry.path[index] === token)).map(entry => entry.line);
   const options = web
     ? '  --target <id>  Select a browser page\n  --json  Output results as JSON'
+    : headless
+      ? '  --mode chat|work  Select the mode for a new conversation\n  --timeout <seconds>  Request or wait budget\n  --json  Output results as JSON'
     : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|web  Select a backend\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
-  const permission = !web && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
+  const permission = !web && !headless && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
     ? `\n\nLocal task execution permission${HELP.split('\n\nLocal task execution permission')[1].split('\n\nApplication:')[0]}`
     : '';
   return `Usage:\n${lines.join('\n')}\n\nOptions:\n${options}\n  -h, --help  Show help without executing the command\n  --  Treat the remaining arguments as literal text${permission}\n`;
@@ -178,8 +226,10 @@ export function parseOptions(argv) {
   let app;
   let platform;
   let webNamespace = false;
+  let headlessNamespace = false;
   let targetId;
   let mode;
+  let cookieFile;
   let json = false;
   let yes = false;
   let wait = false;
@@ -221,13 +271,17 @@ export function parseOptions(argv) {
       if (!['work', 'doubao'].includes(app)) throw new Error('--app requires work or doubao');
     } else if (argv[index] === '--platform') {
       platform = argv[++index];
-      if (!['work', 'doubao', 'web'].includes(platform)) throw new Error('--platform requires work, doubao, or web');
+      if (!['work', 'doubao', 'web', 'headless'].includes(platform)) throw new Error('--platform requires work, doubao, web, or headless');
     } else if (argv[index] === '--target') {
       targetId = argv[++index];
       if (!targetId || targetId.startsWith('-')) throw new Error('--target requires a CDP target id');
     } else if (argv[index] === '--mode') {
       mode = argv[++index];
       if (!['chat', 'work'].includes(mode)) throw new Error('--mode requires chat or work');
+    } else if (argv[index] === '--cookie-file') {
+      cookieFile = argv[index + 1];
+      if (!cookieFile || cookieFile.startsWith('--')) throw new Error('--cookie-file requires a file path');
+      index += 1;
     } else if (argv[index] === '--profile') {
       profile = argv[index + 1];
       if (!profile) throw new Error('--profile requires a value');
@@ -297,8 +351,9 @@ export function parseOptions(argv) {
       if (!pair || !pair.includes('=')) throw new Error('--env requires a KEY=VALUE pair');
       envPairs.push(pair);
       index += 1;
-    } else if ((!args.length || args.length === 1 && args[0] === 'help') && !webNamespace && argv[index] === 'web') {
-      webNamespace = true;
+    } else if ((!args.length || args.length === 1 && args[0] === 'help') && !webNamespace && !headlessNamespace && ['web', 'headless'].includes(argv[index])) {
+      webNamespace = argv[index] === 'web';
+      headlessNamespace = argv[index] === 'headless';
     } else {
       args.push(argv[index]);
       if (argv[index].startsWith('-')) unknownFlags.push(argv[index]);
@@ -309,22 +364,32 @@ export function parseOptions(argv) {
     if (app) throw new Error(`doubao web conflicts with --app ${app}`);
     platform = 'web';
   }
+  if (headlessNamespace) {
+    if (platform && platform !== 'headless') throw new Error(`doubao headless conflicts with --platform ${platform}`);
+    if (app) throw new Error(`doubao headless conflicts with --app ${app}`);
+    platform = 'headless';
+  }
   if (app && platform && app !== platform) throw new Error('--app and --platform select different backends');
-  const options = { args, app, platform, targetId, mode, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  const options = { args, app, platform, targetId, mode, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
+  const selectedPlatform = platform || app || (process.platform === 'linux' ? 'headless' : undefined);
+  const helpPlatform = selectedPlatform;
   const positionalArgs = args.slice(0, literalStart ?? args.length);
   const helpIndex = positionalArgs.indexOf('help');
   // Reserve standalone help along command paths; -- preserves literal operands.
   if (helpIndex === 0 || helpIndex === 1 || helpIndex === 2 && positionalArgs.length === 3 && literalStart === undefined) {
     const topic = positionalArgs.filter((_, index) => index !== helpIndex);
-    const helpPath = helpCommandPath(topic, platform);
+    const helpPath = helpCommandPath(topic, helpPlatform);
     if (helpIndex <= helpPath.length) return { ...options, helpPath };
   }
-  if (help) return { ...options, helpPath: helpCommandPath(positionalArgs, platform) };
+  if (help) return { ...options, helpPath: helpCommandPath(positionalArgs, helpPlatform) };
   if (!positionalArgs.length && ['help', '--help', '-h'].includes(args[0])) return { ...options, helpPath: [] };
   const unknownWebFlags = unknownFlags.filter(flag => flag !== args[0] || !['--help', '-h', '--version', '-v'].includes(flag));
-  if (platform === 'web' && unknownWebFlags.length) throw new Error(`Unknown Web option: ${unknownWebFlags[0]}; use -- before literal option text`);
-  if (targetId && platform !== 'web') throw new Error('--target requires doubao web (or --platform web)');
-  if (mode && (platform !== 'web' || args[0] !== 'sessions' || args[1] !== 'create')) throw new Error('--mode requires doubao web sessions create (or --platform web sessions create)');
+  if (selectedPlatform === 'web' && unknownWebFlags.length) throw new Error(`Unknown Web option: ${unknownWebFlags[0]}; use -- before literal option text`);
+  if (selectedPlatform === 'headless' && unknownWebFlags.length) throw new Error(`Unknown headless option: ${unknownWebFlags[0]}; use -- before literal message text`);
+  if (targetId && !['web', 'headless'].includes(selectedPlatform)) throw new Error('--target requires doubao web (or --platform web)');
+  if (mode && !((selectedPlatform === 'web' || selectedPlatform === 'headless') && args[0] === 'sessions' && args[1] === 'create')) {
+    throw new Error('--mode requires doubao web sessions create or doubao headless sessions create (or a matching --platform selector)');
+  }
   if (runId && (args[0] !== 'sessions' || !['status', 'wait', 'stop'].includes(args[1]))) throw new Error('--run requires sessions status/wait/stop');
   if (args[0] === 'projects' && args[1] === 'create') {
     if (unknownFlags.length) throw new Error(`Unknown projects create option: ${unknownFlags[0]}. Run "doubao help"; use -- before a name starting with -`);
@@ -363,7 +428,9 @@ export function parseOptions(argv) {
       throw new Error('--expect-json and --reply-schema require a message');
     }
   }
-  if (platform === 'web') validateWebOptions(options);
+  if (selectedPlatform === 'web') validateWebOptions(options);
+  if (cookieFile && (selectedPlatform !== 'headless' || args[0] !== 'login')) throw new Error('--cookie-file requires doubao headless login');
+  if (selectedPlatform === 'headless') validateHeadlessOptions(options);
   return options;
 }
 
@@ -494,13 +561,15 @@ function validateReplyOption(result, { expectJson, replySchema }, schema) {
 export async function main(argv) {
   const options = parseOptions(argv);
   if (options.helpPath) {
-    console.log(commandHelp(options.helpPath, options.platform || options.app));
+    const helpPlatform = options.platform || options.app || (process.platform === 'linux' ? 'headless' : undefined);
+    console.log(commandHelp(options.helpPath, helpPlatform));
     return;
   }
   options.schema = loadReplySchema(options);
-  const app = resolvePlatform(options.platform || options.app);
+  const selectedPlatform = options.platform || options.app || (process.platform === 'linux' ? 'headless' : undefined);
+  const app = resolvePlatform(selectedPlatform);
   if (options.targetId) app.targetId = options.targetId;
-  if (options.profile && app.id !== 'web') {
+  if (options.profile && !['web', 'headless'].includes(app.id)) {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
     const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage'].includes(command)
@@ -524,10 +593,9 @@ async function run(options) {
   const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
   const isolation = { runtime, project, enterpriseKnowledge, workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
-  const dataDir = getDataDir();
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
-    console.log(currentApp().id === 'web' ? WEB_HELP : HELP);
+    console.log(currentApp().id === 'web' ? WEB_HELP : currentApp().id === 'headless' ? HEADLESS_HELP : HELP);
     return;
   }
   if (command === 'version' || command === '--version' || command === '-v') {
@@ -592,6 +660,17 @@ async function run(options) {
     output(command === 'login' && !json ? 'Doubao Web is signed in and ready.' : validated, json);
     return;
   }
+
+  if (currentApp().id === 'headless') {
+    const result = await executeHeadless(options);
+    const validated = validateReplyOption(result, { expectJson, replySchema }, options.schema);
+    if ((wait || command === 'sessions' && subcommand === 'wait') && validated.status && validated.status !== 'completed') process.exitCode = 1;
+    if (command === 'sessions' && subcommand === 'stop' && validated.stopped === false) process.exitCode = 1;
+    output(command === 'login' && !json ? 'Doubao Headless is signed in and ready.' : validated, json);
+    return;
+  }
+
+  const dataDir = getDataDir();
 
   if (command === 'profiles') {
     const { readProfiles } = await import('./storage.mjs');

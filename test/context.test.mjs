@@ -13,14 +13,15 @@ const project = { id: '123', name: 'demo', folders: [
 const skill = { name: 'doubao-enterprise-search', displayName: '企业知识', type: 2, externalId: 'dynamic-id' };
 
 test('task flags validate scope, values and cloud/local conflicts before sending', () => {
-  const args = parseOptions(['sessions', 'create', 'hello', '--runtime', 'local', '--project', 'demo', '--enterprise-knowledge', '--attach', '/tmp/a', '--permission', 'AlwaysAsk']);
+  const desktopOptions = args => parseOptions(['--app', 'doubao', ...args]);
+  const args = desktopOptions(['sessions', 'create', 'hello', '--runtime', 'local', '--project', 'demo', '--enterprise-knowledge', '--attach', '/tmp/a', '--permission', 'AlwaysAsk']);
   assert.equal(args.runtime, 'local'); assert.equal(args.project, 'demo'); assert.equal(args.enterpriseKnowledge, true);
   for (const flags of [['--runtime', 'typo'], ['--project'], ['--runtime', 'cloud', '--workspace', '/tmp'],
     ['--runtime', 'cloud', '--no-skills'], ['--runtime', 'cloud', '--mcp', '123456'], ['--runtime', 'cloud', '--permission', 'FullAccess']]) {
-    assert.throws(() => parseOptions(['sessions', 'create', 'hello', ...flags]));
+    assert.throws(() => desktopOptions(['sessions', 'create', 'hello', ...flags]));
   }
-  assert.throws(() => parseOptions(['sessions', 'create', '--runtime', 'local']), /require a message/);
-  assert.throws(() => parseOptions(['models', '--enterprise-knowledge']), /require sessions/);
+  assert.throws(() => desktopOptions(['sessions', 'create', '--runtime', 'local']), /require a message/);
+  assert.throws(() => desktopOptions(['models', '--enterprise-knowledge']), /require sessions/);
 });
 
 test('project selection uses exact names, rejects collisions and grants only this device folders', () => {
