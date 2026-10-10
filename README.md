@@ -2,16 +2,21 @@
 
 ## Install
 
-Requirements: macOS and Node.js 22+. Desktop use requires signed-in DoubaoWork.app or Doubao.app; Web use requires Chrome and website sign-in through `doubao web login`.
+Requirements: Node.js 22+. Headless runs on Linux or macOS with an authenticated Doubao account. Desktop and browser backends require macOS plus DoubaoWork.app / Doubao.app or Chrome respectively.
 
 ```bash
 npm install --global doubao-cli@latest
+# Linux (defaults to headless):
+doubao login
+doubao sessions create "Hello" --mode work --wait --json
+
+# macOS desktop:
 doubao cdp launch
 doubao status
 ```
 
 - Restart confirmation: interactive prompt; scripts require `cdp launch --yes`.
-- Chat window: must remain open.
+- Desktop chat window: must remain open.
 
 Without global installation:
 
@@ -52,6 +57,42 @@ doubao --profile "Profile 1" sessions list
 - Conversation: use the same app on every turn.
 - Messaging, models and MCP: selected profile must be active in the app.
 - `sessions open <conversation-id>`: navigate to session; may change focus.
+
+### Headless (experimental)
+
+```bash
+doubao headless login
+# Scan the terminal QR with the Doubao mobile app and approve sign-in.
+doubao headless status --json
+doubao headless capabilities --json
+doubao headless models --json
+doubao headless sessions list --limit 20 --json
+doubao headless sessions create "Hello" --mode chat --wait --json
+doubao headless sessions create "Write a plan" --mode work --model 5 --wait --json
+doubao headless sessions send <conversation-id> "Continue" --wait --json
+doubao headless sessions read <conversation-id> --limit 5 --json
+doubao headless sessions wait <conversation-id> --run <run-id> --json
+doubao headless sessions stop <conversation-id> --run <run-id> --json
+doubao headless logout
+```
+
+- Direct HTTPS from Node; no browser, CDP, display server, or local Doubao installation. Linux defaults to this backend. macOS requires `headless` or `--platform headless`.
+- Default creation mode: `work`; execution: cloud. Follow-ups retain the conversation mode. Desktop local-runtime conversations are rejected.
+- Model selection: live model ID or exact name, available for the selected mode and account. `--model` works on create/send; model aliases and reasoning selection are not exposed here.
+- Save `conversationId` and `runId`. An accepted timeout/disconnect is recovered with `sessions wait`, using the original request identity. Sending is never retried automatically. `stop` confirms server state; a completed task is already stopped.
+- Headless supports chat, cloud Work, recent sessions, reads, model selection and task recovery/cancellation. Attachments, local execution, MCP, project/knowledge selection, UI navigation and interactive approval answers are currently unavailable. Check `capabilities` before automation.
+- Terminal QR login requires scanning and approval in the Doubao mobile app. Security challenges fail explicitly and may require supported website login.
+- Account cookies and recovery files are secrets, stored with mode 0600. `logout` removes saved credentials; an externally set `DOUBAO_HEADLESS_COOKIE` remains active until unset. Protocol compatibility metadata can require updates when Doubao changes its private service APIs.
+
+Unattended sign-in with an existing session:
+
+```bash
+doubao headless login --cookie-file /secure/doubao-cookie.txt --json
+```
+
+The file accepts a Cookie header, `{ "cookie": "..." }`, or an exported cookie array. Credentials are read from the file, not command-line values. `DOUBAO_HEADLESS_COOKIE` supplies a session in memory instead.
+
+[Headless verification and limits](docs/headless.md)
 
 ### Web platform (experimental)
 
@@ -203,11 +244,14 @@ doubao update auto off
 | `DOUBAO_BROWSER_APP` | Web browser app; default `/Applications/Google Chrome.app` |
 | `DOUBAO_WEB_PROFILE_DIR` | Dedicated Web browser data directory; default settings directory + `web-browser` |
 | `DOUBAO_CLI_CONFIG_DIR` | Settings and recovery directory |
+| `XDG_CONFIG_HOME` | Linux settings root; default `~/.config` |
+| `DOUBAO_HEADLESS_COOKIE` | Headless session Cookie header; secret, alternative to saved login |
 | `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` | Disable automatic updates and reminders |
 
-- Default directory: `~/Library/Application Support/doubao-cli`.
+- Default directory: macOS `~/Library/Application Support/doubao-cli`; Linux `$XDG_CONFIG_HOME/doubao-cli` or `~/.config/doubao-cli`.
+- Headless credentials: `headless/session.json`.
 - Update settings: `update.json`.
-- Recovery: `turns/`; desktop records use app/profile/account scope, Web records use platform/endpoint/account scope. Files use mode 0600 and may contain task content. Retain for task recovery.
+- Recovery: `turns/`; desktop records use app/profile/account scope, Web and headless records use platform/endpoint/account scope. Files use mode 0600 and may contain task content. Retain for task recovery.
 
 ## Limits
 

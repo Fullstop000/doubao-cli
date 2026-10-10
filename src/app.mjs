@@ -25,8 +25,15 @@ export function resolveApp(requested, env = process.env, exists = fs.existsSync)
 }
 
 export function resolvePlatform(requested, env = process.env, exists = fs.existsSync) {
-  if (requested && !['work', 'doubao', 'web'].includes(requested)) {
-    throw new Error('--platform requires work, doubao, or web');
+  if (requested && !['work', 'doubao', 'web', 'headless'].includes(requested)) {
+    throw new Error('--platform requires work, doubao, or web; headless is also supported');
+  }
+  if (requested === 'headless') {
+    return {
+      id: 'headless', platform: 'headless', name: 'Doubao Headless',
+      appPath: null, dataDir: null,
+      endpoint: 'https://www.doubao.com',
+    };
   }
   if (requested === 'web') {
     return {

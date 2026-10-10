@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { configDirectory } from './config.mjs';
 
 const PACKAGE_NAME = 'doubao-cli';
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
@@ -51,8 +51,7 @@ export function compareVersions(leftVersion, rightVersion) {
 }
 
 export function updateStatePath(env = process.env) {
-  const directory = env.DOUBAO_CLI_CONFIG_DIR
-    || path.join(os.homedir(), 'Library', 'Application Support', PACKAGE_NAME);
+  const directory = configDirectory(env);
   return path.join(directory, 'update.json');
 }
 

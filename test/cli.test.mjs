@@ -3,8 +3,17 @@ import childProcess, { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import fs from 'node:fs';
 import test from 'node:test';
-import { main, parseOptions } from '../src/cli.mjs';
+import { main, parseOptions as parseRawOptions } from '../src/cli.mjs';
 import { resolvePermission } from '../src/permissions.mjs';
+
+// These parser cases exercise the legacy desktop surface; headless CLI tests
+// cover Linux's implicit default separately in headless-cli.test.mjs.
+function parseOptions(argv) {
+  const hasSelector = argv.includes('--app') || argv.includes('--platform');
+  const webNamespace = argv[0] === 'web' || argv[0] === 'help' && argv[1] === 'web'
+    || argv[0] === '--json' && argv[1] === 'web';
+  return parseRawOptions(hasSelector || webNamespace ? argv : ['--app', 'doubao', ...argv]);
+}
 
 const cliPath = new URL('../bin/doubao.mjs', import.meta.url);
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -17,7 +26,7 @@ test('reports the installed package version', () => {
 });
 
 test('documents model selection commands', () => {
-  const result = spawnSync(process.execPath, [cliPath.pathname, '--help'], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [cliPath.pathname, '--platform', 'doubao', '--help'], { encoding: 'utf8' });
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /doubao models \[--json\]/u);
@@ -95,7 +104,7 @@ test('every desktop and web command exposes scoped help before executing', () =>
   const web = ['login', 'status', 'capabilities', 'sessions',
     ...['list', 'current', 'create', 'open', 'read', 'send', 'status', 'wait', 'stop'].map(action => `sessions ${action}`),
     'cdp', 'cdp status', 'cdp launch', 'update', 'update check', 'update auto', 'version'];
-  for (const [prefix, topics] of [[[], desktop], [['web'], web]]) {
+  for (const [prefix, topics, isWeb] of [[['--platform', 'doubao'], desktop, false], [['web'], web, true]]) {
     for (const topic of topics) {
       const argv = [...prefix, ...topic.split(' '), '--help'];
       const result = spawnSync(process.execPath, [cliPath.pathname, ...argv], {
@@ -106,9 +115,9 @@ test('every desktop and web command exposes scoped help before executing', () =>
       assert.match(result.stdout, /^Usage:\n/u);
       assert.equal(result.stderr, '');
       const usage = topic === 'version' ? '--version' : topic;
-      assert.ok(result.stdout.includes(`  doubao${prefix.length ? ' web' : ''} ${usage}`), argv.join(' '));
+      assert.ok(result.stdout.includes(`  doubao${isWeb ? ' web' : ''} ${usage}`), argv.join(' '));
       if (topic === 'sessions create') assert.doesNotMatch(result.stdout, /sessions send/u);
-      if (prefix.length) assert.doesNotMatch(result.stdout, /--permission|--profile|--app/u);
+      if (isWeb) assert.doesNotMatch(result.stdout, /--permission|--profile|--app/u);
     }
   }
 });
@@ -152,7 +161,7 @@ test('help skips network, native app, profile, workspace, schema and update acce
       ['update', '--help'], ['web', 'login', '--help'],
       ['web', 'sessions', 'create', '--runtime', 'cloud', '--help'],
       ['--profile', 'missing', '--', 'help'],
-    ]) await main(argv);
+    ]) await main(argv[0] === 'web' ? argv : ['--platform', 'doubao', ...argv]);
     assert.equal(output.length, 11);
     assert.ok(output.every(value => value.startsWith('Usage:')));
   } finally {

@@ -1,13 +1,34 @@
 ---
 name: doubao
-description: "Control Doubao desktop apps or the experimental Doubao website on macOS through the doubao CLI: create, read, send to, or stop chat sessions, attach files, select desktop execution environments/projects/enterprise knowledge and models, and register local stdio MCP tools. Web requires a signed-in dedicated Chrome profile."
+description: "Control Doubao through a Linux/macOS headless HTTPS CLI, or macOS desktop/browser backends. Headless supports chat, cloud Work, models, session reads and task recovery without a browser or installed Doubao app. Desktop additionally supports attachments, local execution and MCP. Requires Node.js 22+ and account sign-in."
 ---
 
 # Doubao CLI
 
-`doubao` controls a local Doubao desktop app over localhost CDP, or the experimental Doubao website in a dedicated Chrome profile. No API keys are required; sign-in stays in the app/browser. Requires macOS and Node.js 22+; desktop commands require DoubaoWork.app or Doubao.app.
+`doubao` supports direct headless HTTPS, macOS desktop CDP, and a dedicated Chrome profile. Requires Node.js 22+ and Doubao account sign-in. Linux defaults to headless; desktop/browser backends require macOS.
 
 If the CLI is missing: `npm install --global doubao-cli@latest` (or prefix commands with `npx --yes doubao-cli@latest`).
+
+## Headless
+
+```bash
+doubao headless login                  # Terminal QR; approve on the phone
+doubao headless status --json
+doubao headless capabilities --json
+doubao headless models --json
+doubao headless sessions create "..." --mode work --wait --json
+doubao headless sessions create "..." --mode chat --wait --json
+doubao headless sessions send <id> "..." --wait --json
+doubao headless sessions wait <id> --run <run-id> --json
+doubao headless sessions stop <id> --run <run-id> --json
+```
+
+- No browser, CDP or installed desktop app is required. Do not launch an app to recover a headless connection.
+- Default mode is cloud Work. Existing desktop local-runtime conversations are rejected. Attachments, local execution, MCP, project/knowledge selection and interactive approval answers are not exposed here.
+- `login --cookie-file <secret-path>` imports an existing Cookie header or cookie array. `DOUBAO_HEADLESS_COOKIE` is an in-memory alternative. Do not print credentials or place them in command operands.
+- Model selection uses live IDs or exact names from `headless models`; repeat `--model` on create/send when changing it.
+- Save both IDs; recover accepted timeouts with `wait`, never by resending. `waiting_input` remains unresolved until the account's interactive control is answered elsewhere.
+- Terminal QR issuance and unscanned polling are verified. Phone approval and confirmed-login saving need live acceptance. This experimental backend uses private service APIs.
 
 ## App selection
 
