@@ -53,7 +53,7 @@ test('project input validates official weighted name limit and existing director
   assert.throws(() => projectCreationInput('demo', import.meta.filename), /not a directory/);
   assert.equal(projectCreationInput('demo', '.').workspace, process.cwd());
   assert.throws(() => parseOptions(['projects', 'create']), /requires a project name/);
-  assert.throws(() => parseOptions(['projects', 'create', '--help']), /Run "doubao help"/);
+  assert.deepEqual(parseOptions(['projects', 'create', '--help']).helpPath, ['projects', 'create']);
   assert.throws(() => parseOptions(['projects', 'create', 'demo', '--workspce', '.']), /Unknown projects create option/);
   assert.deepEqual(parseOptions(['projects', 'create', '--', '--a-name']).args, ['projects', 'create', '--a-name']);
   assert.throws(() => parseOptions(['projects', 'create', 'demo', '--workspace']), /requires a directory/);

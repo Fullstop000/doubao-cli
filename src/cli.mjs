@@ -46,6 +46,7 @@ const HELP = `Usage:
   doubao mcp remove <connector-id> [--json]
   doubao models [--json]
   doubao model [--json]
+  doubao model current [--json]
   doubao model select <model> [--reasoning <level>] [--json]
   doubao model reasoning <level> [--json]
   doubao cdp status [--json]
@@ -55,6 +56,10 @@ const HELP = `Usage:
   doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
   doubao web <command> [options]  Web commands; run "doubao web help"
+
+Help:
+  Add --help or -h to any command, or use help <command>.
+  --  Treat the remaining arguments as literal text, including help and --help.
 
 Local task execution permission (requires --runtime local or --mcp):
   --permission <mode>  AlwaysAsk | AskOnRisk | FullAccess (default)
@@ -90,7 +95,16 @@ const WEB_HELP = `Usage:
   doubao web sessions status <conversation-id> [--run <run-id>] [--json]
   doubao web sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--expect-json] [--reply-schema <path>] [--json]
   doubao web sessions stop <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
+  doubao web cdp status [--json]
+  doubao web cdp launch [--json]
+  doubao web update [--json]
+  doubao web update check [--json]
+  doubao web update auto <on|off|status> [--json]
   doubao web --version
+
+Help:
+  Add --help or -h to any command, or use help <command>.
+  --  Treat the remaining arguments as literal text, including help and --help.
 
 Options:
   --target <id>  Select a browser page when several Doubao tabs match
@@ -114,9 +128,51 @@ Compatibility:
   Run "doubao help" for desktop and update commands.
 `;
 
+function helpEntries(platform) {
+  const web = platform === 'web';
+  const prefix = web ? '  doubao web ' : '  doubao ';
+  return (web ? WEB_HELP : HELP).split('\n\n')[0].split('\n').slice(1)
+    .filter(line => line.startsWith(prefix) && (web || !line.startsWith('  doubao web ')))
+    .map(line => {
+      const tokens = line.slice(prefix.length).split(' ');
+      const end = tokens.findIndex(token => ['<', '[', '-'].some(prefix => token.startsWith(prefix)));
+      return { line, path: tokens.slice(0, end < 0 ? tokens.length : end) };
+    }).filter(entry => entry.path.length);
+}
+
+function helpCommandPath(args, platform) {
+  if (!args.length) return [];
+  if (['version', '--version', '-v'].includes(args[0])) return ['version'];
+  const entries = helpEntries(platform);
+  const matches = entries.filter(entry => entry.path[0] === args[0]);
+  if (!matches.length) throw new Error(`Unknown help topic: ${args.join(' ')}`);
+  if (args.length > 1 && matches.some(entry => entry.path.length > 1)) {
+    if (!matches.some(entry => entry.path[1] === args[1])) throw new Error(`Unknown help topic: ${args.slice(0, 2).join(' ')}`);
+    return args.slice(0, 2);
+  }
+  return args.slice(0, 1);
+}
+
+function commandHelp(helpPath, platform) {
+  const web = platform === 'web';
+  if (!helpPath.length) return web ? WEB_HELP : HELP;
+  const lines = helpPath[0] === 'version'
+    ? [`  doubao${web ? ' web' : ''} --version`]
+    : helpEntries(platform).filter(entry => helpPath.every((token, index) => entry.path[index] === token)).map(entry => entry.line);
+  const options = web
+    ? '  --target <id>  Select a browser page\n  --json  Output results as JSON'
+    : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|web  Select a backend\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
+  const permission = !web && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
+    ? `\n\nLocal task execution permission${HELP.split('\n\nLocal task execution permission')[1].split('\n\nApplication:')[0]}`
+    : '';
+  return `Usage:\n${lines.join('\n')}\n\nOptions:\n${options}\n  -h, --help  Show help without executing the command\n  --  Treat the remaining arguments as literal text${permission}\n`;
+}
+
 export function parseOptions(argv) {
   const args = [];
   const unknownFlags = [];
+  let help = false;
+  let literalStart;
   let profile;
   let runId;
   let app;
@@ -146,8 +202,11 @@ export function parseOptions(argv) {
   const attachments = [];
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--') {
+      literalStart = args.length;
       args.push(...argv.slice(index + 1));
       break;
+    } else if (argv[index] === '--help' || argv[index] === '-h') {
+      help = true;
     } else if (argv[index] === '--json') {
       json = true;
     } else if (argv[index] === '--yes') {
@@ -238,7 +297,7 @@ export function parseOptions(argv) {
       if (!pair || !pair.includes('=')) throw new Error('--env requires a KEY=VALUE pair');
       envPairs.push(pair);
       index += 1;
-    } else if (!args.length && !webNamespace && argv[index] === 'web') {
+    } else if ((!args.length || args.length === 1 && args[0] === 'help') && !webNamespace && argv[index] === 'web') {
       webNamespace = true;
     } else {
       args.push(argv[index]);
@@ -251,6 +310,17 @@ export function parseOptions(argv) {
     platform = 'web';
   }
   if (app && platform && app !== platform) throw new Error('--app and --platform select different backends');
+  const options = { args, app, platform, targetId, mode, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
+  const positionalArgs = args.slice(0, literalStart ?? args.length);
+  const helpIndex = positionalArgs.indexOf('help');
+  // Reserve standalone help along command paths; -- preserves literal operands.
+  if (helpIndex === 0 || helpIndex === 1 || helpIndex === 2 && positionalArgs.length === 3 && literalStart === undefined) {
+    const topic = positionalArgs.filter((_, index) => index !== helpIndex);
+    const helpPath = helpCommandPath(topic, platform);
+    if (helpIndex <= helpPath.length) return { ...options, helpPath };
+  }
+  if (help) return { ...options, helpPath: helpCommandPath(positionalArgs, platform) };
+  if (!positionalArgs.length && ['help', '--help', '-h'].includes(args[0])) return { ...options, helpPath: [] };
   const unknownWebFlags = unknownFlags.filter(flag => flag !== args[0] || !['--help', '-h', '--version', '-v'].includes(flag));
   if (platform === 'web' && unknownWebFlags.length) throw new Error(`Unknown Web option: ${unknownWebFlags[0]}; use -- before literal option text`);
   if (targetId && platform !== 'web') throw new Error('--target requires doubao web (or --platform web)');
@@ -293,7 +363,6 @@ export function parseOptions(argv) {
       throw new Error('--expect-json and --reply-schema require a message');
     }
   }
-  const options = { args, app, platform, targetId, mode, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs };
   if (platform === 'web') validateWebOptions(options);
   return options;
 }
@@ -424,6 +493,10 @@ function validateReplyOption(result, { expectJson, replySchema }, schema) {
 
 export async function main(argv) {
   const options = parseOptions(argv);
+  if (options.helpPath) {
+    console.log(commandHelp(options.helpPath, options.platform || options.app));
+    return;
+  }
   options.schema = loadReplySchema(options);
   const app = resolvePlatform(options.platform || options.app);
   if (options.targetId) app.targetId = options.targetId;

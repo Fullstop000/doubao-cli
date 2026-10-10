@@ -23,6 +23,9 @@ npx --yes doubao-cli@latest status
 
 ```bash
 doubao help
+doubao sessions --help
+doubao sessions create --help
+doubao web sessions send -h
 doubao status --json
 doubao sessions list
 doubao sessions current
@@ -32,6 +35,8 @@ doubao sessions send <conversation-id> "Continue" --wait
 ```
 
 Data-returning commands: `--json`.
+
+Command help: append `--help` / `-h`, or use `doubao help sessions create` / `doubao sessions help create`. Help runs without connecting or executing the command. `--` ends option parsing: `doubao sessions create -- help` sends the literal message `help`.
 
 ### App and profile
 

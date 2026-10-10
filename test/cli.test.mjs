@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import childProcess, { spawnSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import fs from 'node:fs';
 import test from 'node:test';
 import { main, parseOptions } from '../src/cli.mjs';
@@ -79,6 +80,113 @@ test('web help is scoped and runs without connecting to a browser', () => {
   const version = spawnSync(process.execPath, [cliPath.pathname, 'web', '--version'], { encoding: 'utf8' });
   assert.equal(version.status, 0, version.stderr);
   assert.equal(version.stdout.trim(), packageJson.version);
+});
+
+test('every desktop and web command exposes scoped help before executing', () => {
+  const desktop = [
+    'status', 'usage', 'profiles', 'runtimes', 'capabilities', 'models',
+    'projects', 'projects list', 'projects create',
+    'sessions', ...['list', 'current', 'create', 'open', 'read', 'send', 'status', 'wait', 'stop'].map(action => `sessions ${action}`),
+    'mcp', 'mcp register', 'mcp list', 'mcp remove',
+    'model', 'model current', 'model select', 'model reasoning',
+    'cdp', 'cdp status', 'cdp launch',
+    'update', 'update check', 'update auto', 'version',
+  ];
+  const web = ['login', 'status', 'capabilities', 'sessions',
+    ...['list', 'current', 'create', 'open', 'read', 'send', 'status', 'wait', 'stop'].map(action => `sessions ${action}`),
+    'cdp', 'cdp status', 'cdp launch', 'update', 'update check', 'update auto', 'version'];
+  for (const [prefix, topics] of [[[], desktop], [['web'], web]]) {
+    for (const topic of topics) {
+      const argv = [...prefix, ...topic.split(' '), '--help'];
+      const result = spawnSync(process.execPath, [cliPath.pathname, ...argv], {
+        encoding: 'utf8', timeout: 3000,
+        env: { ...process.env, DOUBAO_CDP_ENDPOINT: 'http://127.0.0.1:1', DOUBAO_DATA_DIR: '/missing-help-profile', DOUBAO_CLI_DISABLE_AUTO_UPDATE: '1' },
+      });
+      assert.equal(result.status, 0, `${argv.join(' ')}: ${result.stderr}`);
+      assert.match(result.stdout, /^Usage:\n/u);
+      assert.equal(result.stderr, '');
+      const usage = topic === 'version' ? '--version' : topic;
+      assert.ok(result.stdout.includes(`  doubao${prefix.length ? ' web' : ''} ${usage}`), argv.join(' '));
+      if (topic === 'sessions create') assert.doesNotMatch(result.stdout, /sessions send/u);
+      if (prefix.length) assert.doesNotMatch(result.stdout, /--permission|--profile|--app/u);
+    }
+  }
+});
+
+test('help aliases select the same command and work with operands and backend selectors', () => {
+  for (const argv of [
+    ['sessions', 'create', '--help'], ['sessions', 'create', '-h'], ['sessions', 'create', 'help'],
+    ['help', 'sessions', 'create'], ['sessions', 'help', 'create'],
+    ['--help', 'sessions', 'create'], ['sessions', '-h', 'create'],
+    ['sessions', 'create', 'a message', '--help'],
+  ]) assert.deepEqual(parseOptions(argv).helpPath, ['sessions', 'create']);
+  for (const argv of [
+    ['web', 'sessions', 'send', '-h'], ['web', 'help', 'sessions', 'send'],
+    ['help', 'web', 'sessions', 'send'], ['web', 'sessions', 'help', 'send'],
+    ['--platform', 'web', 'sessions', 'send', '--help'],
+  ]) {
+    const options = parseOptions(argv);
+    assert.equal(options.platform, 'web');
+    assert.deepEqual(options.helpPath, ['sessions', 'send']);
+  }
+  for (const argv of [['--', 'help'], ['--', '--help']]) assert.deepEqual(parseOptions(argv).helpPath, []);
+  assert.deepEqual(parseOptions(['sessions', 'help']).helpPath, ['sessions']);
+});
+
+test('help skips network, native app, profile, workspace, schema and update access', async t => {
+  const output = [];
+  t.mock.method(console, 'log', value => output.push(value));
+  t.mock.method(globalThis, 'fetch', () => assert.fail('help must not reach the network'));
+  for (const method of ['readFileSync', 'writeFileSync', 'existsSync', 'mkdirSync']) {
+    t.mock.method(fs, method, () => assert.fail(`help must not call fs.${method}`));
+  }
+  t.mock.method(childProcess, 'spawnSync', () => assert.fail('help must not launch a process'));
+  syncBuiltinESMExports();
+  try {
+    for (const argv of [
+      ['sessions', 'create', '--runtime', 'local', '--profile', 'missing', '--reply-schema', '/missing-schema', '--help'],
+      ['sessions', 'send', '--mcp', '123456', '-h'],
+      ['projects', 'create', '--workspace', '/missing-workspace', 'help'],
+      ['mcp', 'register', '--help'], ['mcp', 'remove', '--help'],
+      ['cdp', 'launch', '--yes', '--help'], ['update', 'auto', 'on', '--help'],
+      ['update', '--help'], ['web', 'login', '--help'],
+      ['web', 'sessions', 'create', '--runtime', 'cloud', '--help'],
+      ['--profile', 'missing', '--', 'help'],
+    ]) await main(argv);
+    assert.equal(output.length, 11);
+    assert.ok(output.every(value => value.startsWith('Usage:')));
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('help and help flags after -- or consumed as option values remain literal', () => {
+  for (const prefix of [[], ['web']]) {
+    for (const text of ['help', '--help', '-h']) {
+      const options = parseOptions([...prefix, 'sessions', 'create', '--', text]);
+      assert.equal(options.helpPath, undefined);
+      assert.deepEqual(options.args, ['sessions', 'create', text]);
+    }
+    const options = parseOptions([...prefix, 'sessions', 'send', '38439138239851266', 'help']);
+    assert.equal(options.helpPath, undefined);
+    assert.equal(options.args[3], 'help');
+  }
+  assert.equal(parseOptions(['sessions', 'create', 'help', 'me']).helpPath, undefined);
+  assert.equal(parseOptions(['projects', 'create', '--', 'help']).helpPath, undefined);
+  const mcp = parseOptions(['mcp', 'register', 'tools', '--command', '/usr/bin/node', '--arg', '--help']);
+  assert.equal(mcp.helpPath, undefined);
+  assert.deepEqual(mcp.commandArgs, ['--help']);
+  const group = parseOptions(['sessions', '--help', '--', 'create']);
+  assert.deepEqual(group.helpPath, ['sessions']);
+});
+
+test('unknown help topics and conflicting backend selectors fail before executing', () => {
+  for (const argv of [
+    ['typo', '--help'], ['sessions', 'typo', '--help'], ['help', 'typo'],
+    ['web', 'projects', 'create', '--help'], ['web', 'mcp', '--help'],
+  ]) assert.throws(() => parseOptions(argv), /Unknown help topic/u);
+  assert.throws(() => parseOptions(['web', '--app', 'work', 'sessions', '--help']), /conflicts/u);
 });
 
 test('parses repeated attachments and option terminators', () => {
