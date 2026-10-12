@@ -86,18 +86,7 @@ export async function runtimeParameters(client, { timeoutMs = 10_000 } = {}) {
 // Model is a conversation-level setting (POST im/conversation/modify, cmd=1114).
 // key = model_item_key; ndt = need_deep_think in the chat body; provider =
 // aggregate_params.provider_id. Values captured from live traffic.
-export const MODEL_PROTOCOL = new Map([
-  ['auto', { key: '9', ndt: 9, provider: '' }],
-  ['doubao-2.1-turbo', { key: '4', ndt: 4, provider: '' }],
-  ['doubao-2.1-pro', { key: '5', ndt: 5, provider: '' }],
-  ['orange-5.0', { key: '6', ndt: 4, provider: '' }],
-  ['gemini-3.7-flash', { key: '1946880770', ndt: 10001, provider: 'cis' }],
-  ['gpt-5.6-sol', { key: '2123520258', ndt: 10001, provider: 'cis' }],
-]);
-
-export function modelProtocol(modelId) {
-  return MODEL_PROTOCOL.get(modelId) || MODEL_PROTOCOL.get('auto');
-}
+export const AUTOMATIC_MODEL_PROTOCOL = Object.freeze({ key: '9', ndt: 9, provider: '' });
 
 // The create-conversation handshake requires a complete top-level `ext` plus
 // `user_context`; omitting either silently merges the message into the current

@@ -379,7 +379,9 @@ async function run() {
   function modelForWork(models) {
     const available = models.filter(model => model.available && Array.isArray(model.modes) && model.modes.includes('work'));
     return available.find(model => /GPT-5\.6 Sol/iu.test(model.name))
-      || available.find(model => model.id === '5') || available[0] || null;
+      || available.find(model => /豆包 2\.1 Pro/iu.test(model.name))
+      || available[0]
+      || null;
   }
 
   async function attachmentsStage(models) {
@@ -394,7 +396,7 @@ async function run() {
     const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'cloud',
       '--attach', textPath, '--attach', imagePath, '--expect-json', '--reply-schema', writeStageSchema('attachments', schema),
       '--timeout', String(CLI_TIMEOUT_SECONDS)];
-    if (model) command.push('--model', model.id, '--reasoning', 'low');
+    if (model) command.push('--model', model.name, '--reasoning', 'low');
     const started = await execute('attachments: create and wait', [...command, '--wait']);
     const data = await recoverIfNeeded('attachments', started, writeStageSchema('attachments-recovery', schema));
     const object = responseObject(data);
@@ -427,10 +429,10 @@ async function run() {
     const schema = { marker: { type: 'string' } };
     const schemaFile = writeStageSchema(name, schema);
     const prompt = 'Use the Read tool to read probe.txt in the configured workspace. Do not use Bash or any other tool. Return one valid JSON object with the exact token as "marker". Use double quotes for every JSON key and string; no Python syntax, single quotes, Markdown or explanatory text.';
-    const model = models.find(item => item.id === '5' && item.available && item.modes?.includes('work')) || modelForWork(models);
+    const model = modelForWork(models);
     const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
       '--workspace', workspace, '--no-skills', '--permission', 'FullAccess', '--timeout', String(CLI_TIMEOUT_SECONDS)];
-    if (model) command.push('--model', model.id, '--reasoning', 'low');
+    if (model) command.push('--model', model.name, '--reasoning', 'low');
     command.push('--wait', '--expect-json', '--reply-schema', schemaFile);
     const started = await execute('local: create and wait', command);
     const data = await recoverIfNeeded('local', started, schemaFile);
@@ -516,7 +518,7 @@ async function run() {
       const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
         '--workspace', workspace, '--no-skills', '--permission', 'FullAccess', '--mcp', connectorId,
         '--timeout', String(CLI_TIMEOUT_SECONDS)];
-      if (model) command.push('--model', model.id, '--reasoning', 'low');
+      if (model) command.push('--model', model.name, '--reasoning', 'low');
       const accepted = requireOkay(`${name}: no-wait create`, await execute(`${name}: no-wait create`, command));
       const ids = idsFrom({ data: accepted });
       if (!ids || accepted.accepted !== true || accepted.status !== 'running') throw new Error(`${name}: no-wait create returned no accepted IDs`);
@@ -569,7 +571,7 @@ async function run() {
       const taskArgs = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
         '--mcp', connectorId, '--permission', 'FullAccess', '--no-skills', '--wait', '--expect-json',
         '--reply-schema', schemaFile, '--timeout', String(CLI_TIMEOUT_SECONDS)];
-      if (model) taskArgs.push('--model', model.id, '--reasoning', 'low');
+      if (model) taskArgs.push('--model', model.name, '--reasoning', 'low');
       const task = await execute('mcp: local task and wait', taskArgs);
       const data = await recoverIfNeeded('mcp', task, schemaFile);
       if (responseObject(data).marker !== marker) throw new Error('mcp: tool environment marker was not returned');

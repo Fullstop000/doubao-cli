@@ -7,7 +7,7 @@ import {
   replyAfterLastUserMessage,
 } from '../src/automation.mjs';
 import { attachmentMimeType, attachmentUploadReady, resolveAttachmentFiles } from '../src/attachments.mjs';
-import { modelId, normalizeModelName, resolveModelName, resolveReasoningEffort } from '../src/models.mjs';
+import { resolveModelName, resolveReasoningEffort } from '../src/models.mjs';
 
 test('builds the desktop open-url route for a conversation', () => {
   assert.equal(
@@ -77,17 +77,9 @@ test('waits for image preview loading and upload progress completion', () => {
   }, expected), true);
 });
 
-test('normalizes documented model aliases', () => {
-  assert.equal(normalizeModelName('  GPT-5.6_SOL '), 'gpt 5.6 sol');
-  assert.equal(modelId('豆包 2.1 Turbo'), 'doubao-2.1-turbo');
-  assert.equal(
-    resolveModelName('turbo', ['自动', '豆包 2.1 Turbo', 'GPT-5.6 Sol']),
-    '豆包 2.1 Turbo',
-  );
-  assert.equal(
-    resolveModelName('gpt-5.6-sol', ['自动', '豆包 2.1 Turbo', 'GPT-5.6 Sol']),
-    'GPT-5.6 Sol',
-  );
+test('accepts live model names unchanged without a static model table', () => {
+  const available = ['自动', '豆包 2.1 Turbo', 'Orange 5.0', 'Orange 5.5', 'GPT-6 Astra'];
+  for (const name of available) assert.equal(resolveModelName(name, available), name);
 });
 
 test('rejects unavailable model names with live choices', () => {
@@ -95,6 +87,14 @@ test('rejects unavailable model names with live choices', () => {
     () => resolveModelName('missing', ['自动', 'Orange 5.0']),
     /Available models: 自动, Orange 5\.0/u,
   );
+});
+
+test('rejects aliases, model IDs and altered display names', () => {
+  const available = ['自动', '豆包 2.1 Turbo', '豆包 2.1 Pro', 'Orange 5.5', 'GPT-6 Astra'];
+  for (const value of ['auto', 'turbo', 'pro', 'orange', 'orange-5.5', '5255447810', 'ORANGE_5.5', 'orange 5.5', ' Orange 5.5 ']) {
+    assert.throws(() => resolveModelName(value, available), /unknown model/u, value);
+  }
+  assert.throws(() => resolveModelName('Orange 5.0', available), /unknown model/u);
 });
 
 test('resolves reasoning effort names, aliases, and raw values', () => {

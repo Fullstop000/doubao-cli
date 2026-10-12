@@ -85,10 +85,12 @@ const sent = value => assert.ok(/^\d{12,24}$/.test(value?.conversationId));
 const textIncludes = marker => value => { sent(value); assert.ok(value.reply?.text.includes(marker), value.reply?.text); };
 const imageCount = value => value.messages.reduce((sum, message) => sum + (message.role === 'user' ? message.images || 0 : 0), 0);
 function sendModel() {
-  const ids = (state().models || []).map(model => model.id);
-  const id = ['gpt-6-astra', 'gpt-5.6-sol', 'doubao-2.1-pro'].find(candidate => ids.includes(candidate)) || ids.find(candidate => candidate !== 'auto');
-  assert.ok(id, 'Run baseline first to discover available models');
-  return id;
+  const models = state().models || [];
+  const model = ['GPT-6 Astra', 'GPT-5.6 Sol', '豆包 2.1 Pro']
+    .map(name => models.find(item => item.name === name))
+    .find(item => item?.name) || models.find(item => item.name && !/^(?:auto|自动)$/iu.test(item.name));
+  assert.ok(model, 'Run baseline first to discover available models');
+  return model.name;
 }
 
 export async function until(probe, timeoutMs = 20_000) {
@@ -188,7 +190,7 @@ async function baseline() {
   save({ models: models.data.models, initialModel: models.data.current });
   save({ sendModel: sendModel() });
   await check('model current', ['model'], d => assert.equal(d.name, models.data.current));
-  await check('model current alias', ['model', 'current'], d => assert.equal(d.name, models.data.current));
+  await check('model current selector', ['model', 'current'], d => assert.equal(d.name, models.data.current));
   const connectors = await check('mcp list baseline', ['mcp', 'list'], d => assert.ok(Array.isArray(d)));
   if (!state().initialConnectors) save({ initialConnectors: connectors.data });
 }
@@ -217,19 +219,22 @@ async function models() {
   const id=state().textId; assert.ok(id,'Run messages first');
   await check('open model test session', ['sessions','open',id], async()=>until(async()=> (await inspect('location.href')).endsWith('/'+id)));
   for(const model of state().models) {
-    await check(`select ${model.id}`, ['model','select',model.id],d=>assert.equal(d.id,model.id));
+    await check(`select ${model.name}`, ['model','select',model.name],d=>assert.equal(d.id,model.id));
     await check(`read selected ${model.id}`, ['model'],d=>assert.equal(d.id,model.id));
   }
   for(const [level,label] of [['low','低'],['medium','中'],['high','高'],['xhigh','极高'],['max','最高']]) {
     await check(`reasoning ${level}`, ['model','reasoning',level],d=>assert.equal(d.reasoning,level));
     await check(`read reasoning ${level}`, ['model'],d=>assert.equal(d.reasoning,label));
   }
-  await check('select with reasoning', ['model','select',sendModel(),'--reasoning','low'], d=>{assert.equal(d.id,sendModel());assert.equal(d.reasoning,'low')});
-  await check('models has one current selection', ['models'], d=>assert.deepEqual(d.models.filter(m=>m.selected).map(m=>m.id),[sendModel()]));
+  await check('select with reasoning', ['model','select',sendModel(),'--reasoning','low'], d=>{assert.equal(d.name,sendModel());assert.equal(d.reasoning,'low')});
+  await check('models has one current selection', ['models'], d=>assert.deepEqual(d.models.filter(m=>m.selected).map(m=>m.name),[sendModel()]));
   await check('send explicit model reasoning', ['sessions','send',id,'Reply only MODEL_OK_289.','--model',sendModel(),'--reasoning','low','--wait'],textIncludes('MODEL_OK_289'));
   await check('blank for draft model', ['sessions','create'],d=>assert.equal(d.persisted,false));
-  await check('select draft model', ['model','select','turbo'],d=>assert.equal(d.id,'doubao-2.1-turbo'));
-  await check('read draft model', ['model'],d=>assert.equal(d.id,'doubao-2.1-turbo'));
+  const turbo = state().models.find(model => /(?:豆包|Doubao) 2\.1 Turbo/iu.test(model.name));
+  if (turbo) {
+    await check('select draft model', ['model','select',turbo.name],d=>assert.equal(d.id,turbo.id));
+    await check('read draft model', ['model'],d=>assert.equal(d.id,turbo.id));
+  }
 }
 
 async function attachments() {

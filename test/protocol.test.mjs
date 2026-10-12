@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { conversationExt, modelProtocol, reduceStreamEvent } from '../src/protocol.mjs';
+import { conversationExt, AUTOMATIC_MODEL_PROTOCOL, reduceStreamEvent } from '../src/protocol.mjs';
 
 function streamState(waitForReply = true) {
   return {
@@ -89,7 +89,7 @@ test('unknown events leave the stream incomplete', () => {
 });
 
 test('conversationExt defaults to the app skill paths', () => {
-  const ext = conversationExt(modelProtocol('auto'), '%LOCAL_MESSAGE_ID%', '/tmp/ws');
+  const ext = conversationExt(AUTOMATIC_MODEL_PROTOCOL, '%LOCAL_MESSAGE_ID%', '/tmp/ws');
   const gtp = JSON.parse(ext.general_task_param);
 
   assert.deepEqual(gtp.client_option.shared_folder_path.slice(0, 1), ['/tmp/ws']);
@@ -98,7 +98,7 @@ test('conversationExt defaults to the app skill paths', () => {
 });
 
 test('conversationExt honors empty skill paths for isolation', () => {
-  const ext = conversationExt(modelProtocol('auto'), '%LOCAL_MESSAGE_ID%', '/tmp/ws', { skillPaths: [] });
+  const ext = conversationExt(AUTOMATIC_MODEL_PROTOCOL, '%LOCAL_MESSAGE_ID%', '/tmp/ws', { skillPaths: [] });
   const gtp = JSON.parse(ext.general_task_param);
 
   assert.deepEqual(gtp.client_option.agent_workspace.local_skill_paths, []);

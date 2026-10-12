@@ -5,40 +5,11 @@ import { conversationSettings } from './sessions.mjs';
 const MODEL_TRIGGER = '[data-valid-btn="model-select-action-btn"]';
 const MODEL_OPTION = '[role="menuitem"][data-slot="dropdown-menu-item"]';
 
-const MODEL_IDS = new Map([
-  ['自动', 'auto'],
-  ['豆包 2.1 Turbo', 'doubao-2.1-turbo'],
-  ['豆包 2.1 Pro', 'doubao-2.1-pro'],
-  ['Orange 5.0', 'orange-5.0'],
-  ['Gemini 3.7 Flash', 'gemini-3.7-flash'],
-  ['GPT-5.6 Sol', 'gpt-5.6-sol'],
-]);
-
-const ALIASES = new Map([
-  ['auto', '自动'],
-  ['自动', '自动'],
-  ['turbo', '豆包 2.1 Turbo'],
-  ['doubao turbo', '豆包 2.1 Turbo'],
-  ['doubao 2.1 turbo', '豆包 2.1 Turbo'],
-  ['pro', '豆包 2.1 Pro'],
-  ['doubao pro', '豆包 2.1 Pro'],
-  ['doubao 2.1 pro', '豆包 2.1 Pro'],
-  ['orange', 'Orange 5.0'],
-  ['orange 5.0', 'Orange 5.0'],
-  ['gemini', 'Gemini 3.7 Flash'],
-  ['gemini flash', 'Gemini 3.7 Flash'],
-  ['gemini 3.7 flash', 'Gemini 3.7 Flash'],
-  ['gpt', 'GPT-5.6 Sol'],
-  ['sol', 'GPT-5.6 Sol'],
-  ['gpt sol', 'GPT-5.6 Sol'],
-  ['gpt 5.6 sol', 'GPT-5.6 Sol'],
-]);
-
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-export function normalizeModelName(value) {
+function normalizeReasoningValue(value) {
   return String(value || '')
     .trim()
     .toLocaleLowerCase('en-US')
@@ -46,30 +17,10 @@ export function normalizeModelName(value) {
     .replace(/\s+/gu, ' ');
 }
 
-export function modelId(name) {
-  return MODEL_IDS.get(name) || normalizeModelName(name).replaceAll(' ', '-');
-}
-
 export function resolveModelName(value, availableNames) {
-  const normalized = normalizeModelName(value);
-  if (!normalized) throw new Error('model cannot be empty');
-  const exact = availableNames.find((name) => normalizeModelName(name) === normalized);
-  const alias = ALIASES.get(normalized);
-  const resolved = exact || (alias && availableNames.includes(alias) ? alias : null);
-  if (resolved) return resolved;
+  if (typeof value !== 'string' || !value.trim()) throw new Error('model cannot be empty');
+  if (availableNames.includes(value)) return value;
   throw new Error(`unknown model "${value}". Available models: ${availableNames.join(', ')}`);
-}
-
-// UI-free model resolution against the built-in model table. Used by the
-// protocol-direct paths where opening the model menu is unnecessary.
-export function resolveModelId(value) {
-  const name = resolveModelName(value, [...MODEL_IDS.keys()]);
-  return MODEL_IDS.get(name);
-}
-
-export function modelDisplayName(id) {
-  for (const [name, candidate] of MODEL_IDS) if (candidate === id) return name;
-  return id;
 }
 
 // Reasoning effort levels exposed by the model menu (推理强度: 低中高极高最高).
@@ -98,7 +49,7 @@ const REASONING_ALIASES = new Map([
 
 // Resolves a level name, alias, or raw API value to { effort, name }.
 export function resolveReasoningEffort(value) {
-  const normalized = normalizeModelName(value);
+  const normalized = normalizeReasoningValue(value);
   if (!normalized) throw new Error('reasoning effort cannot be empty');
   if (REASONING_LEVELS.has(normalized)) return { effort: REASONING_LEVELS.get(normalized), name: normalized };
   for (const [name, effort] of REASONING_LEVELS) {
@@ -176,24 +127,22 @@ async function modelButtonState(client) {
     return { name: lines[0] || null, reasoning: lines.slice(1).join(' ') || null };
   })()`, 5000, 'Doubao model selector was not found');
   if (!state?.name) throw new Error('Doubao current model could not be read');
-  return { id: modelId(state.name), ...state };
+  return state;
 }
 
 export async function currentModelFromClient(client) {
   const id = /\/chat\/(\d{12,24})(?:[?#]|$)/u.exec(await client.evaluate('location.href'))?.[1];
   const settings = id ? await conversationSettings(client, id) : null;
-  if (settings) {
-    let menuId;
-    try {
-      menuId = await openModelMenu(client);
-      const options = await readOpenOptions(client, menuId);
-      const model = options.find(option => option.protocol?.key === settings.key);
-      if (!model) throw new Error(`Current model ${settings.key} is not in the available model list`);
-      const labels = { '3': '低', '4': '中', '5': '高', '6': '极高', '7': '最高' };
-      return { id: modelId(model.name), name: model.name, reasoning: labels[settings.effort] || null };
-    } finally { if (menuId) await closeModelMenu(client, menuId); }
-  }
-  return modelButtonState(client);
+  const state = settings ? null : await modelButtonState(client);
+  let menuId;
+  try {
+    menuId = await openModelMenu(client);
+    const options = await readOpenOptions(client, menuId);
+    const model = options.find(option => settings ? option.protocol?.key === settings.key : option.name === state.name);
+    if (!model) throw new Error(`Current model ${settings?.key || state.name} is not in the available model list`);
+    const labels = { '3': '低', '4': '中', '5': '高', '6': '极高', '7': '最高' };
+    return { id: model.protocol?.key || null, name: model.name, reasoning: settings ? labels[settings.effort] || null : state.reasoning };
+  } finally { if (menuId) await closeModelMenu(client, menuId); }
 }
 
 async function openModelMenu(client) {
@@ -251,7 +200,7 @@ export async function resolveModelFromClient(client, value) {
     const name = resolveModelName(value, options.map(option => option.name));
     const option = options.find(option => option.name === name);
     if (!option.protocol) throw new Error(`Protocol metadata unavailable for model "${name}"`);
-    return { id: modelId(name), name, protocol: option.protocol };
+    return { id: option.protocol.key, name, protocol: option.protocol };
   } finally {
     if (menuId) await closeModelMenu(client, menuId);
   }
@@ -266,7 +215,7 @@ export async function listModelsFromClient(client) {
     return {
       current: current.name,
       reasoning: current.reasoning,
-      models: options.map(({ name }) => ({ id: modelId(name), name, selected: name === current.name })),
+      models: options.map(({ name, protocol }) => ({ id: protocol?.key || null, name, selected: name === current.name })),
     };
   } finally {
     if (menuId) await closeModelMenu(client, menuId);

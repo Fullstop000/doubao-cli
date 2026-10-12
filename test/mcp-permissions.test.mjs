@@ -7,10 +7,10 @@ import test from 'node:test';
 import { main } from '../src/cli.mjs';
 import { CdpClient } from '../src/cdp.mjs';
 import { prepareToolSandbox } from '../src/mcp.mjs';
-import { conversationExt, modelProtocol } from '../src/protocol.mjs';
+import { conversationExt, AUTOMATIC_MODEL_PROTOCOL } from '../src/protocol.mjs';
 
 test('invalid permissions cannot fall back to FullAccess at either protocol boundary', async () => {
-  assert.throws(() => conversationExt(modelProtocol('auto'), 'message', '/tmp/ws', { permission: 'typo' }), /unknown permission/u);
+  assert.throws(() => conversationExt(AUTOMATIC_MODEL_PROTOCOL, 'message', '/tmp/ws', { permission: 'typo' }), /unknown permission/u);
   await assert.rejects(prepareToolSandbox({
     evaluate() { assert.fail('invalid permission must not reach the app'); },
   }, { workspace: '/tmp/ws', permission: 'typo' }), /unknown permission/u);

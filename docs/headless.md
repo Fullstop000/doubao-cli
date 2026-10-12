@@ -61,13 +61,16 @@ Headless options are validated against the command contract. Unknown flags, unsu
 doubao headless models --json
 doubao headless model --json
 doubao headless model current --profile work --json
-doubao headless model select <id-or-exact-name> --reasoning high --profile work --json
+doubao headless model select 'Orange 5.5' --reasoning high --profile work --json
 doubao headless model reasoning max --profile work --json
-doubao headless sessions create "Analyze this" --model <id-or-exact-name> --reasoning high --wait --json
+doubao headless sessions create "Analyze this" --model 'Orange 5.5' --wait --json
+doubao headless sessions create "Analyze this" --model '<exact model name>' --reasoning high --wait --json
 doubao headless usage --profile work --json
 ```
 
 The live account catalog determines available models and their eligible modes. `model select` updates the selected conversation when one is selected and also stores defaults for new conversations in that profile/account. The supported reasoning levels are `low`, `medium`, `high`, `xhigh` and `max`. `--model` and `--reasoning` on create/send override the defaults for that request. Usage values and reset information come from the account service; unavailable values may be null.
+
+Pass the exact model name shown by `doubao headless models --json`, including its capitalization and spacing. For example, use `'Orange 5.5'` when that name appears in the live catalog.
 
 ## Attachments
 
