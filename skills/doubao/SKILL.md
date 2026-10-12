@@ -87,7 +87,7 @@ Pass `--json` to every data-returning command when another program consumes the 
 | List / show models | `doubao models --json` / `doubao model --json` |
 | Switch model | `doubao model select <model> --json` or per-send `--model <model>` |
 | Set reasoning effort | `doubao model reasoning <level> --json` or `--reasoning <level>` on select/send/create |
-| Update the CLI | `doubao update` (`update check`, `update auto on`) |
+| Update the CLI | `doubao update` (`update check`, `update auto on`; reminders: `update notify on|off|status`) |
 
 ## Experimental Web support (CLI 0.14.0+)
 
@@ -167,7 +167,7 @@ Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `xhigh` (极
 - `DOUBAO_DATA_DIR` — selected app user-data directory override
 - `DOUBAO_CDP_ENDPOINT` — CDP endpoint (Work: `http://127.0.0.1:9226`; Doubao: `http://127.0.0.1:9225`). An endpoint belonging to the other app is rejected.
 - `DOUBAO_CLI_CONFIG_DIR` — CLI settings directory
-- `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` — skip configured auto updates (CI)
+- `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` — disable reminders and automatic updates; explicit `update` and `update check` still work
 
 ## Troubleshooting
 

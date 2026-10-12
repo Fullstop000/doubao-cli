@@ -123,7 +123,7 @@ function validatePositionalContract(options) {
   if (command === 'cdp' && ['status', 'launch'].includes(subcommand)) exact(2, `cdp ${subcommand} accepts no positional arguments`);
   if (command === 'update') {
     if (!subcommand || subcommand === 'check') exact(subcommand ? 2 : 1, `update${subcommand ? ' check' : ''} accepts no positional arguments`);
-    if (subcommand === 'auto' && (args.length < 2 || args.length > 3)) fail('update auto accepts one optional action: on, off, or status');
+    if (['auto', 'notify'].includes(subcommand) && args.length > 3) fail(`update ${subcommand} accepts one optional action: on, off, or status`);
   }
   if (command === 'mcp') {
     if (subcommand === 'list') exact(2, 'mcp list accepts no positional arguments');

@@ -251,12 +251,17 @@ doubao update
 doubao update auto on
 doubao update auto status
 doubao update auto off
+doubao update notify on
+doubao update notify off
+doubao update notify status
 ```
 
 - `update check`: check only.
-- `update`: global npm installation.
-- Auto-update: off by default; checks at most once every 24 hours.
-- Version reminders: stderr; suppressed with `--json`.
+- `update`: global installation from the public npm registry used by `update check`.
+- Auto-update: off by default; checks at most once per day when enabled with `update auto on`.
+- Version reminders: on by default; `update notify` with no action shows status. Ordinary commands may report the latest stable npm version and suggest `doubao update` on stderr; reminders never install updates.
+- Reminders are checked in parallel with the command, with a 1-second budget, at most once per day. Failed checks are also throttled. `--json`, non-TTY stderr, CI, help/version, and `update` commands skip the reminder check.
+- Enabling auto-update suppresses version reminders. `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` disables reminders and automatic updates; explicit `update` and `update check` still work.
 
 ## Configuration
 
@@ -270,7 +275,7 @@ doubao update auto off
 | `DOUBAO_CLI_CONFIG_DIR` | Settings and recovery directory |
 | `XDG_CONFIG_HOME` | Linux settings root; default `~/.config` |
 | `DOUBAO_HEADLESS_COOKIE` | Headless session Cookie header; secret, in-memory alternative to saved login |
-| `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` | Disable automatic updates and reminders |
+| `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` | Disable reminders and automatic updates; explicit `update` and `update check` still work |
 
 - Default directory: macOS `~/Library/Application Support/doubao-cli`; Linux `$XDG_CONFIG_HOME/doubao-cli` or `~/.config/doubao-cli`.
 - Headless credentials: `headless/session.json` for the default profile; named profiles use `headless/profiles/<name>/session.json`. Account-scoped selections and connector configuration are stored alongside the profile.
