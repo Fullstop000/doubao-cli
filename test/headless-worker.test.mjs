@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -144,28 +146,39 @@ test('submission worker failure before ACK is returned without an accepted resul
   await fs.rm(root, { recursive: true, force: true });
 });
 
-test('submission ACK timeout kills only the pre-ACK worker and reports unknown acceptance', async () => {
+test('submission ACK timeout kills only the pre-ACK worker and reports unknown acceptance', async t => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'doubao-headless-submit-timeout-'));
   const workerPath = path.join(root, 'fixture-worker.mjs');
-  const pidPath = path.join(root, 'worker.pid');
-  await fs.writeFile(workerPath, `import fs from 'node:fs/promises';\n` +
-    `process.on('message', async message => { if (message.type === 'start') await fs.writeFile(process.env.FIXTURE_PID, String(process.pid), { mode: 0o600 }); });\n`, { mode: 0o600 });
-  await assert.rejects(startHeadlessSubmissionWorker({ options: { args: ['sessions', 'create', 'fixture'], profile: 'default' },
-    configDir: path.join(root, 'config'), workerPath, ackTimeoutMs: 100, env: { ...process.env, FIXTURE_PID: pidPath } }), error => {
-    assert.equal(error.code, 'SUBMISSION_WORKER_ACK_TIMEOUT');
-    assert.equal(error.result.accepted, false);
-    assert.equal(error.result.status, 'unknown');
-    assert.match(error.result.recovery, /inspect session history/u);
-    return true;
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(workerPath, `process.on('message', () => {});\n`, { mode: 0o600 });
+  const originalSpawn = childProcess.spawn;
+  let workerPid;
+  t.mock.method(childProcess, 'spawn', (...args) => {
+    const child = originalSpawn(...args);
+    workerPid = child.pid;
+    return child;
   });
-  const pid = Number(await fs.readFile(pidPath, 'utf8'));
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') break; throw error; }
-    await new Promise(resolve => setTimeout(resolve, 10));
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(startHeadlessSubmissionWorker({ options: { args: ['sessions', 'create', 'fixture'], profile: 'default' },
+      configDir: path.join(root, 'config'), workerPath, ackTimeoutMs: 100 }), error => {
+      assert.equal(error.code, 'SUBMISSION_WORKER_ACK_TIMEOUT');
+      assert.equal(error.result.accepted, false);
+      assert.equal(error.result.status, 'unknown');
+      assert.match(error.result.recovery, /inspect session history/u);
+      return true;
+    });
+    assert.ok(Number.isInteger(workerPid), 'spawn should capture the real worker PID');
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      try { process.kill(workerPid, 0); } catch (error) { if (error.code === 'ESRCH') break; throw error; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.throws(() => process.kill(workerPid, 0), { code: 'ESRCH' });
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
   }
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-  await fs.rm(root, { recursive: true, force: true });
 });
 
 test('submission worker rejects a malformed ACK as unknown acceptance', async () => {

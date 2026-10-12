@@ -12,11 +12,14 @@ import { createConversation, openConversation, readConversation, sendMessage, se
 import { currentModel, listModels, selectModel } from './models.mjs';
 import {
   checkForUpdate,
+  cacheUpdateCheck,
   installUpdate,
   maybeAutoUpdate,
   maybeUpdateReminder,
   readUpdateState,
   setAutoUpdate,
+  setUpdateNotifications,
+  shouldCheckUpdateReminder,
   updateStatePath,
 } from './update.mjs';
 import { validateReply, validateSchema } from './validate.mjs';
@@ -57,6 +60,7 @@ const HELP = `Usage:
   doubao update [--json]
   doubao update check [--json]
   doubao update auto <on|off|status> [--json]
+  doubao update notify <on|off|status> [--json]
   doubao capabilities [--json]
   doubao web <command> [options]  Web commands; run "doubao web help"
   doubao headless <command> [options]  Browser-free commands; run "doubao headless help"
@@ -83,7 +87,7 @@ Environment:
   DOUBAO_BROWSER_APP  Web browser app path (default: Google Chrome.app)
   DOUBAO_WEB_PROFILE_DIR  Dedicated browser data directory for web launch
   DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
-  DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip configured automatic updates
+  DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip automatic updates and reminders
 `;
 
 const HEADLESS_HELP = `Usage:
@@ -115,6 +119,7 @@ const HEADLESS_HELP = `Usage:
   doubao headless update [--json]
   doubao headless update check [--json]
   doubao headless update auto <on|off|status> [--json]
+  doubao headless update notify <on|off|status> [--json]
 
 Help:
   Add --help or -h to any command, or use help <command>.
@@ -167,6 +172,7 @@ const WEB_HELP = `Usage:
   doubao web update [--json]
   doubao web update check [--json]
   doubao web update auto <on|off|status> [--json]
+  doubao web update notify <on|off|status> [--json]
   doubao web --version
 
 Help:
@@ -551,12 +557,8 @@ async function runConfiguredAutoUpdate(command, json) {
     if (!json) console.error(`doubao: automatically updated to ${result.latestVersion}; the new version applies next run`);
   } else if (result.error && !json) {
     console.error(`doubao: automatic update failed: ${result.error}`);
-  } else if (result.skipped === 'not-enabled' && !json) {
-    const reminder = await maybeUpdateReminder(CLI_VERSION);
-    if (reminder) {
-      console.error(`doubao: update available: ${reminder.latestVersion} (current ${reminder.currentVersion}); run "doubao update" to upgrade or "doubao update auto on" to enable automatic updates`);
-    }
   }
+  return result;
 }
 
 // Validates the reply of a create/send result when --expect-json or
@@ -604,12 +606,20 @@ export async function main(argv) {
     }
   }
   return withApp(app, async () => {
+    const update = await runConfiguredAutoUpdate(options.args[0], options.json);
+    const reminder = update?.skipped === 'not-enabled'
+      && shouldCheckUpdateReminder({ command: options.args[0], json: options.json })
+      ? maybeUpdateReminder(CLI_VERSION) : null;
     try { return await run(options); }
     catch (error) {
       if (!error.result) throw error;
       if (app.id === 'web' && options.args[0] === 'login' && !options.json) console.error(`doubao: ${error.message}`);
       else output({ ...error.result, error: error.code || 'task_error', message: error.message }, options.json);
       process.exitCode = 1;
+    }
+    finally {
+      const notification = await reminder;
+      if (notification) console.error(`doubao: update available: ${notification.currentVersion} -> ${notification.latestVersion}; run "doubao update"`);
     }
   });
 }
@@ -629,6 +639,26 @@ async function run(options) {
   }
 
   if (command === 'update') {
+    if (subcommand === 'notify') {
+      const action = operand || 'status';
+      if (!['on', 'off', 'status'].includes(action)) throw new Error('update notify requires on, off, or status');
+      const state = action === 'status' ? await readUpdateState() : await setUpdateNotifications(action === 'on');
+      const result = {
+        enabled: state.updateNotifications,
+        lastCheckedAt: state.lastCheckedAt,
+        lastNotifiedAt: state.lastNotifiedAt,
+        latestVersion: state.latestVersion,
+        settingsPath: updateStatePath(),
+      };
+      if (json) output(result, true);
+      else {
+        console.log(`update notifications\t${result.enabled ? 'on' : 'off'}`);
+        if (result.latestVersion) console.log(`latest\t${result.latestVersion}`);
+        if (result.lastCheckedAt) console.log(`last checked\t${result.lastCheckedAt}`);
+        if (result.lastNotifiedAt) console.log(`last notified\t${result.lastNotifiedAt}`);
+      }
+      return;
+    }
     if (subcommand === 'auto') {
       const action = operand || 'status';
       if (!['on', 'off', 'status'].includes(action)) {
@@ -656,6 +686,7 @@ async function run(options) {
       throw new Error(`unknown update command "${subcommand}". Run "doubao help".`);
     }
     const check = await checkForUpdate(CLI_VERSION);
+    await cacheUpdateCheck(check);
     if (subcommand === 'check') {
       if (json) output(check, true);
       else {
@@ -668,13 +699,12 @@ async function run(options) {
     const result = check.updateAvailable
       ? { ...check, ...installUpdate(check.latestVersion, { inherit: !json }) }
       : { ...check, updated: false };
+    if (result.updated) await cacheUpdateCheck(result);
     if (json) output(result, true);
     else if (result.updated) console.log(`updated\t${result.latestVersion}`);
     else console.log(`up to date\t${result.currentVersion}`);
     return;
   }
-
-  await runConfiguredAutoUpdate(command, json);
 
   if (currentApp().id === 'web') {
     const result = await executeWeb(options);
