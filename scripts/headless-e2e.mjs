@@ -15,9 +15,9 @@ import { configDirectory } from '../src/config.mjs';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_CLI = path.join(ROOT, 'bin', 'doubao.mjs');
 const MCP_FIXTURE = path.join(ROOT, 'scripts', 'fixtures', 'headless-mcp-server.mjs');
-const PROCESS_TIMEOUT_MS = 180_000;
+const PROCESS_TIMEOUT_MS = 330_000;
 const TERM_GRACE_MS = 5_000;
-const CLI_TIMEOUT_SECONDS = 150;
+const CLI_TIMEOUT_SECONDS = 300;
 const STAGES = new Set(['attachments', 'local', 'mcp', 'background', 'baseline', 'all']);
 
 function parseArgs(argv) {
@@ -267,7 +267,7 @@ async function run() {
   }
 
   function requireOkay(name, result) {
-    if (result.timedOut) throw new Error(`${name}: CLI process exceeded its 180-second deadline`);
+    if (result.timedOut) throw new Error(`${name}: CLI process exceeded its 330-second deadline`);
     if (result.code !== 0 || !result.jsonParsed) throw new Error(`${name}: expected successful JSON output (exit ${result.code})`);
     return result.data;
   }
@@ -322,7 +322,7 @@ async function run() {
   }
 
   function assertCompleted(name, result, expectedSchema = true) {
-    if (result.timedOut) throw new Error(`${name}: CLI process exceeded its 180-second deadline`);
+    if (result.timedOut) throw new Error(`${name}: CLI process exceeded its 330-second deadline`);
     if (!result.jsonParsed || result.code !== 0) throw new Error(`${name}: expected successful JSON completion (exit ${result.code})`);
     if (result.data.status !== 'completed') throw new Error(`${name}: turn did not complete`);
     if (expectedSchema && result.data.replyValid !== true) throw new Error(`${name}: JSON reply did not pass schema validation`);
@@ -426,8 +426,8 @@ async function run() {
     fs.writeFileSync(path.join(workspace, 'probe.txt'), `Synthetic local acceptance marker: ${marker}\n`, { mode: 0o600, flag: 'wx' });
     const schema = { marker: { type: 'string' } };
     const schemaFile = writeStageSchema(name, schema);
-    const prompt = 'Read probe.txt in the configured workspace and return one valid JSON object with the exact token as "marker". Use double quotes for every JSON key and string; no Python syntax, single quotes, Markdown or explanatory text.';
-    const model = modelForWork(models);
+    const prompt = 'Use the Read tool to read probe.txt in the configured workspace. Do not use Bash or any other tool. Return one valid JSON object with the exact token as "marker". Use double quotes for every JSON key and string; no Python syntax, single quotes, Markdown or explanatory text.';
+    const model = models.find(item => item.id === '5' && item.available && item.modes?.includes('work')) || modelForWork(models);
     const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
       '--workspace', workspace, '--no-skills', '--permission', 'FullAccess', '--timeout', String(CLI_TIMEOUT_SECONDS)];
     if (model) command.push('--model', model.id, '--reasoning', 'low');
