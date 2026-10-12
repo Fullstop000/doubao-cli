@@ -100,14 +100,14 @@ const HEADLESS_HELP = `Usage:
   doubao headless sessions current [--profile <name>] [--json]
   doubao headless sessions open <conversation-id> [--profile <name>] [--json]
   doubao headless sessions read <conversation-id> [--limit <count>] [--json]
-  doubao headless sessions create <message> [--mode chat|work] [--model <id-or-name>] [--wait] [--timeout <seconds>] [--json]
-  doubao headless sessions send <conversation-id> <message> [--model <id-or-name>] [--wait] [--timeout <seconds>] [--json]
+  doubao headless sessions create <message> [--mode chat|work] [--model <model-name>] [--wait] [--timeout <seconds>] [--json]
+  doubao headless sessions send <conversation-id> <message> [--model <model-name>] [--wait] [--timeout <seconds>] [--json]
   doubao headless sessions status <conversation-id> [--run <run-id>] [--json]
   doubao headless sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
   doubao headless sessions stop <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
   doubao headless models [--json]
   doubao headless model current [--profile <name>] [--json]
-  doubao headless model select <id-or-name> [--reasoning <level>] [--profile <name>] [--json]
+  doubao headless model select <model-name> [--reasoning <level>] [--profile <name>] [--json]
   doubao headless model reasoning <level> [--profile <name>] [--json]
   doubao headless mcp list [--profile <name>] [--json]
   doubao headless mcp register <name> --command <executable> [--arg <value>] [--env KEY=VALUE] [--json]
@@ -122,7 +122,7 @@ Help:
 
 Options:
   --mode chat|work  Select the mode for a new conversation
-  --model <id-or-name>  Select an available model from headless models
+  --model <model-name>  Select an available model by its exact name from headless models
   --reasoning low|medium|high|xhigh|max  Set reasoning effort
   --profile <name>  Select a separate saved Headless account profile
   --project <id-or-name|none>  Select a task project

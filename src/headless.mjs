@@ -334,7 +334,7 @@ export async function executeHeadless(options) {
       : extra.model_item_key || state.defaults.modelId;
     if (!requested) throw new Error('Select a model first with "doubao headless model select <model>"');
     const mode = extra.mode_id === '1' ? 'chat' : conversation ? 'work' : undefined;
-    const model = await resolveHeadlessModel(client, requested, mode, remaining());
+    const model = await resolveHeadlessModel(client, subcommand === 'select' ? { name: requested } : { id: requested }, mode, remaining());
     if (conversation) await modifyHeadlessModel(client, state.currentConversationId, model.id,
       reasoning?.effort || extra.reasoning_effort || '5', remaining());
     await updateHeadlessState({ profile, accountId: client.accountId, defaults: { modelId: model.id, ...(reasoning ? { reasoning: reasoning.name } : {}) } });
@@ -388,8 +388,8 @@ export async function executeHeadless(options) {
     const selectedModel = options.model || (!conversationId ? state.defaults.modelId : undefined);
     const selectedReasoning = options.reasoning || (!conversationId ? state.defaults.reasoning : undefined);
     const reasoning = selectedReasoning ? resolveReasoningEffort(selectedReasoning).effort : undefined;
-    const model = selectedModel ? await resolveHeadlessModel(client, selectedModel, mode, remaining())
-      : reasoning ? await resolveHeadlessModel(client, previous.extra?.model_item_key || 'auto', mode, remaining()) : undefined;
+    const model = selectedModel ? await resolveHeadlessModel(client, options.model ? { name: selectedModel } : { id: selectedModel }, mode, remaining())
+      : reasoning ? await resolveHeadlessModel(client, { id: previous.extra?.model_item_key || '9' }, mode, remaining()) : undefined;
     const previousProjectId = previous.conversation?.project_reference?.project_id || '';
     const projectValue = options.project ?? previousProjectId;
     const project = projectValue && projectValue !== 'none' ? selectProject(await listHeadlessProjects(client, remaining()), projectValue) : null;
@@ -603,12 +603,12 @@ async function headlessModels(client, timeoutMs) {
   if (!models.size) throw new Error('Doubao model catalog is empty');
   return { platform: 'headless', models: [...models.values()] };
 }
-async function resolveHeadlessModel(client, selected, mode, timeoutMs) {
+async function resolveHeadlessModel(client, selection, mode, timeoutMs) {
   const catalog = await headlessModels(client, timeoutMs);
-  let name;
-  if (!catalog.models.some(model => model.id === selected)) name = resolveModelName(selected, catalog.models.map(model => model.name));
-  const matches = catalog.models.filter(model => (model.id === selected || model.name === name) && model.available && (!mode || model.modes.includes(mode)));
-  if (matches.length !== 1) throw new Error('Select an available headless model by ID or exact name');
+  const name = selection.name === undefined ? null : resolveModelName(selection.name, catalog.models.map(model => model.name));
+  const matches = catalog.models.filter(model => (selection.id === undefined ? model.name === name : model.id === selection.id)
+    && model.available && (!mode || model.modes.includes(mode)));
+  if (matches.length !== 1) throw new Error('Select an available headless model by its exact name');
   return matches[0];
 }
 function parseExtra(value) {

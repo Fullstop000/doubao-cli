@@ -46,7 +46,9 @@ try {
   save({ initialUrl:initial.href, initialModel:initialModel.name, initialConnectors:connectors });
   await check('background automatic selection', ['status'], d => { assert.equal(d.app, app); save({ appVersion:d.appVersion }); }, { app:null });
   const models = (await check('background models', ['models'], d => assert.ok(d.models.length))).data.models;
-  const model = ['gpt-6-astra','gpt-5.6-sol','doubao-2.1-pro'].find(id => models.some(m => m.id === id));
+  const model = ['GPT-6 Astra','GPT-5.6 Sol','豆包 2.1 Pro']
+    .map(name => models.find(item => item.name === name))
+    .find(item => item?.name)?.name || models.find(item => item.name && !/^(?:auto|自动)$/iu.test(item.name))?.name;
   assert.ok(model);
   await check('background CDP already ready', ['cdp','launch'], d => { assert.equal(d.available,true); assert.notEqual(d.restarted,true); });
   await check('background sessions list', ['sessions','list'], d => assert.ok(Array.isArray(d)));
@@ -56,7 +58,7 @@ try {
   changedPage = true;
   await check('background read with navigation', ['sessions','read',id], d => assert.ok(d.messages.some(m => m.text.includes(marker))));
   await check('background current', ['sessions','current'], d => assert.equal(d.id,id));
-  await check('background model select', ['model','select',model], d => assert.equal(d.id,model));
+  await check('background model select', ['model','select',model], d => assert.equal(d.name,model));
   await check('background reasoning', ['model','reasoning','low'], d => assert.equal(d.reasoning,'low'));
   await check('background send text', ['sessions','send',id,`Reply only FOLLOWUP_${marker}. Do not use tools.`,'--wait'], response(`FOLLOWUP_${marker}`));
   const attachment = path.join(dir,'background.txt');
@@ -87,7 +89,7 @@ try {
       await until(async () => {
         try { const state=await snapshot(); return state.ready && state.href === initial.href && state.draft.trim() === ''; } catch { return false; }
       });
-      if (!/\/chat\/\d+/.test(initial.href)) await check('background restore draft model', ['model','select',initialModel.id], d => assert.equal(d.id,initialModel.id));
+      if (!/\/chat\/\d+/.test(initial.href)) await check('background restore draft model', ['model','select',initialModel.name], d => assert.equal(d.id,initialModel.id));
       const restored = await snapshot();
       assert.equal(restored.href,initial.href);
       assert.equal(restored.draft.trim(),initial.draft.trim());

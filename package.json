@@ -1,6 +1,6 @@
 {
   "name": "doubao-cli",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Doubao CLI with Linux headless HTTP and macOS desktop and web backends",
   "author": "Fullstop000 <fullstop1005@gmail.com>",
   "type": "module",

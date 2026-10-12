@@ -24,7 +24,7 @@ doubao headless sessions list --json
 doubao headless sessions create "..." --mode work --runtime cloud --wait --json
 doubao headless sessions create "..." --mode chat --wait --json
 doubao headless sessions send <id> "..." --wait --json
-doubao headless sessions create "Review these" --attach ./report.pdf --model <id-or-name> --reasoning high --wait --json
+doubao headless sessions create "Review these" --attach ./report.pdf --model 'Orange 5.5' --reasoning high --wait --json
 doubao headless sessions create "Inspect this project" --mode work --runtime local --project <id-or-name> --enterprise-knowledge --workspace /absolute/path --permission AskOnRisk --wait --json
 doubao headless sessions wait <id> --run <run-id> --json
 doubao headless sessions stop <id> --run <run-id> --json
@@ -37,7 +37,7 @@ doubao headless sessions send <id> "Use my tool" --runtime local --mcp <connecto
 - Headless local execution uses a Node.js HTTP/SSE worker with access to the local workspace. It is process-based and is not the native Doubao app sandbox. `FullAccess` is the default permission policy. `AskOnRisk` and `AlwaysAsk` prompt in the terminal only with TTY input/output and `--wait`; without `--wait`, operations needing a prompt are denied. These policies do not confine MCP server processes.
 - `--mcp` uses a local stdio server and selects local Work execution. Without `--wait`, one detached worker submits the original request and owns its local HTTP/SSE execution and MCP calls. The permission setting does not confine the MCP server process.
 - `login --cookie-file <secret-path>` imports an existing Cookie header or cookie array. `DOUBAO_HEADLESS_COOKIE` is an in-memory alternative. Do not print credentials or place them in command operands.
-- Model selection uses live IDs or exact names from `headless models`. Profile-scoped defaults can be changed with `model select` and `model reasoning`; per-turn overrides use `--model` and `--reasoning`. Attachments use repeatable `--attach`; project and enterprise options are described in [the Headless guide](../../docs/headless.md).
+- Model selection uses the exact model name from `headless models`. Profile-scoped defaults can be changed with `model select` and `model reasoning`; per-turn overrides use `--model` and `--reasoning`. Attachments use repeatable `--attach`; project and enterprise options are described in [the Headless guide](../../docs/headless.md).
 - `profiles`, `current` and `open` refer to Headless account profiles and the CLI's selected conversation; they do not open a desktop UI. Desktop app profile account and tenant metadata remain documented separately in the README.
 - Save both IDs; recover accepted timeouts with `wait`, never by resending. Without `--wait`, the detached submission worker continues execution for that same request. `sessions wait` uses the same IDs and may start a runtime to recover from the saved receipt; a persistent lease prevents concurrent execution while the original worker is active. `waiting_input` remains unresolved until an interactive control is answered in Doubao.
 - Options unsupported on a Headless command are rejected before requests are sent. CLI 0.17 passed 357/357 tests on Linux x86_64 with Node 23.7.0 and macOS with Node 22.16.0. Live 0.17 acceptance used isolated configs on Linux and macOS and covered attachments, projects and enterprise knowledge, local execution, stdio MCP, and Linux detached-worker recovery. Fresh QR login was verified on macOS; Linux acceptance used an isolated install and cookie file from a QR-authenticated session, so it does not establish fresh Linux QR login. This is source/candidate evidence, not npm publication or release verification. See [Headless details and historical acceptance](../../docs/headless.md). This backend uses private service APIs.
@@ -157,18 +157,9 @@ doubao mcp list --json
 
 ## Model values
 
-Accept the value, exact display name, or an alias anywhere `<model>` appears. Exact names and IDs from the live list work for newer models, including `gpt-6-astra` when available. Confirm availability with `doubao models --json` — the installed app version decides what exists.
+Use the exact `name` from `doubao models --json` or `doubao headless models --json`. Quote names with spaces: `--model 'Orange 5.5'`.
 
 Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `xhigh` (极高), `max` (最高). `--reasoning` on `sessions send` requires `--model`; `model reasoning <level>` changes the current session without switching models.
-
-| Model | Value | Aliases |
-| --- | --- | --- |
-| 自动 | `auto` | `自动` |
-| 豆包 2.1 Turbo | `doubao-2.1-turbo` | `turbo` |
-| 豆包 2.1 Pro | `doubao-2.1-pro` | `pro` |
-| Orange 5.0 | `orange-5.0` | `orange` |
-| Gemini 3.7 Flash | `gemini-3.7-flash` | `gemini` |
-| GPT-5.6 Sol | `gpt-5.6-sol` | `gpt`, `sol` |
 
 ## Environment overrides
 

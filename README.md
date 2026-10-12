@@ -62,7 +62,7 @@ doubao headless sessions list --limit 20 --json
 # Equivalent selector:
 doubao --platform headless sessions list --json
 doubao headless sessions create "Hello" --mode chat --wait --json
-doubao headless sessions create "Write a plan" --mode work --model <id-or-exact-name> --wait --json
+doubao headless sessions create "Write a plan" --mode work --model 'Orange 5.5' --wait --json
 doubao headless sessions send <conversation-id> "Continue" --wait --json
 doubao headless sessions read <conversation-id> --limit 5 --json
 doubao headless sessions wait <conversation-id> --run <run-id> --json
@@ -139,15 +139,15 @@ These examples use the macOS desktop backend. Headless also supports uploads and
 ```bash
 doubao sessions create "Compare these" --attach ./one.pdf --attach ./two.pdf --wait
 doubao models
-doubao model select pro --reasoning max
+doubao model select 'Orange 5.5' --reasoning max
 doubao model reasoning high
-doubao sessions send <conversation-id> "Review this" --model pro --reasoning high --wait
+doubao sessions send <conversation-id> "Review this" --model 'Orange 5.5' --reasoning high --wait
 doubao sessions create -- "Explain --model literally"
 ```
 
 - `create` without a message: `conversationId: null`.
 - Attachments: repeat `--attach`; maximum 50 files, 100 MiB each. Service limits may be lower.
-- Models: ID, display name or alias from `doubao models`.
+- Models: exact model name from `doubao models`.
 - Reasoning: `low`, `medium`, `high`, `xhigh`, `max`; `send --reasoning` requires `--model`.
 - Message containing option names: precede with `--`.
 

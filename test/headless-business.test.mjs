@@ -52,6 +52,20 @@ function ack(conversationId, runId = RUN) {
   return { event: 'SSE_ACK', data: { ack_client_meta: { conversation_id: conversationId }, query_list: [{ question_id: runId }] } };
 }
 
+function modelCatalog(items) {
+  return json({ code: 0, data: { entry_list: [{ action_bar_key: 'coco_deep_thinking', active_switch_conf: {
+    menu_conf_v2: { mode_list: { item_list: [
+      { agent_mode: 1, model_list: { item_list: items } },
+      { agent_mode: 2, model_list: { item_list: items } },
+    ] } },
+  } }] } });
+}
+
+const ORANGE_55 = { model_item_key: '5255447810', item_id: '5255447810', name: 'Orange 5.5',
+  model_extra_params: { provider_id: 'cis', model_type: 'custom' } };
+const ORANGE_50 = { model_item_key: 'orange-5.0-live', item_id: 'orange-5.0-live', name: 'Orange 5.0',
+  model_extra_params: { provider_id: '', model_type: 'custom' } };
+
 function imResponse(key, body) {
   return json({ status_code: 0, downlink_body: { [key]: body } });
 }
@@ -198,8 +212,9 @@ test('confirmed model selection becomes the new-conversation default and task co
   const configDir = isolated(t);
   await updateHeadlessState({ configDir, profile: 'alpha', accountId: ACCOUNT,
     currentConversationId: CONVERSATION, defaults: { modelId: 'model-old', reasoning: 'high' } });
-  let batchReads = 0;
+  let currentExtra = { mode_id: '3', model_item_key: 'model-old', reasoning_effort: '5' };
   const requests = [];
+  const modelModifications = [];
   t.mock.method(globalThis, 'fetch', async (input, init) => {
     const url = new URL(input);
     if (url.pathname === '/passport/account/info/v2/') return json({ data: { user_id_str: ACCOUNT } });
@@ -211,19 +226,17 @@ test('confirmed model selection becomes the new-conversation default and task co
       } }] } });
     }
     if (url.pathname === '/im/conversation/batch_get') {
-      batchReads += 1;
-      const extra = batchReads === 1
-        ? { mode_id: '3', model_item_key: 'model-old', reasoning_effort: '5' }
-        : { mode_id: '3', model_item_key: 'model-new', reasoning_effort: '6' };
       return imResponse('batch_get_conv_info_downlink_body', { conversation_info_list: [
-        { conversation_id: CONVERSATION, extra: JSON.stringify(extra) },
+        { conversation_id: CONVERSATION, extra: JSON.stringify(currentExtra) },
       ] });
     }
     if (url.pathname === '/im/conversation/modify') {
       const body = JSON.parse(init.body).uplink_body.modify_conversation_uplink_body;
       assert.equal(body.conversation_id, CONVERSATION);
       assert.equal(body.model_item_key, 'model-new');
-      assert.equal(body.reasoning_effort, '6');
+      assert.ok(['4', '6'].includes(body.reasoning_effort));
+      modelModifications.push(body);
+      currentExtra = { mode_id: '3', model_item_key: body.model_item_key, reasoning_effort: body.reasoning_effort };
       return imResponse('modify_conversation_downlink_body', {});
     }
     if (url.pathname === '/im/project/list') {
@@ -246,15 +259,22 @@ test('confirmed model selection becomes the new-conversation default and task co
   });
 
   const selected = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
-    'headless', '--profile', 'alpha', 'model', 'select', 'model-new', '--reasoning', 'xhigh',
+    'headless', '--profile', 'alpha', 'model', 'select', 'New model', '--reasoning', 'xhigh',
   ])));
   assert.equal(selected.scope, 'conversation-and-new-conversations');
   assert.equal(selected.reasoning, 'xhigh');
   const saved = JSON.parse(fs.readFileSync(headlessProfilePaths({ configDir, profile: 'alpha' }).state, 'utf8'));
   assert.deepEqual(saved.defaults, { modelId: 'model-new', reasoning: 'xhigh' });
 
+  const currentReasoning = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', '--profile', 'alpha', 'model', 'reasoning', 'medium',
+  ])));
+  assert.equal(currentReasoning.reasoning, 'medium');
+  assert.equal(modelModifications.at(-1).model_item_key, 'model-new');
+  assert.equal(modelModifications.at(-1).reasoning_effort, '4');
+
   const created = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
-    'headless', '--profile', 'alpha', 'sessions', 'create', '--project', 'Research', '--enterprise-knowledge', 'hello from the CLI',
+    'headless', '--profile', 'alpha', 'sessions', 'create', '--reasoning', 'xhigh', '--project', 'Research', '--enterprise-knowledge', 'hello from the CLI',
   ])));
   assert.equal(created.accepted, true);
   const [body] = requests;
@@ -267,6 +287,121 @@ test('confirmed model selection becomes the new-conversation default and task co
   assert.deepEqual(JSON.parse(task.task_input_json).project_context, {
     project_id: 'project-42', project_name: 'Research', folders: [],
   });
+});
+
+test('model selection requires exact live display names and resolves stored IDs internally', async t => {
+  const configDir = isolated(t);
+  const completions = [];
+  const modifications = [];
+  let currentExtra = { mode_id: '3', model_item_key: '5255447810', reasoning_effort: '5' };
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    const url = new URL(input);
+    if (url.pathname === '/passport/account/info/v2/') return json({ data: { user_id_str: ACCOUNT } });
+    if (url.pathname === '/alice/slot/action_bar_v3/brief_list') return modelCatalog([ORANGE_50, ORANGE_55]);
+    if (url.pathname === '/im/conversation/batch_get') return imResponse('batch_get_conv_info_downlink_body', {
+      conversation_info_list: [{ conversation_id: NEXT_CONVERSATION,
+        extra: JSON.stringify(currentExtra) }],
+    });
+    if (url.pathname === '/im/conversation/modify') {
+      const body = JSON.parse(init.body).uplink_body.modify_conversation_uplink_body;
+      modifications.push(body);
+      currentExtra = { mode_id: '3', model_item_key: body.model_item_key, reasoning_effort: body.reasoning_effort };
+      return imResponse('modify_conversation_downlink_body', {});
+    }
+    if (url.pathname === '/chat/completion') {
+      completions.push(JSON.parse(init.body));
+      return eventStream([ack(NEXT_CONVERSATION)]);
+    }
+    assert.fail(`unexpected route ${url.pathname}`);
+  });
+
+  const selected = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', 'model', 'select', 'Orange 5.5',
+  ])));
+  assert.equal(selected.id, '5255447810');
+  const selectedOld = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', 'model', 'select', 'Orange 5.0',
+  ])));
+  assert.equal(selectedOld.id, 'orange-5.0-live');
+  await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', 'model', 'select', 'Orange 5.5',
+  ])));
+  const state = JSON.parse(fs.readFileSync(headlessProfilePaths({ configDir }).state, 'utf8'));
+  assert.equal(state.defaults.modelId, '5255447810');
+
+  const defaultReasoning = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', 'model', 'reasoning', 'high',
+  ])));
+  assert.equal(defaultReasoning.reasoning, 'high');
+
+  for (const value of ['orange', 'orange-5.5', '5255447810', 'orange 5.5']) {
+    await assert.rejects(withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+      'headless', 'model', 'select', value,
+    ]))), /unknown model|exact model name|Available models/iu, value);
+    await assert.rejects(withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+      'headless', 'sessions', 'create', '--model', value, 'invalid model message',
+    ]))), /unknown model|exact model name|Available models/iu, value);
+  }
+  assert.equal(completions.length, 0);
+  assert.equal(modifications.length, 0);
+
+  const defaultCreated = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', 'sessions', 'create', 'default model message',
+  ])));
+  assert.equal(defaultCreated.accepted, true);
+  assert.equal(completions[0].option.model_config.model_item_key, '5255447810');
+  assert.equal(completions[0].option.model_config.reasoning_effort, 5);
+
+  for (const [model, expectedId] of [['Orange 5.0', 'orange-5.0-live'], ['Orange 5.5', '5255447810']]) {
+    const result = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+      'headless', 'sessions', 'create', '--model', model, 'fixture message',
+    ])));
+    assert.equal(result.accepted, true, model);
+    assert.equal(completions.at(-1).option.model_config.model_item_key, expectedId);
+    assert.equal(completions.at(-1).option.aggregate_params.provider_id,
+      expectedId === '5255447810' ? 'cis' : '');
+    if (expectedId === '5255447810') {
+      assert.equal(completions.at(-1).ext.use_deep_think, '10001');
+      assert.equal(completions.at(-1).option.need_deep_think, 10001);
+    }
+  }
+
+  const currentReasoning = await withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+    'headless', 'model', 'reasoning', 'medium',
+  ])));
+  assert.equal(currentReasoning.reasoning, 'medium');
+  assert.equal(modifications.at(-1).model_item_key, '5255447810');
+  assert.equal(modifications.at(-1).reasoning_effort, '4');
+});
+
+test('unavailable or chat-unsupported Orange 5.5 fails before completion', async t => {
+  for (const fixture of [
+    { name: 'unavailable', model: { ...ORANGE_55, disabled: true }, mode: 'work' },
+    { name: 'work-only in chat mode', model: ORANGE_55, mode: 'chat' },
+  ]) {
+    await t.test(fixture.name, async t => {
+      isolated(t);
+      let completionRequests = 0;
+      t.mock.method(globalThis, 'fetch', async (input) => {
+        const url = new URL(input);
+        if (url.pathname === '/passport/account/info/v2/') return json({ data: { user_id_str: ACCOUNT } });
+        if (url.pathname === '/alice/slot/action_bar_v3/brief_list') {
+          if (fixture.mode === 'chat') {
+            return json({ code: 0, data: { entry_list: [{ action_bar_key: 'coco_deep_thinking', active_switch_conf: {
+              menu_conf_v2: { mode_list: { item_list: [{ agent_mode: 1, model_list: { item_list: [fixture.model] } }] } },
+            } }] } });
+          }
+          return modelCatalog([fixture.model]);
+        }
+        if (url.pathname === '/chat/completion') { completionRequests += 1; return eventStream([ack(NEXT_CONVERSATION)]); }
+        assert.fail(`unexpected route ${url.pathname}`);
+      });
+      await assert.rejects(withApp(HEADLESS_APP, () => executeHeadless(parseOptions([
+        'headless', 'sessions', 'create', '--mode', fixture.mode, '--model', 'Orange 5.5', 'fixture message',
+      ]))), /Select an available headless model|exact model name|available model/u);
+      assert.equal(completionRequests, 0);
+    });
+  }
 });
 
 test('delayed local SSE headers do not block dispatch and ACK storage failure cancels the preflight', { timeout: 5000 }, async t => {

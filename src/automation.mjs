@@ -5,7 +5,7 @@ import { withChatClient } from './cdp.mjs';
 import { resolveModelFromClient, resolveReasoningEffort, selectModelFromClient, setReasoningForConversation } from './models.mjs';
 import { sendWithConnectors, prepareToolSandbox } from './mcp.mjs';
 import { resolveTaskContext, publicTaskContext, validateTaskOptions } from './context.mjs';
-import { modelProtocol, sendChatCompletion, switchConversationModel } from './protocol.mjs';
+import { AUTOMATIC_MODEL_PROTOCOL, sendChatCompletion, switchConversationModel } from './protocol.mjs';
 import { refreshTurn, readTurn, waitTurn, stopTurn, receiptStore } from './turns.mjs';
 
 const CHAT_INPUT = '[data-testid="chat_input_input"] [contenteditable="true"]';
@@ -312,7 +312,7 @@ async function sendMessageViaProtocol(id, message, options, timeoutMs) {
   try {
     return await withChatClient(async (client) => {
       let modelName = null;
-      let model = modelProtocol('auto');
+      let model = AUTOMATIC_MODEL_PROTOCOL;
       if (options.model) {
         const resolved = await resolveModelFromClient(client, options.model);
         model = resolved.protocol;
@@ -401,7 +401,7 @@ export async function createConversation(message, options = {}) {
     try {
       return await withChatClient(async (client) => {
         let modelName = null;
-        let model = modelProtocol('auto');
+        let model = AUTOMATIC_MODEL_PROTOCOL;
         if (options.model) {
           const resolved = await resolveModelFromClient(client, options.model);
           model = resolved.protocol;

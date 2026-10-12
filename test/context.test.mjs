@@ -3,7 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { parseOptions } from '../src/cli.mjs';
 import { projectContext, selectProject, resolveTaskContext, listProjects } from '../src/context.mjs';
-import { conversationExt, sendChatCompletion, modelProtocol, skillMessage } from '../src/protocol.mjs';
+import { conversationExt, sendChatCompletion, AUTOMATIC_MODEL_PROTOCOL, skillMessage } from '../src/protocol.mjs';
 import { currentApp } from '../src/app.mjs';
 
 const project = { id: '123', name: 'demo', folders: [
@@ -84,7 +84,7 @@ test('project list follows cursors and excludes deleted projects', async () => {
 });
 
 test('cloud strips local parameters and records runtime/project changes', () => {
-  const ext = conversationExt(modelProtocol('auto'), 'id', '/tmp/local', { existingConversation: true,
+  const ext = conversationExt(AUTOMATIC_MODEL_PROTOCOL, 'id', '/tmp/local', { existingConversation: true,
     taskContext: { runtime: 'cloud', previousAgentParam: { runtime_type: 2, sandbox_auth_type: 2, local_device_id: 'current' }, previousProjectId: '123', projectId: '', projectContext: {}, enterpriseSkill: skill } });
   const param = JSON.parse(ext.general_task_param);
   assert.deepEqual(param.agent_task_param, { runtime_type: 1 }); assert.equal(param.client_option, undefined);
@@ -102,7 +102,7 @@ test('actual no-wait request contains option task context, attachments and recon
     'event: SSE_ACK\ndata: {"ack_client_meta":{"conversation_id":"123"},"query_list":[{"question_id":"456"}]}\n\n'); },
     reconcile: async (_, args) => { assert.equal(args.instanceId, 'sandbox-test'); await new Promise(r => setTimeout(r, 5)); bound = true; return { ok: true }; } });
   const context = { runtime: 'local', projectId: '123', projectContext: { project_id: '123' }, deviceId: 'current', enterpriseSkill: skill };
-  const result = await sendChatCompletion(client, { message: 'hello', model: modelProtocol('auto'), waitForReply: false, sandboxId: 'sandbox-test', taskContext: context,
+  const result = await sendChatCompletion(client, { message: 'hello', model: AUTOMATIC_MODEL_PROTOCOL, waitForReply: false, sandboxId: 'sandbox-test', taskContext: context,
     attachmentBlocks: [{ block_type: 10052, content: { attachment_block: { attachments: [{ file: { uri: 'upload' } }] } } }] });
   assert.equal(result.conversationId, '123'); assert.equal(bound, true);
   assert.deepEqual(body.option.general_task_param, JSON.parse(body.ext.general_task_param));
@@ -115,7 +115,7 @@ test('actual no-wait request contains option task context, attachments and recon
 test('sandbox rejection reports the accepted turn and cannot look like success', async () => {
   const client = mockClient({ reconcile: async () => ({ ok: false }), fetch: async () => new Response(
     'event: SSE_ACK\ndata: {"ack_client_meta":{"conversation_id":"123"},"query_list":[{"question_id":"456"}]}\n\n') });
-  await assert.rejects(sendChatCompletion(client, { message: 'hello', model: modelProtocol('auto'), waitForReply: false, sandboxId: 'sandbox-test' }),
+  await assert.rejects(sendChatCompletion(client, { message: 'hello', model: AUTOMATIC_MODEL_PROTOCOL, waitForReply: false, sandboxId: 'sandbox-test' }),
     e => e.code === 'sandbox_reconcile_failed' && e.receipt.runId === '456');
 });
 
