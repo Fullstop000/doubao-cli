@@ -105,6 +105,7 @@ doubao sessions current
 - `profiles --json` adds account ID, name, type, enterprise user type, tenant ID/name/user name, and metadata source (`live` or `cache`). Missing metadata is `null`; offline types remain `unknown`. Account identity does not imply permission to send Feishu messages.
 - Account IDs come from profile Preferences; CDP reads account and tenant metadata without switching profiles. `accountLookupError` reports incomplete or unavailable lookup.
 - Desktop chat window: must remain open.
+- While a CLI command uses the desktop chat renderer, a `doubao-cli` connection badge appears beside search (or in the upper-right corner). Click it to see the selected app, profile, CDP endpoint, CLI version, and process ID. Commands send heartbeats every 2 seconds; the badge shows a delayed connection after 5 seconds and disconnected after 10 seconds without a heartbeat, or immediately when the command finishes. Concurrent connections are counted separately. This indicates an active CLI connection, not login or task completion; detached tasks may continue after the CLI disconnects. Web and Headless do not display the badge.
 - Restart confirmation: interactive prompt; scripts require `cdp launch --yes`.
 - `sessions open <conversation-id>`: navigate to session; may change focus.
 
