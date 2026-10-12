@@ -1,36 +1,50 @@
 ---
 name: doubao
-description: "Control Doubao through a Linux/macOS headless HTTPS CLI, or macOS desktop/browser backends. Headless supports chat, cloud Work, models, session reads and task recovery without a browser or installed Doubao app. Desktop additionally supports attachments, local execution and MCP. Requires Node.js 22+ and account sign-in."
+description: "Control Doubao through a Linux/macOS headless HTTPS CLI, or macOS desktop/browser backends. Headless supports chat, cloud and process-based local Work, attachments, models and reasoning, projects, enterprise knowledge, MCP, usage, profiles and task recovery without a browser or installed Doubao app. Requires Node.js 22+ and account sign-in."
 ---
 
 # Doubao CLI
 
-`doubao` supports direct headless HTTPS, macOS desktop CDP, and a dedicated Chrome profile. Requires Node.js 22+ and Doubao account sign-in. Linux defaults to headless; desktop/browser backends require macOS.
+`doubao` supports direct headless HTTPS, macOS desktop CDP, and a dedicated Chrome profile. Requires Node.js 22+ and Doubao account sign-in. Linux defaults to Headless; macOS defaults to Work when installed, otherwise Doubao (unless `DOUBAO_APP` overrides the path). Desktop/browser backends require macOS.
 
 If the CLI is missing: `npm install --global doubao-cli@latest` (or prefix commands with `npx --yes doubao-cli@latest`).
 
 ## Headless
+
+Use `doubao headless <command>` on Linux or macOS to select Headless explicitly; `doubao --platform headless <command>` is equivalent. Linux also accepts unprefixed commands. On macOS, keep the `headless` prefix on login, session operations and recovery. `--runtime cloud` does not switch the backend.
 
 ```bash
 doubao headless login                  # Terminal QR; approve on the phone
 doubao headless status --json
 doubao headless capabilities --json
 doubao headless models --json
-doubao headless sessions create "..." --mode work --wait --json
+doubao headless profiles --json
+doubao headless usage --json
+doubao headless sessions list --json
+doubao headless sessions create "..." --mode work --runtime cloud --wait --json
 doubao headless sessions create "..." --mode chat --wait --json
 doubao headless sessions send <id> "..." --wait --json
+doubao headless sessions create "Review these" --attach ./report.pdf --model <id-or-name> --reasoning high --wait --json
+doubao headless sessions create "Inspect this project" --mode work --runtime local --project <id-or-name> --enterprise-knowledge --workspace /absolute/path --permission AskOnRisk --wait --json
 doubao headless sessions wait <id> --run <run-id> --json
 doubao headless sessions stop <id> --run <run-id> --json
+doubao headless mcp register tools --command /absolute/path/node --arg /absolute/path/server.mjs --json
+doubao headless sessions send <id> "Use my tool" --runtime local --mcp <connector-id> --wait --json
 ```
 
 - No browser, CDP or installed desktop app is required. Do not launch an app to recover a headless connection.
-- Default mode is cloud Work. Existing desktop local-runtime conversations are rejected. Attachments, local execution, MCP, project/knowledge selection and interactive approval answers are not exposed here.
+- New conversations default to cloud Work; use `--mode chat` for ordinary chat. `--runtime` chooses cloud or local task execution and does not select the backend. Project, enterprise knowledge and local execution require Work mode.
+- Headless local execution uses a Node.js HTTP/SSE worker with access to the local workspace. It is process-based and is not the native Doubao app sandbox. `FullAccess` is the default permission policy. `AskOnRisk` and `AlwaysAsk` prompt in the terminal only with TTY input/output and `--wait`; without `--wait`, operations needing a prompt are denied. These policies do not confine MCP server processes.
+- `--mcp` uses a local stdio server and selects local Work execution. Without `--wait`, one detached worker submits the original request and owns its local HTTP/SSE execution and MCP calls. The permission setting does not confine the MCP server process.
 - `login --cookie-file <secret-path>` imports an existing Cookie header or cookie array. `DOUBAO_HEADLESS_COOKIE` is an in-memory alternative. Do not print credentials or place them in command operands.
-- Model selection uses live IDs or exact names from `headless models`; repeat `--model` on create/send when changing it.
-- Save both IDs; recover accepted timeouts with `wait`, never by resending. `waiting_input` remains unresolved until the account's interactive control is answered elsewhere.
-- Terminal QR issuance and unscanned polling are verified. Phone approval and confirmed-login saving need live acceptance. This experimental backend uses private service APIs.
+- Model selection uses live IDs or exact names from `headless models`. Profile-scoped defaults can be changed with `model select` and `model reasoning`; per-turn overrides use `--model` and `--reasoning`. Attachments use repeatable `--attach`; project and enterprise options are described in [the Headless guide](../../docs/headless.md).
+- `profiles`, `current` and `open` refer to Headless account profiles and the CLI's selected conversation; they do not open a desktop UI. Desktop app profile account and tenant metadata remain documented separately in the README.
+- Save both IDs; recover accepted timeouts with `wait`, never by resending. Without `--wait`, the detached submission worker continues execution for that same request. `sessions wait` uses the same IDs and may start a runtime to recover from the saved receipt; a persistent lease prevents concurrent execution while the original worker is active. `waiting_input` remains unresolved until an interactive control is answered in Doubao.
+- Options unsupported on a Headless command are rejected before requests are sent. CLI 0.17 passed 357/357 tests on Linux x86_64 with Node 23.7.0 and macOS with Node 22.16.0. Live 0.17 acceptance used isolated configs on Linux and macOS and covered attachments, projects and enterprise knowledge, local execution, stdio MCP, and Linux detached-worker recovery. Fresh QR login was verified on macOS; Linux acceptance used an isolated install and cookie file from a QR-authenticated session, so it does not establish fresh Linux QR login. This is source/candidate evidence, not npm publication or release verification. See [Headless details and historical acceptance](../../docs/headless.md). This backend uses private service APIs.
 
-## App selection
+To rerun live acceptance, use a source checkout, a separate config directory with its own completed login, and a separate output directory. Do not use `HOME` for isolation. For example, set `DOUBAO_CLI_CONFIG_DIR` to the isolated config for login, then run `npm run test:e2e:headless -- --config <absolute-config-path> --output <absolute-output-path> --stage all`. The script is part of the source checkout and is not included in the npm package. If an accepted task reports a failed receipt write, restore the error's structured `recoveryReceipt` to `recoveryReceiptPath` with mode 0600 after repairing storage, then recover with the same IDs; never resubmit the accepted request.
+
+## Desktop app selection (macOS)
 
 Requires CLI 0.10.0 or newer. Check `doubao --version`; update older installations before using `--app` or Work.
 
@@ -38,7 +52,7 @@ Prefer DoubaoWork when installed; fall back to Doubao only when Work is absent. 
 
 Work uses port 9226 and its own profile directory; regular Doubao uses 9225. Keep the same `--app` on follow-ups. Connectors are account-level, so the same account can expose them in both apps. Restart authorization applies separately to each app.
 
-## Readiness check (do this first)
+## Desktop readiness check
 
 ```bash
 doubao status --json        # app installed / running / version / profile
@@ -47,7 +61,7 @@ doubao capabilities --json  # per-feature availability; cdp.available gates mess
 
 If `cdp.available` is false, use `doubao cdp launch`. Restarting a running app needs the user's consent; pass `--yes` in non-interactive use only when that restart is authorized. Use `DOUBAO_CDP_ENDPOINT` for a non-default port.
 
-## Command routing
+## Desktop command routing
 
 Pass `--json` to every data-returning command when another program consumes the output.
 
@@ -98,7 +112,7 @@ doubao web sessions wait <conversation-id> --run <run-id> --json
 ## Behavior notes
 
 - Task tracking requires CLI 0.11.0 or newer. Check `doubao --version` and run `doubao update` before using `sessions status/wait` or `stop --run` on an older installation.
-- Save both `conversationId` and `runId` from each accepted send. `--wait` follows organizer/subagents and returns only the final main reply in `reply`; interim text is `progress`, produced files are `artifacts`, and `tasks` gives server thread counts. Omit `--wait` to return on acceptance with `reply: null` (MCP still requires `--wait`).
+- Save both `conversationId` and `runId` from each accepted send. `--wait` follows organizer/subagents and returns only the final main reply in `reply`; interim text is `progress`, produced files are `artifacts`, and `tasks` gives server thread counts. Omit `--wait` to return on acceptance with `reply: null` (desktop MCP requires `--wait`; Headless MCP can run in its background worker).
 - Timeout defaults to 120 s; set `--timeout <seconds>` when needed. Timeout or disconnection does not cancel work. Use `sessions wait <id> --run <run-id>` in a new process instead of resending; tools may already have executed. Keep the same app, account, profile and config directory for recovery receipts. Receipt files include request content and have mode 0600.
 - `waiting_input` includes `pending` questions or approval controls. Ask the user to respond in Doubao, then wait again; do not automatically choose or approve. Waiting commands exit nonzero for timeout, unknown state, waiting input, failure or cancellation. A `status` lookup itself exits zero when the lookup succeeds.
 - Explicit cancellation uses `sessions stop <id> --run <run-id>`. Confirm `stopped: true`; otherwise report unconfirmed cancellation. It does not undo tool effects. Without `--run`, status/wait/stop pin the latest submitted turn once; prefer the saved ID for automation. An already completed old turn can be queried/stopped without targeting a newer one.

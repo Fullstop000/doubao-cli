@@ -52,7 +52,7 @@ test('Linux help, status, and capabilities stay on the headless path without net
   assert.match(output.pop(), /doubao headless sessions create/u);
   await main(['status', '--json']);
   assert.deepEqual(JSON.parse(output.pop()), {
-    platform: 'headless', loggedIn: false, loginRequired: true, accountId: null,
+    platform: 'headless', profile: 'default', loggedIn: false, loginRequired: true, accountId: null,
     browserRequired: false, appRequired: false,
   });
   await main(['capabilities', '--json']);
@@ -62,5 +62,5 @@ test('Linux help, status, and capabilities stay on the headless path without net
   assert.equal(capabilities.appRequired, false);
 
   await assert.rejects(main(['sessions', 'create', '--runtime', 'local', 'must be rejected before dispatch']),
-    /--runtime local is not supported on doubao headless/u);
+    /Doubao login is required/u);
 });

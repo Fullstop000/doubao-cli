@@ -2,40 +2,52 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import qrcode from 'qrcode-terminal';
+import { headlessProfilePaths, listHeadlessProfiles, loadHeadlessState, updateHeadlessState, validateHeadlessProfileName } from './headless-state.mjs';
+import { listHeadlessProjects, createHeadlessProject, headlessEnterpriseSkill, readHeadlessUsage, readHeadlessConversation, modifyHeadlessModel, headlessProfileMetadata } from './headless-services.mjs';
+import { resolveModelName, resolveReasoningEffort } from './models.mjs';
+import { selectProject, projectContext } from './context.mjs';
 import { configDirectory } from './config.mjs';
+import { resolveAttachmentFiles } from './attachments.mjs';
+import { uploadHeadlessAttachments } from './headless-attachments.mjs';
+import { HeadlessConnectors } from './headless-mcp.mjs';
+import { HeadlessLocalRuntime, buildHeadlessLocalTaskParam, prepareHeadlessLocalChannel } from './headless-local-runtime.mjs';
+import { createHeadlessApproval } from './headless-approval.mjs';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { CookieJar, HeadlessClient, consumeSse } from './headless-http.mjs';
 import { qrLogin } from './headless-auth.mjs';
 import { reduceStreamEvent, updateLiveControls } from './protocol.mjs';
 import { messageText, readTurn, refreshTurn, waitTurn, stopTurn, receiptStore } from './turns.mjs';
 
 const ID = /^[1-9]\d{11,23}$/u;
-const sessionPath = () => path.join(configDirectory(), 'headless', 'session.json');
+const sessionPath = profile => headlessProfilePaths({ profile }).credentials;
 const validateId = value => { if (!ID.test(value || '')) throw new Error('conversation id must contain 12 to 24 digits'); return value; };
 
 export function validateHeadlessOptions(options) {
   const [command, subcommand] = options.args;
   if (!command || ['help', 'version', '--version', '-v', 'update'].includes(command)) return;
   const unsupported = [
-    ['--target', options.targetId], ['--profile', options.profile], ['--attach', options.attachments?.length],
-    ['--reasoning', options.reasoning], ['--runtime local', options.runtime === 'local'],
-    ['--project', options.project], ['--enterprise-knowledge', options.enterpriseKnowledge],
-    ['--workspace', options.workspace], ['--no-skills', options.noSkills], ['--permission', options.permission],
-    ['--mcp', options.mcps?.length], ['--command', options.commandPath], ['--arg', options.commandArgs?.length], ['--env', options.envPairs?.length],
+    ['--target', options.targetId],
   ].find(([, supplied]) => supplied);
   if (unsupported) throw new Error(`${unsupported[0]} is not supported on doubao headless`);
+  if (options.profile) validateHeadlessProfileName(options.profile);
   if (options.unknownFlags?.length) throw new Error(`Unknown Headless option: ${options.unknownFlags[0]}; use -- before literal option text`);
   if (options.cookieFile && command !== 'login') throw new Error('--cookie-file requires doubao headless login');
-  const supported = ['login', 'logout', 'status', 'capabilities', 'models'].includes(command)
-    || command === 'sessions' && ['list', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(subcommand);
+  const supported = ['login', 'logout', 'status', 'capabilities', 'models', 'profiles', 'usage', 'runtimes'].includes(command)
+    || command === 'sessions' && ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(subcommand)
+    || command === 'projects' && ['list', 'create'].includes(subcommand)
+    || command === 'mcp' && ['register', 'list', 'remove'].includes(subcommand)
+    || command === 'model' && (!subcommand || ['current', 'select', 'reasoning'].includes(subcommand));
   if (!supported) throw new Error(`${options.args.slice(0, 2).join(' ')} is not supported on doubao headless`);
   if (['login', 'logout', 'status', 'capabilities', 'models'].includes(command) && options.args.length !== 1) throw new Error(`${command} accepts no positional arguments`);
+  if (options.reasoning) resolveReasoningEffort(options.reasoning);
   if (options.wait && (command !== 'sessions' || !['create', 'send'].includes(subcommand)
     || !options.args.slice(subcommand === 'create' ? 2 : 3).join(' ').trim())) throw new Error('Headless --wait requires sessions create/send with a message');
   if (options.model && (command !== 'sessions' || !['create', 'send'].includes(subcommand))) throw new Error('--model requires headless sessions create/send');
 }
 
-async function saveSession(client) {
-  const file = sessionPath();
+async function saveSession(client, profile = client.profile) {
+  const file = sessionPath(profile);
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
@@ -44,36 +56,61 @@ async function saveSession(client) {
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
-async function signedInClient(timeoutMs) {
+async function signedInClient(timeoutMs, profile) {
   let session;
-  try { session = JSON.parse(await fs.readFile(sessionPath(), 'utf8')); }
+  try { session = JSON.parse(await fs.readFile(sessionPath(profile), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw new Error('Headless session file is invalid; log in again'); }
   const cookie = process.env.DOUBAO_HEADLESS_COOKIE;
   if (!cookie && !session) throw Object.assign(new Error('Doubao login is required; run "doubao headless login"'), { code: 'login_required' });
   const client = new HeadlessClient({ ...(session || {}), ...(cookie ? { cookies: CookieJar.import(cookie), accountId: undefined } : {}) });
+  client.profile = profile;
   await client.account({ timeoutMs });
   if (!cookie) await saveSession(client);
   attachLifecycle(client);
   return client;
 }
 
-export function completionBody({ conversationId = '', message, mode = 'work', model, localMessageId = randomUUID() }) {
+export function completionBody({ conversationId = '', message, mode = 'work', model, reasoning, taskContext, localTaskParam, attachmentBlocks = [], localMessageId = randomUUID() }) {
   const work = mode === 'work';
   const generalTask = { action: 0, thread_local_message_id: [localMessageId], runtime_type: 1,
     agent_task_param: { runtime_type: 1 }, agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: false },
     need_modify_conversation: false, task_input_json: JSON.stringify({ schema_version: 1, project_context: {} }) };
+  if (taskContext) {
+    generalTask.task_input_json = JSON.stringify({ schema_version: 1, project_context: taskContext.projectContext || {} });
+    if (taskContext.enterpriseSkill) {
+      const skill = taskContext.enterpriseSkill;
+      generalTask.selected_skills = [skill.name];
+      generalTask.skill_selections = [{ name: skill.name, skill_type: skill.type, skill_id: skill.externalId }];
+    }
+  }
+  if (localTaskParam) Object.assign(generalTask, localTaskParam, { thread_local_message_id: [localMessageId] });
+  if (taskContext) {
+    const previous = taskContext.previousAgentParam || {};
+    const next = generalTask.agent_task_param;
+    const existing = Boolean(conversationId);
+    generalTask.agent_task_param_change = {
+      runtime_changed: existing && previous.runtime_type !== next.runtime_type,
+      device_changed: existing && ((previous.local_device_id || '') !== (next.local_device_id || '') || (previous.local_app_id || '') !== (next.local_app_id || '')),
+      sandbox_auth_type_changed: existing && previous.sandbox_auth_type !== next.sandbox_auth_type,
+    };
+    const projectChanged = existing && (taskContext.previousProjectId || '') !== (taskContext.projectId || '');
+    if (projectChanged) generalTask.project_id = taskContext.projectId || '';
+    generalTask.need_modify_conversation = existing && (projectChanged || Object.keys(next).some(key => previous[key] !== next[key]));
+  }
   const init = { need_ack_conversation: true };
   return {
     client_meta: { local_conversation_id: 'local_' + Date.now() + '_' + randomUUID(), conversation_id: conversationId,
       bot_id: '7338286299411103781', last_section_id: '', last_message_index: null },
     messages: [{ local_message_id: localMessageId, content_block: [{ block_type: 10000,
-      content: { text_block: { text: message } }, block_id: randomUUID() }], message_status: 0 }],
+      content: { text_block: { text: message } }, block_id: randomUUID() }, ...attachmentBlocks], message_status: 0 }],
     option: { create_time_ms: Date.now(), agent_mode: work ? 1 : 2, need_deep_think: model?.needDeepThink ?? (work ? 9 : 0), unique_key: randomUUID(),
       recovery_option: { is_recovery: false, req_create_time_sec: Math.floor(Date.now() / 1000), append_sse_event_scene: 0 },
       need_create_conversation: !conversationId, is_old_user: true, message_from: 0,
       sse_recv_event_options: { support_chunk_delta: true }, general_task_param: generalTask,
-      ...(!conversationId ? { conversation_init_option: init, conversation_init_ext: { mode_id: work ? '3' : '1', ...(model ? { model_item_key: model.id } : {}) } } : {}),
-      ...(model ? { model_config: { model_item_key: model.id }, aggregate_params: { provider_id: model.provider || '' } } : {}) },
+      ...(!conversationId ? { conversation_init_option: init, conversation_init_ext: { mode_id: work ? '3' : '1', ...(model ? { model_item_key: model.id } : {}),
+        ...(reasoning ? { reasoning_effort: reasoning } : {}), ...(localTaskParam ? { agent_task_param: JSON.stringify(localTaskParam.agent_task_param) } : {}) } } : {}),
+      ...(model ? { model_config: { model_item_key: model.id, ...(reasoning ? { reasoning_effort: Number(reasoning) } : {}) },
+        aggregate_params: { provider_id: model.provider || '', ...(reasoning ? { reasoning_effort: reasoning } : {}) } } : {}) },
     ext: { general_task_param: JSON.stringify(generalTask), use_deep_think: String(model?.needDeepThink ?? (work ? 9 : 0)), agent_mode: work ? '1' : '2',
       sub_conv_firstmet_type: '1', collection_id: '', is_finish: '1', conversation_init_option: JSON.stringify(init), commerce_credit_config_enable: '0' },
     user_context: [],
@@ -104,14 +141,18 @@ export async function streamCompletion(client, body, { timeoutMs, waitForReply =
       const pending = updateLiveControls(state, event, data);
       if (event === 'SSE_ACK' || event === 'FETCH_STREAM' || pending) checkpoint();
       if (event === 'STREAM_ERROR' || event === 'gateway-error') throw Object.assign(new Error('Doubao completion failed'), { code: 'stream_error' });
+      if (event === 'SSE_ACK' && body.option.general_task_param.runtime_type === 2 && !waitForReply) return 'stop';
       return result || (pending || state.accepted && state.handoffs.length ? 'stop' : undefined);
     });
     if (!state.accepted) throw new Error('Completion ended without a verified acceptance receipt');
     checkpoint();
     return state;
   } catch (error) {
-    checkpoint();
-    error.code ||= ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'request_failed';
+    // A failed receipt write must not erase the server's accepted IDs.
+    try { checkpoint(); } catch {}
+    if (typeof error.code !== 'string') error = Object.assign(new Error(error.message, { cause: error }), {
+      name: error.name, code: ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'request_failed',
+    });
     error.result = { platform: 'headless', conversationId: state.conversationId || null, runId: state.runId || null,
       localMessageId: state.localMessageId, accepted: state.accepted, requestDispatched: state.requestDispatched, status: state.failed ? 'failed' : 'unknown', reply: null,
       recovery: state.accepted ? 'Use sessions wait with the same conversationId and runId; do not resend' : 'Acceptance is unknown; inspect session history before retrying' };
@@ -158,21 +199,84 @@ function attachLifecycle(client) {
   };
 }
 
+/** List only persisted profiles, enriching cached identities through one saved profile session. */
+export async function listHeadlessProfileMetadata({ configDir, timeoutMs = 15_000, clientFactory, metadataReader = headlessProfileMetadata } = {}) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  const remaining = () => {
+    const value = deadline - Date.now();
+    if (value <= 0) throw Object.assign(new Error('Headless request timed out'), { code: 'timeout' });
+    return value;
+  };
+  const names = await listHeadlessProfiles({ configDir });
+  const profiles = await Promise.all(names.map(async name => {
+    let account = null;
+    try {
+      const sessionFile = headlessProfilePaths({ profile: name, configDir }).credentials;
+      const session = JSON.parse(await fs.readFile(sessionFile, 'utf8'));
+      if (session && typeof session === 'object' && !Array.isArray(session) && /^[1-9]\d{5,24}$/u.test(session.accountId || '')) {
+        account = { id: session.accountId, name: null, type: 'unknown', enterpriseUserType: null, tenant: null, source: 'cache' };
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    }
+    return { directory: name, name, account };
+  }));
+
+  const ids = profiles.map(row => row.account?.id).filter(Boolean);
+  const metadataProfile = profiles.find(row => row.name === 'default' && row.account)?.name
+    || profiles.find(row => row.account)?.name || null;
+  let accountLookupError = ids.length ? 'login_required' : 'account_identity_unavailable';
+  if (metadataProfile) {
+    try {
+      const sourceSession = JSON.parse(await fs.readFile(headlessProfilePaths({ profile: metadataProfile, configDir }).credentials, 'utf8'));
+      const makeClient = clientFactory || (async (budget, _profile, session) => {
+        const client = new HeadlessClient(session);
+        client.profile = _profile;
+        await client.account({ timeoutMs: budget });
+        return client;
+      });
+      const client = await makeClient(remaining(), metadataProfile, sourceSession);
+      if (client?.accountId !== sourceSession.accountId) {
+        throw Object.assign(new Error('Saved profile account identity changed'), { code: 'account_changed' });
+      }
+      const metadata = await metadataReader(client, ids, remaining());
+      for (const row of profiles) {
+        const live = metadata?.accounts?.[row.account?.id];
+        if (live) row.account = live;
+      }
+      accountLookupError = metadata?.incompleteReason ?? null;
+    } catch (error) {
+      accountLookupError = error.code === 'login_required' ? 'login_required'
+        : error.code === 'timeout' ? 'timeout'
+          : error.code === 'account_changed' ? 'account_changed' : 'account_lookup_failed';
+    }
+  }
+  return { defaultProfile: 'default', metadataProfile, profiles, accountLookupError };
+}
+
 export async function executeHeadless(options) {
   const [command, subcommand, operand] = options.args;
+  const profile = validateHeadlessProfileName(options.profile || 'default');
   const started = Date.now(), deadline = started + options.timeoutMs;
   const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0) throw Object.assign(new Error('Headless request timed out'), { code: 'timeout' }); return ms; };
   if (command === 'capabilities') return { platform: 'headless', browserRequired: false, appRequired: false,
-    login: ['terminal-qr', 'cookie-file'], sessions: ['list', 'read', 'create', 'send', 'status', 'wait', 'stop'],
-    runtime: ['cloud'], models: true, attachments: false, localRuntime: false, mcp: false, projects: false, enterpriseKnowledgeSelection: false };
+    login: ['terminal-qr', 'cookie-file'], sessions: ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'],
+    runtime: ['cloud', 'local'], models: true, modelSelection: true, reasoning: true, profiles: true, usage: true,
+    attachments: true, localRuntime: true, mcp: true, projects: true, enterpriseKnowledgeSelection: true,
+    note: 'open/current select the CLI conversation; model defaults are scoped to the profile and account' };
+  if (command === 'profiles') {
+    return { platform: 'headless', ...await listHeadlessProfileMetadata({ timeoutMs: remaining() }) };
+  }
   if (command === 'logout') {
-    await fs.rm(sessionPath(), { force: true });
-    return { platform: 'headless', storedCredentialsRemoved: true, loggedIn: false,
+    await fs.rm(sessionPath(profile), { force: true });
+    await fs.rm(headlessProfilePaths({ profile }).state, { force: true });
+    return { platform: 'headless', profile, storedCredentialsRemoved: true, loggedIn: false,
       environmentCredentialActive: Boolean(process.env.DOUBAO_HEADLESS_COOKIE) };
   }
   if (command === 'login') {
     const cookie = options.cookieFile ? await fs.readFile(options.cookieFile, 'utf8') : process.env.DOUBAO_HEADLESS_COOKIE;
     const client = new HeadlessClient({ ...(cookie ? { cookies: CookieJar.import(cookie) } : {}) });
+    client.profile = profile;
     if (cookie) await client.account({ timeoutMs: remaining() });
     else await qrLogin(client, { timeoutMs: remaining(), onQr: ({ url }) => {
       if (!url) throw new Error('Doubao QR response has no scannable login URL');
@@ -180,18 +284,74 @@ export async function executeHeadless(options) {
       qrcode.generate(url, { small: true }, value => console.error(value));
     } });
     await saveSession(client);
-    return { platform: 'headless', loggedIn: true, accountId: client.accountId, browserRequired: false, appRequired: false };
+    return { platform: 'headless', profile, loggedIn: true, accountId: client.accountId, browserRequired: false, appRequired: false };
   }
   let client;
-  try { client = await signedInClient(remaining()); }
+  try { client = await signedInClient(remaining(), profile); }
   catch (error) {
     if (command !== 'status' || error.code !== 'login_required') throw error;
-    return { platform: 'headless', loggedIn: false, loginRequired: true, accountId: null, browserRequired: false, appRequired: false };
+    return { platform: 'headless', profile, loggedIn: false, loginRequired: true, accountId: null, browserRequired: false, appRequired: false };
   }
-  if (command === 'status') return { platform: 'headless', loggedIn: true, loginRequired: false, accountId: client.accountId, browserRequired: false, appRequired: false };
+  if (options.expectedAccountId && client.accountId !== options.expectedAccountId) {
+    throw Object.assign(new Error('Headless account changed before background submission'), { code: 'account_changed' });
+  }
+  if (command === 'status') return { platform: 'headless', profile, loggedIn: true, loginRequired: false, accountId: client.accountId, browserRequired: false, appRequired: false };
+  if (command === 'usage') return { platform: 'headless', ...await readHeadlessUsage(client, remaining()) };
+  if (command === 'runtimes') return { platform: 'headless', profile, runtimes: [
+    { id: 'cloud', name: '云端', available: true },
+    { id: 'local', name: '本地电脑', available: true, deviceId: client.device.device_id, deviceName: os.hostname(), engine: 'node-http-sse', hostPlatform: process.platform },
+  ] };
+  if (command === 'mcp') {
+    const connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining(), deadlineMs: deadline });
+    try {
+      if (subcommand === 'list') return { platform: 'headless', connectors: await connectors.list() };
+      if (subcommand === 'remove') return { platform: 'headless', ...await connectors.remove(operand) };
+      return { platform: 'headless', ...await connectors.register({ name: options.args.slice(2).join(' '), command: options.commandPath,
+        params: options.commandArgs, env: Object.fromEntries(options.envPairs.map(pair => { const index = pair.indexOf('='); return [pair.slice(0, index), pair.slice(index + 1)]; })) }) };
+    } finally { await connectors.close(); }
+  }
+  if (command === 'projects') {
+    if (subcommand === 'list') return { platform: 'headless', projects: await listHeadlessProjects(client, remaining()) };
+    return { platform: 'headless', ...await createHeadlessProject(client, { name: options.args.slice(2).join(' '), workspace: options.workspace,
+      deviceId: client.device.device_id, deviceName: os.hostname() }, remaining()) };
+  }
+  const state = await loadHeadlessState({ profile, accountId: client.accountId });
+  if (command === 'model') {
+    if (!subcommand || subcommand === 'current') {
+      const conversation = state.currentConversationId ? await readHeadlessConversation(client, state.currentConversationId, remaining()) : null;
+      const extra = parseExtra(conversation?.extra);
+      const id = extra.model_item_key || state.defaults.modelId;
+      const catalog = id ? await headlessModels(client, remaining()) : null;
+      return { platform: 'headless', profile, conversationId: state.currentConversationId,
+        id, name: catalog?.models.find(model => model.id === id)?.name || null, reasoning: reasoningName(extra.reasoning_effort) || state.defaults.reasoning,
+        scope: conversation ? 'conversation' : 'new-conversations' };
+    }
+    const conversation = state.currentConversationId ? await readHeadlessConversation(client, state.currentConversationId, remaining()) : null;
+    const extra = parseExtra(conversation?.extra);
+    const reasoning = subcommand === 'reasoning' ? resolveReasoningEffort(options.args.slice(2).join(' '))
+      : options.reasoning ? resolveReasoningEffort(options.reasoning) : null;
+    const requested = subcommand === 'select' ? options.args.slice(2).join(' ')
+      : extra.model_item_key || state.defaults.modelId;
+    if (!requested) throw new Error('Select a model first with "doubao headless model select <model>"');
+    const mode = extra.mode_id === '1' ? 'chat' : conversation ? 'work' : undefined;
+    const model = await resolveHeadlessModel(client, requested, mode, remaining());
+    if (conversation) await modifyHeadlessModel(client, state.currentConversationId, model.id,
+      reasoning?.effort || extra.reasoning_effort || '5', remaining());
+    await updateHeadlessState({ profile, accountId: client.accountId, defaults: { modelId: model.id, ...(reasoning ? { reasoning: reasoning.name } : {}) } });
+    return { platform: 'headless', profile, id: model.id, name: model.name, changed: true,
+      conversationId: state.currentConversationId, scope: conversation ? 'conversation-and-new-conversations' : 'new-conversations',
+      ...(reasoning ? { reasoning: reasoning.name } : {}) };
+  }
   if (command === 'models') return headlessModels(client, remaining());
   if (command !== 'sessions') throw new Error('Unknown headless command');
   if (subcommand === 'list') return listHeadlessSessions(client, options.limit, remaining());
+  if (subcommand === 'open' || subcommand === 'current') {
+    const id = subcommand === 'open' ? validateId(operand) : state.currentConversationId;
+    if (!id) throw new Error('No current Headless conversation; use "doubao headless sessions open <id>" or create one');
+    const conversation = await readHeadlessConversation(client, id, remaining());
+    if (subcommand === 'open') await updateHeadlessState({ profile, accountId: client.accountId, currentConversationId: id });
+    return { platform: 'headless', profile, id, title: conversation.name || null, selected: true, browserOpened: false };
+  }
   if (subcommand === 'read') {
     const body = await client.imRequest('conversation/batch_get', 1111, 'batch_get_conv_info_uplink_body', {
       conversation_id: [validateId(operand)], option: { recent_message_count_per_conv: Math.min(options.limit, 100) }, ext: {} }, remaining());
@@ -203,9 +363,14 @@ export async function executeHeadless(options) {
   const store = await receiptStore(client);
   if (['create', 'send'].includes(subcommand)) {
     const message = options.args.slice(subcommand === 'create' ? 2 : 3).join(' ').trim();
-    if (!message) throw new Error('Headless sessions create/send requires a message');
+    if (!message) {
+      if (subcommand !== 'create') throw new Error('Headless sessions send requires a message');
+      await updateHeadlessState({ profile, accountId: client.accountId, currentConversationId: null });
+      return { platform: 'headless', conversationId: null, sent: null, draft: true };
+    }
     const conversationId = subcommand === 'send' ? validateId(operand) : '';
     let mode = options.mode || 'work';
+    let previous = {};
     if (conversationId) {
       const snapshot = await readTurn(client, conversationId, { deadline });
       let extra = {};
@@ -214,27 +379,198 @@ export async function executeHeadless(options) {
       // A desktop local session cannot be executed by this CLI runtime.
       let runtime;
       try { runtime = JSON.parse(extra.agent_task_param || '{}').runtime_type; } catch {}
-      if (runtime === 2) throw new Error('This conversation uses a desktop local runtime; create a headless cloud conversation');
+      const previousRuntime = parseExtra(extra.agent_task_param);
+      if (runtime === 2 && previousRuntime.local_device_id !== client.device.device_id && !options.runtime) {
+        throw new Error('This conversation uses another local device; select --runtime local or --runtime cloud explicitly');
+      }
+      previous = { extra, conversation: snapshot.conversation };
     }
-    const model = options.model ? await resolveHeadlessModel(client, options.model, mode, remaining()) : undefined;
-    const body = completionBody({ conversationId, message, mode, model });
-    let receipt = { requestBody: body, mode };
-    const checkpoint = next => { Object.assign(receipt, next); store.save(receipt); };
-    const accepted = await streamCompletion(client, body, { timeoutMs: remaining(), waitForReply: options.wait, onReceipt: checkpoint });
-    Object.assign(receipt, accepted);
-    if (!options.wait) return { platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
-      localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null };
-    const result = await waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline,
-      onReceipt: checkpoint, loadReceipt: run => store.read(receipt.conversationId, run) });
-    return { platform: 'headless', mode, accepted: true, ...result };
+    const selectedModel = options.model || (!conversationId ? state.defaults.modelId : undefined);
+    const selectedReasoning = options.reasoning || (!conversationId ? state.defaults.reasoning : undefined);
+    const reasoning = selectedReasoning ? resolveReasoningEffort(selectedReasoning).effort : undefined;
+    const model = selectedModel ? await resolveHeadlessModel(client, selectedModel, mode, remaining())
+      : reasoning ? await resolveHeadlessModel(client, previous.extra?.model_item_key || 'auto', mode, remaining()) : undefined;
+    const previousProjectId = previous.conversation?.project_reference?.project_id || '';
+    const projectValue = options.project ?? previousProjectId;
+    const project = projectValue && projectValue !== 'none' ? selectProject(await listHeadlessProjects(client, remaining()), projectValue) : null;
+    const previousAgentParam = parseExtra(previous.extra?.agent_task_param);
+    const localOptions = options.workspace || options.permission || options.noSkills || options.mcps?.length;
+    const runtimeChoice = options.runtime || (localOptions || previousAgentParam.runtime_type === 2 ? 'local' : 'cloud');
+    if (mode === 'chat' && (runtimeChoice === 'local' || project || options.enterpriseKnowledge)) throw new Error('Local runtime, projects and enterprise knowledge require --mode work');
+    const taskContext = { runtime: runtimeChoice, projectId: project?.id || '', previousProjectId,
+      previousAgentParam: parseExtra(previous.extra?.agent_task_param), projectContext: projectContext(project, '', 'cloud'),
+      ...(options.enterpriseKnowledge ? { enterpriseSkill: await headlessEnterpriseSkill(client, runtimeChoice, remaining()) } : {}) };
+    if (runtimeChoice === 'local' && !options.wait && !options.backgroundWorker) {
+      const { startHeadlessSubmissionWorker } = await import('./headless-worker.mjs');
+      const configuredRoot = configDirectory();
+      await fs.mkdir(configuredRoot, { recursive: true, mode: 0o700 });
+      const workerConfigDir = await fs.realpath(configuredRoot);
+      const worker = await startHeadlessSubmissionWorker({
+        options: { ...options, runtime: 'local' }, configDir: workerConfigDir, expectedAccountId: client.accountId, ackTimeoutMs: remaining(),
+      });
+      const accepted = { platform: worker.platform, mode: worker.mode, conversationId: worker.conversationId, runId: worker.runId,
+        localMessageId: worker.localMessageId, status: worker.status, accepted: true, reply: null };
+      try { await updateHeadlessState({ profile, accountId: client.accountId, currentConversationId: accepted.conversationId }); }
+      catch (error) { throw acceptedLocalFailure(error, accepted); }
+      return accepted;
+    }
+    let localTaskParam, localRuntime, connectors, enginePromise, localChannel, localChannelAbort;
+    try {
+      if (runtimeChoice === 'local') {
+        const localProject = projectContext(project, client.device.device_id, 'local');
+        const workspace = path.resolve(options.workspace || (previousAgentParam.local_device_id === client.device.device_id ? previousAgentParam.workspace : '')
+          || localProject.folders?.find(folder => folder.is_primary)?.path || localProject.folders?.[0]?.path
+          || path.join(headlessProfilePaths({ profile }).directory, 'workspaces', randomUUID()));
+        if (options.workspace && !(await fs.stat(workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`);
+        await fs.mkdir(workspace, { recursive: true });
+        const sandboxId = `cli-${randomUUID()}`;
+        const local = buildHeadlessLocalTaskParam({ workspace, sandboxId, deviceId: client.device.device_id, permission: options.permission });
+        localTaskParam = JSON.parse(local.general_task_param);
+        Object.assign(localTaskParam.agent_task_param, { device_name: os.hostname(), folder_name: path.basename(workspace), local_app_id: '1044603' });
+        const localInput = JSON.parse(localTaskParam.task_input_json);
+        localInput.project_context = localProject;
+        if (!options.noSkills) localTaskParam.client_option.agent_workspace.local_skill_paths = [path.join(os.homedir(), '.agents', 'skills')];
+        if (options.mcps?.length) {
+          connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining() });
+          localInput.localConnectors = await connectors.snapshot(options.mcps);
+        }
+        localTaskParam.task_input_json = JSON.stringify(localInput);
+        if (taskContext.enterpriseSkill) {
+          localTaskParam.selected_skills = [taskContext.enterpriseSkill.name];
+          localTaskParam.skill_selections = [{ name: taskContext.enterpriseSkill.name, skill_type: taskContext.enterpriseSkill.type, skill_id: taskContext.enterpriseSkill.externalId }];
+        }
+        const profileDirectory = headlessProfilePaths({ profile }).directory;
+        await fs.mkdir(profileDirectory, { recursive: true, mode: 0o700 });
+        const journalDirectory = path.join(await fs.realpath(profileDirectory), 'runtime', createHash('sha256').update(client.accountId).digest('hex'));
+        await fs.mkdir(journalDirectory, { recursive: true, mode: 0o700 });
+        localRuntime = { workspace, sandboxId, deviceId: client.device.device_id, permission: options.permission || 'FullAccess',
+          connectorIds: options.mcps || [], journalPath: path.join(journalDirectory, sandboxId + '.json') };
+      }
+      const attachmentBlocks = options.attachments?.length
+        ? await uploadHeadlessAttachments(client, await resolveAttachmentFiles(options.attachments), remaining()) : [];
+      const body = completionBody({ conversationId, message, mode, model, reasoning, taskContext, localTaskParam, attachmentBlocks });
+      // Establish the sandbox route before submit. Opening it after ACK can
+      // miss the initial workspace command on a device without a native app.
+      if (localRuntime) {
+        localChannelAbort = new AbortController();
+        // Some servers flush SSE headers only after the first task command.
+        // Dispatch the subscription first, but await it after acceptance.
+        localChannel = prepareHeadlessLocalChannel(client, {
+          sandboxId: localRuntime.sandboxId, deviceId: localRuntime.deviceId, timeoutMs: remaining(), signal: localChannelAbort.signal,
+        });
+        localChannel.catch(() => {});
+      }
+      let receipt = { requestBody: body, mode, ...(localRuntime ? { localRuntime } : {}) };
+      let reportedAcceptance = false;
+      const checkpoint = next => {
+        Object.assign(receipt, next); store.save(receipt);
+        if (localRuntime && options.wait && receipt.accepted && receipt.conversationId && !enginePromise) {
+          const initialResponse = localChannel;
+          localChannel = null;
+          enginePromise = initialResponse.then(response => startLocalRuntime(client, profile, receipt, connectors, remaining(), response));
+          enginePromise.catch(() => {});
+        }
+        if (receipt.accepted && !reportedAcceptance && options.onAccepted) {
+          reportedAcceptance = true;
+          options.onAccepted({ platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
+            localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null });
+        }
+      };
+      let accepted, submissionError;
+      try { accepted = await streamCompletion(client, body, { timeoutMs: remaining(), waitForReply: options.wait, onReceipt: checkpoint }); }
+      catch (error) {
+        submissionError = error;
+        if (error.result?.accepted && receipt.conversationId && receipt.runId) {
+          const recoveryReceiptPath = store.filePath(receipt.conversationId, receipt.runId);
+          let durableRecoveryAvailable = false;
+          try {
+            const saved = store.read(receipt.conversationId, receipt.runId);
+            durableRecoveryAvailable = saved.conversationId === receipt.conversationId
+              && saved.runId === receipt.runId && saved.accepted === true;
+          } catch {}
+          if (!durableRecoveryAvailable) {
+            const recoveryReceipt = { ...receipt, accepted: true,
+              conversationId: receipt.conversationId, runId: receipt.runId };
+            error.result = { ...error.result, durableRecoveryAvailable: false, recoveryReceipt,
+              recoveryReceiptPath,
+              recovery: 'Restore recoveryReceipt to recoveryReceiptPath after repairing storage; do not resend' };
+          }
+        }
+        if (enginePromise) { const engine = await enginePromise.catch(() => null); await engine?.close(); }
+        await connectors?.close();
+        throw error;
+      }
+      finally {
+        if (receipt.accepted && receipt.conversationId) {
+          try { await updateHeadlessState({ profile, accountId: client.accountId, currentConversationId: receipt.conversationId }); }
+          catch (error) { if (!submissionError) throw acceptedLocalFailure(error, receipt); }
+        }
+      }
+      Object.assign(receipt, accepted);
+      if (!options.wait) {
+        if (localRuntime) {
+          localChannelAbort?.abort();
+          await localChannel?.then(response => response.body?.cancel()).catch(() => {});
+          localChannel = null;
+          const { startHeadlessWorker } = await import('./headless-worker.mjs');
+          try {
+            await startHeadlessWorker({ profile, conversationId: receipt.conversationId, runId: receipt.runId, configDir: configDirectory(),
+              logPath: localRuntime.journalPath + '.log' });
+          } catch (error) { throw acceptedLocalFailure(error, receipt); }
+        }
+        await connectors?.close();
+        return { platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
+          localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null };
+      }
+      let engine;
+      try {
+        if (localRuntime) engine = await (enginePromise || startLocalRuntime(client, profile, receipt, connectors, remaining()));
+        const result = await waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline,
+          onReceipt: checkpoint, loadReceipt: run => store.read(receipt.conversationId, run) });
+        return { platform: 'headless', mode, context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
+          projectId: project?.id || null, enterpriseKnowledge: Boolean(taskContext.enterpriseSkill) }, accepted: true, ...result };
+      } finally { await engine?.close(); }
+    } finally {
+      localChannelAbort?.abort();
+      await localChannel?.then(response => response.body?.cancel()).catch(() => {});
+      if (enginePromise) { const engine = await enginePromise.catch(() => null); await engine?.close(); }
+      await connectors?.close();
+    }
   }
   const conversationId = validateId(operand);
   const pinned = await readTurn(client, conversationId, { runId: options.runId, deadline });
   const receipt = { ...store.read(conversationId, pinned.result.runId), conversationId, runId: pinned.result.runId };
+  let engine, connectors;
+  if (subcommand === 'wait' && receipt.localRuntime) {
+    if (receipt.localRuntime.connectorIds?.length) connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining() });
+    engine = await startLocalRuntime(client, profile, receipt, connectors, remaining());
+  }
   const operation = subcommand === 'wait' ? waitTurn : subcommand === 'stop' ? stopTurn : refreshTurn;
-  const result = await operation(client, conversationId, { runId: receipt.runId, receipt, deadline, timeoutMs: remaining(),
-    onReceipt: next => store.save(next), loadReceipt: run => store.read(conversationId, run) });
-  return { platform: 'headless', ...(result.result || result) };
+  try {
+    const result = await operation(client, conversationId, { runId: receipt.runId, receipt, deadline, timeoutMs: remaining(),
+      onReceipt: next => store.save(next), loadReceipt: run => store.read(conversationId, run) });
+    return { platform: 'headless', ...(result.result || result) };
+  } finally { await engine?.close(); await connectors?.close(); }
+}
+
+function acceptedLocalFailure(error, receipt) {
+  error.result ??= { platform: 'headless', conversationId: receipt.conversationId, runId: receipt.runId,
+    localMessageId: receipt.localMessageId, accepted: true, status: 'unknown', reply: null,
+    recovery: 'The request was accepted; repair local state and use sessions wait with the same IDs; do not resend' };
+  return error;
+}
+
+async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs, initialResponse) {
+  const spec = receipt.localRuntime;
+  // Memory-only authentication creates fresh device metadata per CLI process.
+  // A resumed local task must retain the original caller's routing device.
+  client.device = { ...client.device, device_id: spec.deviceId };
+  const engine = new HeadlessLocalRuntime({ client, ...spec, accountId: client.accountId, conversationId: receipt.conversationId,
+    requestTimeoutMs: timeoutMs, initialResponse, callConnector: connectors ? input => connectors.call(input) : undefined,
+    approve: createHeadlessApproval({ input: process.stdin, output: process.stderr,
+      interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY), workspace: spec.workspace }) });
+  try { await engine.start({ signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }); return engine; }
+  catch (error) { await engine.close(); if (error.code === 'LOCAL_RUNTIME_BUSY') return null; throw error; }
 }
 
 // Filled from the server's live catalog; no hard-coded model aliases or entitlements.
@@ -269,9 +605,18 @@ async function headlessModels(client, timeoutMs) {
 }
 async function resolveHeadlessModel(client, selected, mode, timeoutMs) {
   const catalog = await headlessModels(client, timeoutMs);
-  const matches = catalog.models.filter(model => (model.id === selected || model.name === selected) && model.available && model.modes.includes(mode));
+  let name;
+  if (!catalog.models.some(model => model.id === selected)) name = resolveModelName(selected, catalog.models.map(model => model.name));
+  const matches = catalog.models.filter(model => (model.id === selected || model.name === name) && model.available && (!mode || model.modes.includes(mode)));
   if (matches.length !== 1) throw new Error('Select an available headless model by ID or exact name');
   return matches[0];
+}
+function parseExtra(value) {
+  if (value && typeof value === 'object') return value;
+  try { return JSON.parse(value || '{}'); } catch { return {}; }
+}
+function reasoningName(value) {
+  return ({ '3': 'low', '4': 'medium', '5': 'high', '6': 'xhigh', '7': 'max' })[String(value)] || null;
 }
 async function listHeadlessSessions(client, limit, timeoutMs) {
   const result = await client.imRequest('chain/recent_conv', 3200, 'pull_recent_conv_chain_uplink_body', {

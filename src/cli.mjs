@@ -25,6 +25,7 @@ import { createProject, listProjects, projectCreationInput, runtimeAvailability,
 import { currentApp, resolvePlatform, withApp } from './app.mjs';
 import { executeWeb, validateWebOptions } from './web.mjs';
 import { executeHeadless, validateHeadlessOptions } from './headless.mjs';
+import { headlessOptionsForHelp, validateOptionContract } from './options-contract.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
@@ -58,7 +59,7 @@ const HELP = `Usage:
   doubao update auto <on|off|status> [--json]
   doubao capabilities [--json]
   doubao web <command> [options]  Web commands; run "doubao web help"
-  doubao headless <command> [options]  Headless cloud commands; run "doubao headless help"
+  doubao headless <command> [options]  Browser-free commands; run "doubao headless help"
 
 Help:
   Add --help or -h to any command, or use help <command>.
@@ -90,7 +91,14 @@ const HEADLESS_HELP = `Usage:
   doubao headless logout [--json]
   doubao headless status [--json]
   doubao headless capabilities [--json]
+  doubao headless profiles [--json]
+  doubao headless usage [--profile <name>] [--timeout <seconds>] [--json]
+  doubao headless runtimes [--json]
+  doubao headless projects list [--profile <name>] [--timeout <seconds>] [--json]
+  doubao headless projects create <name> [--profile <name>] [--timeout <seconds>] [--json]
   doubao headless sessions list [--limit <count>] [--json]
+  doubao headless sessions current [--profile <name>] [--json]
+  doubao headless sessions open <conversation-id> [--profile <name>] [--json]
   doubao headless sessions read <conversation-id> [--limit <count>] [--json]
   doubao headless sessions create <message> [--mode chat|work] [--model <id-or-name>] [--wait] [--timeout <seconds>] [--json]
   doubao headless sessions send <conversation-id> <message> [--model <id-or-name>] [--wait] [--timeout <seconds>] [--json]
@@ -98,6 +106,12 @@ const HEADLESS_HELP = `Usage:
   doubao headless sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
   doubao headless sessions stop <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
   doubao headless models [--json]
+  doubao headless model current [--profile <name>] [--json]
+  doubao headless model select <id-or-name> [--reasoning <level>] [--profile <name>] [--json]
+  doubao headless model reasoning <level> [--profile <name>] [--json]
+  doubao headless mcp list [--profile <name>] [--json]
+  doubao headless mcp register <name> --command <executable> [--arg <value>] [--env KEY=VALUE] [--json]
+  doubao headless mcp remove <connector-id> [--profile <name>] [--json]
   doubao headless update [--json]
   doubao headless update check [--json]
   doubao headless update auto <on|off|status> [--json]
@@ -109,7 +123,15 @@ Help:
 Options:
   --mode chat|work  Select the mode for a new conversation
   --model <id-or-name>  Select an available model from headless models
-  --runtime cloud  Work conversations only (default)
+  --reasoning low|medium|high|xhigh|max  Set reasoning effort
+  --profile <name>  Select a separate saved Headless account profile
+  --project <id-or-name|none>  Select a task project
+  --enterprise-knowledge  Include the account's enterprise search skill
+  --runtime local|cloud  Work task runtime (default: cloud; local options select local)
+  --attach <path>  Upload a file or image; repeat for multiple attachments
+  --workspace <path> / --no-skills  Configure local task files and skills
+  --permission FullAccess|AskOnRisk|AlwaysAsk  Local tool policy; prompts require a TTY and --wait
+  --mcp <connector-id>  Use a registered stdio connector with local tasks; repeat as needed
   --timeout <seconds>  Request or wait budget (default: 120)
   --expect-json / --reply-schema <path>  Validate the final reply; create/send require --wait
   --json  Output results as JSON
@@ -118,8 +140,9 @@ Options:
 Account:
   Account login is required. Run "doubao headless login" and scan the terminal QR code with the Doubao mobile app.
   --cookie-file imports session cookies for unattended setup; cookie files are secrets. No installed browser or local Doubao app is required.
-  Cloud Work is supported; local task execution is unsupported.
-  DOUBAO_HEADLESS_COOKIE supplies an existing session without saving it.
+  Local tasks use Node.js processes and file tools. No OS sandbox is created.
+  Without --wait, local tasks continue in a detached worker; approval policies deny calls that need a prompt.
+  DOUBAO_HEADLESS_COOKIE supplies an in-memory session; explicit login verifies and saves it.
 
 Compatibility:
   doubao --platform headless <command> remains supported.
@@ -209,7 +232,7 @@ function commandHelp(helpPath, platform) {
   const options = web
     ? '  --target <id>  Select a browser page\n  --json  Output results as JSON'
     : headless
-      ? '  --mode chat|work  Select the mode for a new conversation\n  --timeout <seconds>  Request or wait budget\n  --json  Output results as JSON'
+      ? [...headlessOptionsForHelp(helpPath), '  --json  Output results as JSON'].join('\n')
     : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|web  Select a backend\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
   const permission = !web && !headless && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
     ? `\n\nLocal task execution permission${HELP.split('\n\nLocal task execution permission')[1].split('\n\nApplication:')[0]}`
@@ -246,12 +269,14 @@ export function parseOptions(argv) {
   let noSkills = false;
   let expectJson = false;
   let replySchema;
+  const explicitOptions = new Set();
   const mcps = [];
   let commandPath;
   const commandArgs = [];
   const envPairs = [];
   const attachments = [];
   for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== '--' && argv[index].startsWith('-')) explicitOptions.add(argv[index]);
     if (argv[index] === '--') {
       literalStart = args.length;
       args.push(...argv.slice(index + 1));
@@ -384,9 +409,8 @@ export function parseOptions(argv) {
   }
   if (help) return { ...options, helpPath: helpCommandPath(positionalArgs, helpPlatform) };
   if (!positionalArgs.length && ['help', '--help', '-h'].includes(args[0])) return { ...options, helpPath: [] };
-  const unknownWebFlags = unknownFlags.filter(flag => flag !== args[0] || !['--help', '-h', '--version', '-v'].includes(flag));
-  if (selectedPlatform === 'web' && unknownWebFlags.length) throw new Error(`Unknown Web option: ${unknownWebFlags[0]}; use -- before literal option text`);
-  if (selectedPlatform === 'headless' && unknownWebFlags.length) throw new Error(`Unknown headless option: ${unknownWebFlags[0]}; use -- before literal message text`);
+  const backend = selectedPlatform === 'web' || selectedPlatform === 'headless' ? selectedPlatform : 'desktop';
+  validateOptionContract({ ...options, explicitOptions: [...explicitOptions] }, backend);
   if (targetId && !['web', 'headless'].includes(selectedPlatform)) throw new Error('--target requires doubao web (or --platform web)');
   if (mode && !((selectedPlatform === 'web' || selectedPlatform === 'headless') && args[0] === 'sessions' && args[1] === 'create')) {
     throw new Error('--mode requires doubao web sessions create or doubao headless sessions create (or a matching --platform selector)');
@@ -405,7 +429,7 @@ export function parseOptions(argv) {
     if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) throw new Error('Task context options require a message');
   }
   if (permission !== undefined) {
-    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1]) || (!mcps.length && runtime !== 'local')) {
+    if (args[0] !== 'sessions' || !['create', 'send'].includes(args[1]) || (backend !== 'headless' && !mcps.length && runtime !== 'local')) {
       throw new Error('--permission requires sessions create/send with --runtime local or --mcp');
     }
     if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) {
@@ -417,8 +441,8 @@ export function parseOptions(argv) {
       throw new Error('--mcp requires sessions create/send');
     }
     if (!args.slice(args[1] === 'create' ? 2 : 3).join(' ').trim()) throw new Error('--mcp requires a message');
-    if (attachments.length) throw new Error('--mcp is not supported with attachments');
-    if (!wait) throw new Error('--mcp requires --wait so the local tool session stays connected');
+    if (backend !== 'headless' && attachments.length) throw new Error('--mcp is not supported with attachments');
+    if (backend !== 'headless' && !wait) throw new Error('--mcp requires --wait so the local tool session stays connected');
   }
   if (expectJson || replySchema) {
     if (args[0] !== 'sessions' || !['create', 'send', 'wait'].includes(args[1])) {

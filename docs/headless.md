@@ -1,36 +1,150 @@
 # Headless backend
 
-`doubao headless` uses Node.js HTTPS requests, service cookies, IM snapshots and SSE streams. It does not launch or connect to a browser or desktop app. Linux selects it by default; the existing macOS defaults are retained.
+`doubao headless` uses Doubao's HTTPS, IM and SSE services directly. It requires Node.js 22+ and an authenticated Doubao account; it does not launch or connect to a browser or desktop app. Headless is implemented for Linux and macOS. It uses private service APIs, which may change.
 
-## Authentication
+## Select the backend
 
-- Default: terminal QR from Passport, followed by read-only status polling and account verification. The user scans and approves on their phone. CLI does not submit scan/confirmation operations.
-- Alternative: `login --cookie-file <path>` or `DOUBAO_HEADLESS_COOKIE` for an existing account session.
-- Saved identity is verified against `/passport/account/info/v2/` before account operations. An expired session or changed account fails explicitly. Cookie values are never returned in command results.
-- Cookie domain/path/expiry and trusted HTTPS origins constrain outbound credentials. Redirects cannot send credentials to arbitrary sites. Login expiry requires signing in again.
-- Credentials are saved atomically under the configuration directory with mode 0600; the headless directory uses mode 0700. Recovery files contain request content and are scoped to platform, service endpoint and account.
+```bash
+npm install --global doubao-cli@latest
+doubao --version
+doubao headless login
+# Scan the terminal QR with the Doubao mobile app and approve sign-in.
+doubao headless sessions list --json
+```
 
-## Commands and boundaries
+- Linux defaults to Headless for unprefixed commands such as `doubao login` and `doubao sessions list`.
+- macOS defaults to the desktop app: DoubaoWork when installed, otherwise Doubao, unless `DOUBAO_APP` overrides the app path. Use `doubao headless ...` on macOS.
+- `doubao --platform headless ...` is an equivalent explicit selector on either system.
+- Backend selection and task execution are separate. `--runtime cloud` means cloud execution within Headless; it does not select the Headless backend.
 
-| Available | Not exposed |
-| --- | --- |
-| Ordinary chat; cloud Work | Linux local tool runtime; desktop sandbox |
-| Recent sessions; up to 100 recent messages | Full history export; UI current/open |
-| Live model catalog; selection by ID or exact name | Model aliases; reasoning selection |
-| Create/send/status/wait/stop; reply schema checks | Attachment uploads; projects; enterprise knowledge selection |
-| Terminal QR; cookie import; local logout | MCP; answering task approval/forms from CLI |
+## Sign-in and profiles
 
-Sending to a desktop local-runtime conversation is rejected. Tasks awaiting user input return `waiting_input` and a nonzero wait exit code; this adapter cannot answer their interactive controls.
+```bash
+doubao headless login
+doubao headless login --cookie-file /secure/doubao-cookie.txt --json
+DOUBAO_HEADLESS_COOKIE='session-cookie-header' doubao headless status --json
+doubao headless profiles --json
+doubao headless status --profile work --json
+doubao headless logout --profile work --json
+```
 
-## Recovery and completion
+Terminal QR login asks the user to scan and approve on the Doubao mobile app. For unattended setup, `--cookie-file` reads a Cookie header, `{ "cookie": "..." }`, or exported cookie array. `DOUBAO_HEADLESS_COOKIE` provides an in-memory credential for ordinary commands; an explicit `login` verifies and saves it to the selected profile. Treat both sources as secrets.
 
-A send is attempted once. The SSE ACK pins server conversation and question IDs and immediately checkpoints the receipt. Work streams capture async handoffs and controls. Wait uses server snapshots, follows linked task threads, and uses the original request with `is_recovery=true` when a synchronous stream needs reconnection. It preserves the original message IDs, content and unique key.
+Credentials are stored under the CLI configuration directory in `headless/session.json` for the `default` profile and `headless/profiles/<name>/session.json` for named profiles. Files are written atomically with mode 0600 in directories with mode 0700. Profile names contain 1–64 ASCII letters, digits, `_` or `-`. Model defaults, current conversation, MCP configuration and local-runtime receipts are scoped to the selected profile and verified account. `logout` removes that profile's saved credentials and selection state; it cannot disable `DOUBAO_HEADLESS_COOKIE` in the calling environment.
 
-Only terminal server state is successful. Thinking descendants are excluded from reply text. A transport timeout never cancels or resends the task. Cancellation addresses the pinned root and child IDs, then reads the server state again. `stopped:true` on an already completed task does not claim cancellation.
+`profiles` lists Headless profiles and attempts to enrich cached account IDs with live account metadata. The desktop `profiles --json` contract remains separate: it can report account ID, name, account type, enterprise user type and tenant metadata from the selected desktop app profile. A Headless profile is not a macOS desktop profile.
 
-The adapter uses the service's observed Work protocol revision (`pc_version` / `doubao_pc_version` 2.31.10) to request structured messages and the live model catalog. These fields are protocol compatibility metadata; no installed client is consulted. The service is private and may change.
+## Sessions and recovery
 
-## Acceptance, 2026-10-10
+```bash
+doubao headless sessions list --limit 20 --json
+doubao headless sessions current --profile work --json
+doubao headless sessions open <conversation-id> --profile work --json
+doubao headless sessions read <conversation-id> --limit 20 --json
+doubao headless sessions create "Hello" --mode chat --wait --json
+doubao headless sessions create "Write a plan" --mode work --wait --json
+doubao headless sessions send <conversation-id> "Continue" --wait --json
+doubao headless sessions status <conversation-id> --run <run-id> --json
+doubao headless sessions wait <conversation-id> --run <run-id> --timeout 600 --json
+doubao headless sessions stop <conversation-id> --run <run-id> --json
+```
+
+New sessions default to cloud Work; choose `--mode chat` for ordinary chat. `sessions open` and `current` select the CLI's current conversation and do not open a UI. Listing returns recent sessions; `read` returns up to 100 recent messages.
+
+Save both `conversationId` and `runId` from an accepted send. Without `--wait`, create/send returns after acceptance with `reply: null`; Headless starts a background worker to continue local execution when needed. If a process times out or disconnects, use `sessions wait` with the same IDs. Do not resend an accepted request. Recovery reopens the same request with its original message identity. A `waiting_input` task needs a response through Doubao's interactive UI before waiting again. `stop` reports server state and does not undo tool effects; a terminal task can report stopped without having been cancelled.
+
+Headless options are validated against the command contract. Unknown flags, unsupported backend options, and misplaced options fail before a request is sent. Use `--` when a message begins with option-like text. For data-returning commands, `--json` provides machine-readable output.
+
+## Models, reasoning and usage
+
+```bash
+doubao headless models --json
+doubao headless model --json
+doubao headless model current --profile work --json
+doubao headless model select <id-or-exact-name> --reasoning high --profile work --json
+doubao headless model reasoning max --profile work --json
+doubao headless sessions create "Analyze this" --model <id-or-exact-name> --reasoning high --wait --json
+doubao headless usage --profile work --json
+```
+
+The live account catalog determines available models and their eligible modes. `model select` updates the selected conversation when one is selected and also stores defaults for new conversations in that profile/account. The supported reasoning levels are `low`, `medium`, `high`, `xhigh` and `max`. `--model` and `--reasoning` on create/send override the defaults for that request. Usage values and reset information come from the account service; unavailable values may be null.
+
+## Attachments
+
+```bash
+doubao headless sessions create "Summarize these files" --attach ./report.pdf --attach ./diagram.png --wait --json
+doubao headless sessions send <conversation-id> "Compare these" --attach ./one.pdf --wait --json
+```
+
+Repeat `--attach` for multiple files. The uploader accepts at most 50 files per message, subject to service-side limits, and sends supported local files through Doubao's upload protocol before submitting the message. The CLI resolves and validates paths before upload. Do not place file contents in message text.
+
+## Projects and enterprise knowledge
+
+```bash
+doubao headless projects list --json
+doubao headless projects create "Research" --workspace /absolute/path --json
+doubao headless sessions create "Search the project" --mode work --runtime local --project <id-or-exact-name> --wait --json
+doubao headless sessions send <conversation-id> "Search company guidance" --enterprise-knowledge --wait --json
+```
+
+Projects can be selected by ID or exact name; `--project none` clears the project for a turn. A duplicate project name must be disambiguated with its ID. Project creation with `--workspace` binds that absolute workspace to the current Headless device and verifies the result. Project selection and enterprise knowledge require Work mode. `--enterprise-knowledge` selects the account's available official enterprise-search skill for that turn; availability is checked before sending.
+
+## Local execution and permission policy
+
+```bash
+doubao headless runtimes --json
+doubao headless sessions create "Inspect this workspace" --mode work --runtime local --workspace /absolute/path --permission AskOnRisk --wait --json
+doubao headless sessions send <conversation-id> "Continue" --runtime local --permission AlwaysAsk --wait --json
+```
+
+Headless supports cloud and local execution. Cloud Work is the default. Local execution runs a Node.js HTTP/SSE worker in this CLI process against the local workspace and Doubao's task service. It is process-based local execution, not the native Doubao app sandbox; `runtimes` reports its `node-http-sse` engine. The workspace defaults to an applicable project folder or a new profile workspace. `--workspace` overrides it, and `--no-skills` omits the default `~/.agents/skills` path.
+
+`runtimes` reports the actual `hostPlatform`. Model startup can exceed the default 120-second budget; use `--timeout 600` for a longer foreground wait, or recover an accepted timeout using its original IDs.
+
+`--permission FullAccess|AskOnRisk|AlwaysAsk` selects the local task permission policy for local execution and MCP turns; the default is `FullAccess`. Repeat the chosen policy on each turn. The CLI prompts for local approvals only when stdin and stderr are TTYs and `--wait` is set. A detached no-wait worker cannot ask for approval, so operations needing a prompt are denied. These policies do not create an OS sandbox or confine MCP server processes. Doubao conversation controls such as questions or approvals still require a response in the Doubao UI.
+
+If `--wait` is omitted for a local task, the CLI starts one detached worker before submission. That worker submits the original request, returns the accepted IDs to the CLI, and remains responsible for the request's local HTTP/SSE execution. `sessions wait` uses the same conversation and run IDs and may start a local runtime to recover from the saved receipt. A persistent lease prevents concurrent runtime execution while the original worker is active; after it exits, a later wait can resume recovery. A failed or ambiguous operation should be inspected with `sessions status` or `sessions wait` before any retry.
+
+## MCP connectors
+
+```bash
+doubao headless mcp register my-tools --command /absolute/path/to/node --arg /absolute/path/server.mjs --env KEY=value --json
+doubao headless mcp list --json
+doubao headless sessions create "Use my tool" --mode work --runtime local --mcp <connector-id> --wait --json
+doubao headless mcp remove <connector-id> --json
+```
+
+Headless registers local stdio servers. Repeat `--arg` and `--env` for additional values; use absolute executable and server paths. Pass `--mcp <connector-id>` on each turn that should expose a connector. MCP selects a local Work task with a message and can be combined with attachments. With `--wait`, this CLI process submits the request and services calls; otherwise one detached worker submits the request and owns its local HTTP/SSE execution and calls. Connector definitions and secrets are profile/account scoped. Verify tool effects from actual service results, and recover accepted timeouts with the original session and run IDs rather than resending.
+
+## 0.17 acceptance (2026-10-12)
+
+The 0.17 implementation passed 357/357 tests on Linux x86_64 with Node 23.7.0 and macOS with Node 22.16.0. Live acceptance used a fresh, isolated Linux candidate installation and an isolated config directory. Linux's authenticated run used a cookie file created from an approved QR session; this does not establish fresh QR login on Linux for 0.17. On macOS, fresh anonymous HTTP QR issuance, phone scan and approval, account verification, and credential persistence passed without importing credentials. Saved credentials were mode 0600; no credential values were printed.
+
+Live business checks completed on the authenticated account:
+
+- Attachment upload and reading passed with a text-file marker and a PNG divided into colored quadrants; the reply identified both file content and image regions.
+- A project was created and read back, then selected with enterprise knowledge for a completed cloud task (`38446800478422786`). The test-owned project (`38435854858730242`) was removed and read back absent; three unrelated projects remained.
+- A Linux local-runtime task read a marker from its workspace file. A GPT-5.6 Sol local task with a stdio MCP server returned the fixture marker (`38445935542783746`, run `58271629787701250`).
+- An existing Linux session switched from local to cloud and back to local, with a changed workspace and `AskOnRisk` policy. The new file marker was read back; the server conversation retained the new runtime, workspace and permission fields.
+- The Linux no-wait worker continued a local workspace read plus MCP call in the background. Waiting with the original conversation and run IDs returned a schema-matching reply, and the test-owned connector was removed and verified inactive.
+
+These are source and isolated-candidate acceptance results, not an npm publication or general release-installation claim. Reproduce the live suite from a source checkout with an already authenticated, isolated config directory; use a separate output directory for private receipts and fixtures. Do not use `HOME` as an isolation mechanism.
+
+```bash
+umask 077
+mkdir -p /tmp/doubao-headless-017-config /tmp/doubao-headless-017-output
+DOUBAO_CLI_CONFIG_DIR=/tmp/doubao-headless-017-config doubao headless login
+npm run test:e2e:headless -- --config /tmp/doubao-headless-017-config \
+  --output /tmp/doubao-headless-017-output --stage all
+```
+
+The login command must complete before running the suite. The runner writes sanitized acceptance receipts and synthetic fixtures under `--output`; it does not read or print credential files. The command runs the checked-out source, so the runner is not included in the npm package. Headless uses private service APIs, which may change. Local execution is a process-based Node worker, not an OS sandbox or the native Doubao app sandbox; permission policies govern CLI approval behavior and do not confine MCP server processes. Headless does not use CDP or the desktop app.
+
+If a request was accepted but writing its recovery receipt failed, inspect the structured `recoveryReceipt` and `recoveryReceiptPath` in the error result. After repairing storage, restore that receipt to the stated path with private permissions (0600), then wait on the same conversation and run IDs. Never resend the accepted request; it may already have executed tools.
+
+## Historical acceptance (2026-10-10, CLI 0.15.0)
+
+The dated results below describe the initial cloud-only implementation and remain historical evidence for CLI 0.15.0. The 0.17 acceptance above is separate and does not convert these older checks into 0.17 results.
 
 - Pure Node HTTP: authenticated account lookup, session list, model catalog, new chat, follow-up chat, new cloud Work, model 5 selection and JSON reply validation passed.
 - Cloud result: `38446481515031810` / `58110026190228738`, `HEADLESS_CLOUD_OK`. New-conversation identity differed from the source desktop session.
@@ -46,4 +160,4 @@ The adapter uses the service's observed Work protocol revision (`pc_version` / `
 
 Test side effects: several synthetic acceptance conversations remain in the account. The first raw protocol probe omitted the complete creation metadata, so the service appended a synthetic `HEADLESS_HTTP_OK` test turn to existing conversation `38446393744786434` (question `58110115407994626`). Production requests now include the verified creation metadata. No session was deleted.
 
-This document records source acceptance. Registry installation and release results are verified separately when publishing.
+These dated source-acceptance results do not establish npm publication or release installation.

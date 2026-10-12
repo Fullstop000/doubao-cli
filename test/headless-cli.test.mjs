@@ -24,9 +24,11 @@ test('headless namespace and platform selector share the same command options', 
     ...['status', 'wait', 'stop'].map(action => ['sessions', action, '38439138239851266']),
   ];
   for (const operation of operations) {
+    const timed = ['login', 'status', 'models'].includes(operation[0]) || operation[0] === 'sessions';
+    const flags = timed ? ['--json', '--timeout', '4'] : ['--json'];
     assert.deepEqual(
-      parseOptions(['headless', '--json', '--timeout', '4', ...operation]),
-      parseOptions(['--platform', 'headless', '--json', '--timeout', '4', ...operation]),
+      parseOptions(['headless', ...flags, ...operation]),
+      parseOptions(['--platform', 'headless', ...flags, ...operation]),
     );
   }
   const created = parseOptions(['headless', 'sessions', 'create', '--mode', 'chat', 'hello']);
@@ -67,9 +69,11 @@ test('headless scoped help documents account login and has no browser or desktop
       assert.match(result.stdout, /doubao headless login/u);
       assert.match(result.stdout, /scan the terminal QR code/u);
       assert.match(result.stdout, /No installed browser or local Doubao app is required/u);
-      assert.match(result.stdout, /Cloud Work is supported/u);
+      assert.match(result.stdout, /Local tasks use Node\.js processes/u);
+      assert.match(result.stdout, /doubao headless mcp register/u);
     }
-    assert.doesNotMatch(result.stdout, /CDP|--profile|--app/u);
+    assert.doesNotMatch(result.stdout, /CDP|--app/u);
+    if (args.includes('create')) assert.match(result.stdout, /--mode chat\|work/u);
   }
 });
 
@@ -85,7 +89,8 @@ test('Linux commands and help default to headless routing', async t => {
     assert.deepEqual(parsed.args, ['sessions', 'create', 'hello']);
     await main(['sessions', 'create', '--help']);
     assert.match(output[0], /doubao headless sessions create/u);
-    assert.doesNotMatch(output[0], /doubao sessions create|--profile/u);
+    assert.doesNotMatch(output[0], /doubao sessions create/u);
+    assert.match(output[0], /--profile <name>/u);
   } finally {
     t.mock.restoreAll();
     Object.defineProperty(process, 'platform', original);
