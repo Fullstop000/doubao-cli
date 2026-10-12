@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { getDataDir, readProfiles, resolveProfile } from './storage.mjs';
 import { sessionIndex } from './sessions.mjs';
+import { listProfiles, formatProfiles } from './profiles.mjs';
 import { cdpStatus, withChatClient } from './cdp.mjs';
 import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
 import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation, taskStatus, waitConversation } from './automation.mjs';
@@ -673,15 +674,9 @@ async function run(options) {
   const dataDir = getDataDir();
 
   if (command === 'profiles') {
-    const { readProfiles } = await import('./storage.mjs');
-    const profiles = readProfiles(dataDir);
+    const profiles = await listProfiles(dataDir);
     if (json) output(profiles, true);
-    else {
-      for (const item of profiles.profiles) {
-        const active = item.directory === profiles.lastUsed ? '*' : ' ';
-        console.log(`${active} ${item.directory}\t${item.name}`);
-      }
-    }
+    else output(formatProfiles(profiles), false);
     return;
   }
 

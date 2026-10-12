@@ -49,6 +49,7 @@ Command help: append `--help` / `-h`, or use `doubao help sessions create` / `do
 doubao --app work cdp launch
 doubao --app doubao status --json
 doubao profiles
+doubao --app doubao profiles --json
 doubao --profile "Profile 1" sessions list
 ```
 
@@ -56,6 +57,8 @@ doubao --profile "Profile 1" sessions list
 - Login or connection failure: no app fallback.
 - Conversation: use the same app on every turn.
 - Messaging, models and MCP: selected profile must be active in the app.
+- `profiles --json` retains `lastUsed` and each profile's `directory`/`name`, and adds `account`: `id`, `name`, `type`, `enterpriseUserType`, `tenant` (`id`, `name`, `userName`) and `source` (`live` or `cache`). Types: `personal` (0), `workspace` (101), `feishu_enterprise` (102), or `unknown`; missing account/tenant is `null`. IDs are strings, including an observed tenant ID `"0"`. Plain output adds account ID, type, tenant ID/name and source after directory/name.
+- Account IDs come from each profile's Preferences; with CDP available, the selected app reads account types and tenant metadata from the server without switching profiles. Offline cache leaves types `unknown`; `accountLookupError` is `null` on a complete lookup or a reason code otherwise. Account type describes identity, not permission to send Feishu messages.
 - `sessions open <conversation-id>`: navigate to session; may change focus.
 
 ### Headless (experimental)
