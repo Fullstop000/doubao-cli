@@ -461,11 +461,12 @@ async function run() {
     saveReceipt();
   }
 
-  async function registerFixture(marker, label) {
+  async function registerFixture(marker, label, toolName) {
     const connectorName = `headless-e2e-${randomUUID().slice(0, 8)}`;
     const registered = await jsonStep(`${label}: register isolated fixture`, [
       'headless', 'mcp', 'register', connectorName, '--command', process.execPath,
       '--arg', MCP_FIXTURE, '--env', `DOUBAO_HEADLESS_E2E_MARKER=${marker}`,
+      '--env', `DOUBAO_HEADLESS_E2E_TOOL_NAME=${toolName}`,
       '--timeout', String(CLI_TIMEOUT_SECONDS),
     ]);
     const connectorId = registered.connectorId;
@@ -497,6 +498,7 @@ async function run() {
     const name = 'background';
     const fileMarker = `HEADLESS_E2E_${randomUUID().replaceAll('-', '').toUpperCase()}`;
     const toolMarker = `HEADLESS_E2E_${randomUUID().replaceAll('-', '').toUpperCase()}`;
+    const toolName = `doubao_headless_e2e_${randomUUID().replaceAll('-', '').slice(0, 12)}`;
     const workspace = path.join(workspaceRoot, `${name}-${randomUUID()}`);
     mkdirPrivate(workspace);
     fs.writeFileSync(path.join(workspace, 'probe.txt'), `Synthetic local acceptance marker: ${fileMarker}\n`, { mode: 0o600, flag: 'wx' });
@@ -505,12 +507,12 @@ async function run() {
       toolMarker: { type: 'string' },
     });
     const model = modelForWork(models);
-    const prompt = 'Read probe.txt in the configured workspace, then call doubao_headless_e2e_marker once with no arguments. Return one valid JSON object with the file token as "fileMarker" and the tool result token as "toolMarker". Use double quotes for every JSON key and string; no Python syntax, single quotes, Markdown or explanatory text.';
+    const prompt = `Use Read to read probe.txt from its first line in the configured workspace, then call ${toolName} once with no arguments. Return one valid JSON object with the file token as "fileMarker" and the tool result token as "toolMarker". Use double quotes for every JSON key and string; no Python syntax, single quotes, Markdown or explanatory text.`;
     let connectorId = null;
     let stageError = null;
     let safeToRemove = true;
     try {
-      connectorId = await registerFixture(toolMarker, name);
+      connectorId = await registerFixture(toolMarker, name, toolName);
       const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
         '--workspace', workspace, '--no-skills', '--permission', 'FullAccess', '--mcp', connectorId,
         '--timeout', String(CLI_TIMEOUT_SECONDS)];
@@ -554,15 +556,16 @@ async function run() {
 
   async function mcpStage(models) {
     const marker = `HEADLESS_E2E_${randomUUID().replaceAll('-', '').toUpperCase()}`;
+    const toolName = `doubao_headless_e2e_${randomUUID().replaceAll('-', '').slice(0, 12)}`;
     let connectorId = null;
     let stageError = null;
     let safeToRemove = true;
     try {
-      connectorId = await registerFixture(marker, 'mcp');
+      connectorId = await registerFixture(marker, 'mcp', toolName);
       const model = modelForWork(models);
       const schema = { marker: { type: 'string' } };
       const schemaFile = writeStageSchema('mcp', schema);
-      const prompt = 'Call the doubao_headless_e2e_marker tool once with no arguments. Return only the JSON object returned by that tool.';
+      const prompt = `Call the ${toolName} tool once with no arguments. Return only the JSON object returned by that tool.`;
       const taskArgs = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
         '--mcp', connectorId, '--permission', 'FullAccess', '--no-skills', '--wait', '--expect-json',
         '--reply-schema', schemaFile, '--timeout', String(CLI_TIMEOUT_SECONDS)];
@@ -571,7 +574,7 @@ async function run() {
       const data = await recoverIfNeeded('mcp', task, schemaFile);
       if (responseObject(data).marker !== marker) throw new Error('mcp: tool environment marker was not returned');
       receipt.steps.push({ name: 'mcp tool verified', connectorId, conversationId: data.conversationId,
-        runId: data.runId, markerSha256: markerHash(marker), toolName: 'doubao_headless_e2e_marker' });
+        runId: data.runId, markerSha256: markerHash(marker), toolName });
       saveReceipt();
       await verifyCurrent(data.conversationId, 'mcp');
     } catch (error) { stageError = error; }

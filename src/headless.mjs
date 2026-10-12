@@ -299,7 +299,7 @@ export async function executeHeadless(options) {
   if (command === 'usage') return { platform: 'headless', ...await readHeadlessUsage(client, remaining()) };
   if (command === 'runtimes') return { platform: 'headless', profile, runtimes: [
     { id: 'cloud', name: '云端', available: true },
-    { id: 'local', name: '本地电脑', available: true, deviceId: client.device.device_id, deviceName: os.hostname(), engine: 'node-http-sse' },
+    { id: 'local', name: '本地电脑', available: true, deviceId: client.device.device_id, deviceName: os.hostname(), engine: 'node-http-sse', hostPlatform: process.platform },
   ] };
   if (command === 'mcp') {
     const connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining(), deadlineMs: deadline });

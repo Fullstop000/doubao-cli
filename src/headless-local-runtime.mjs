@@ -1124,7 +1124,9 @@ export class HeadlessLocalRuntime {
         let content;
         try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
         catch { return errorResult(id, name, 'CAPABILITY_UNAVAILABLE', 'Portable Read supports text files only; binary media requires the native runtime.'); }
-        const offset = Math.max(0, Number(input.offset ?? input.line_offset ?? 0) || 0);
+        const offset = input.offset !== undefined && input.offset !== null
+          ? Math.max(0, (Number(input.offset) || 1) - 1)
+          : Math.max(0, Number(input.line_offset) || 0);
         const limit = Math.max(1, Math.min(20_000, Number(input.limit ?? input.line_limit ?? 2000) || 2000));
         const lines = content.split(/\r?\n/u);
         const body = lines.slice(offset, offset + limit).join('\n');

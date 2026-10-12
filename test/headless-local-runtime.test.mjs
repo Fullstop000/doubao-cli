@@ -33,6 +33,7 @@ test('builds the local runtime general_task_param with runtime 2 and permission 
   const parsed = JSON.parse(built.general_task_param);
   assert.equal(parsed.runtime_type, 2);
   assert.equal(parsed.agent_task_param.runtime_type, 2);
+  assert.equal(parsed.client_option.os, process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'Mac' : 'Linux');
   assert.equal(parsed.client_option.sandbox_id, 'route-123');
   assert.equal(parsed.client_option.workspace, '/tmp/work');
   assert.deepEqual(parsed.client_option.shared_folder_path, ['/tmp/work']);
@@ -442,11 +443,16 @@ test('Read uses the packaged file_path schema and returns structured text data',
   await fs.writeFile(path.join(directory, 'sample.txt'), 'alpha\nbeta\n');
   try {
     const runtime = new HeadlessLocalRuntime({ client: { request: async () => responseStream(), json: async () => ({}) }, ...base({ workspace: directory }) });
-    const result = await runtime.execute({ id: 'read-schema', name: 'Read', input: { file_path: 'sample.txt', offset: 1, limit: 1 }, inputRaw: '' });
+    const first = await runtime.execute({ id: 'read-first-line', name: 'Read', input: { file_path: 'sample.txt', offset: 1, limit: 1 }, inputRaw: '' });
+    assert.equal(first.data.content, 'alpha');
+    assert.equal(first.data.lineOffset, 0);
+    const result = await runtime.execute({ id: 'read-schema', name: 'Read', input: { file_path: 'sample.txt', offset: 2, limit: 1 }, inputRaw: '' });
     assert.equal(result.isError, false);
     assert.equal(result.data.content, 'beta');
     assert.equal(result.data.lineCount, 3);
     assert.equal(result.data.lineOffset, 1);
+    const legacy = await runtime.execute({ id: 'read-legacy-offset', name: 'Read', input: { file_path: 'sample.txt', line_offset: 1, limit: 1 }, inputRaw: '' });
+    assert.equal(legacy.data.content, 'beta');
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
@@ -463,7 +469,7 @@ test('native Read accepts thumbnail defaults for text and refuses PDF content', 
   } }, ...base({ workspace: directory, permission: 'AskOnRisk', approve: async () => false }) });
   try {
     await runtime.handleFrame(toolFrame({ id: 'read-text-probe', input: {
-      file_path: 'probe.txt', thumbnail_size: 'full', pages: '',
+      file_path: 'probe.txt', offset: 1, limit: 2000, thumbnail_size: 'full', pages: '',
     } }));
     await runtime.handleFrame(toolFrame({ id: 'read-pdf-probe', input: {
       file_path: 'probe.pdf', thumbnail_size: 'full', pages: null,
@@ -472,6 +478,7 @@ test('native Read accepts thumbnail defaults for text and refuses PDF content', 
     assert.equal(uploads.length, 2);
     assert.equal(uploads[0].isError, false);
     assert.equal(uploads[0].data.content, 'plain text probe\n');
+    assert.equal(uploads[0].data.lineOffset, 0);
     assert.equal(uploads[1].error_code, 'CAPABILITY_UNAVAILABLE');
     assert.match(uploads[1].content[0].text, /PDF extraction require the native runtime/u);
   } finally {
