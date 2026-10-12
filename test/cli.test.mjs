@@ -51,9 +51,11 @@ test('web namespace preserves the legacy backend options and literal message tex
     ['sessions', 'send', '38439138239851266', 'web', '--wait', '--expect-json'],
     ...['open', 'read', 'status', 'wait', 'stop'].map(command => ['sessions', command, '38439138239851266']),
   ]) {
-    const flags = ['--json', '--target', 'selected-web-tab', '--timeout', '3'];
+    const flags = ['--json'];
+    if (operation[0] !== 'capabilities') flags.push('--target', 'selected-web-tab');
+    if (operation[0] === 'login' || operation[0] === 'sessions' && ['open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(operation[1])) flags.push('--timeout', '3');
     assert.deepEqual(parseOptions(['web', ...flags, ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
-    assert.deepEqual(parseOptions(['--json', 'web', '--target', 'selected-web-tab', '--timeout', '3', ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
+    assert.deepEqual(parseOptions(['--json', 'web', ...flags.slice(1), ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
   }
   assert.deepEqual(parseOptions(['sessions', 'create', 'web']).args, ['sessions', 'create', 'web']);
   const literal = parseOptions(['--', 'web', 'status']);

@@ -309,17 +309,18 @@ export async function receiptStore(client) {
     throw new Error('Doubao Web account changed; select the originally authenticated account');
   }
   const identity = ['web', 'headless'].includes(app.id)
-    ? [app.id, app.endpoint, uid]
+    ? [app.id, app.endpoint, uid, ...(app.id === 'headless' && client.profile && client.profile !== 'default' ? [client.profile] : [])]
     : [app.id, path.resolve(app.dataDir), activeProfile(app), uid];
   const scope = createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 24);
   const dir = path.join(configDirectory(), 'turns', scope);
   const validate = id => { if (!/^\d{12,24}$/u.test(id || '')) throw new Error('Invalid run id'); return id; };
+  const filePath = (conversationId, runId) => path.join(dir, `${validate(conversationId)}-${validate(runId)}.json`);
   return {
+    filePath,
     save(receipt) {
       if (!receipt.conversationId || !receipt.runId) return;
-      const name = `${validate(receipt.conversationId)}-${validate(receipt.runId)}.json`;
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      const file = path.join(dir, name), tmp = file + '.' + crypto.randomUUID() + '.tmp';
+      const file = filePath(receipt.conversationId, receipt.runId), tmp = file + '.' + crypto.randomUUID() + '.tmp';
       let previous = {};
       try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       // A concurrent wait must not erase an explicit cancellation or move
@@ -345,7 +346,7 @@ export async function receiptStore(client) {
     },
     read(conversationId, runId) {
       try {
-        const file = path.join(dir, `${validate(conversationId)}-${validate(runId)}.json`);
+        const file = filePath(conversationId, runId);
         const receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
         try { receipt.cancellation = JSON.parse(fs.readFileSync(file + '.cancellation', 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') throw error; }

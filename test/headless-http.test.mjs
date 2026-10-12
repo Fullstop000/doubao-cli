@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CookieJar, HeadlessClient, consumeSse } from '../src/headless-http.mjs';
+import { CookieJar, HeadlessClient, consumeSse, newDevice } from '../src/headless-http.mjs';
+
+test('device metadata uses positive exact JSON integers and repairs older oversized identifiers', () => {
+  assert.deepEqual(newDevice(size => Buffer.alloc(size, 255)), { web_id: '9007199254740991', device_id: '9007199254740991' });
+  assert.deepEqual(newDevice(size => Buffer.alloc(size)), { web_id: '1', device_id: '1' });
+  const valid = { web_id: '9007199254740991', device_id: '2' };
+  assert.deepEqual(new HeadlessClient({ device: valid }).device, valid);
+  const repaired = new HeadlessClient({ device: { web_id: '1', device_id: '11822967929082076286' } }).device;
+  for (const value of Object.values(repaired)) assert.ok(BigInt(value) > 0n && BigInt(value) <= 9007199254740991n);
+});
 
 function streamResponse(chunks, { status = 200, contentType = 'text/event-stream' } = {}) {
   let index = 0;

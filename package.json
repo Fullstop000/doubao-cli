@@ -1,6 +1,6 @@
 {
   "name": "doubao-cli",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Doubao CLI with Linux headless HTTP and macOS desktop and web backends",
   "author": "Fullstop000 <fullstop1005@gmail.com>",
   "type": "module",
@@ -14,7 +14,8 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "test:e2e": "node scripts/e2e.mjs"
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:e2e:headless": "node scripts/headless-e2e.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -38,6 +39,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
     "qrcode-terminal": "^0.12.0"
   }
 }

@@ -71,19 +71,24 @@ export class CookieJar {
   }
 }
 
-export function newDevice() {
-  const id = () => BigInt('0x' + randomBytes(8).toString('hex')).toString();
+export function newDevice(randomBytesImpl = randomBytes) {
+  // Keep IDs within signed int64 and JavaScript's exact integer range across
+  // the local-tool service and its JSON adapters.
+  const id = () => ((BigInt('0x' + randomBytesImpl(8).toString('hex')) & ((1n << 53n) - 1n)) || 1n).toString();
   return { web_id: id(), device_id: id() };
 }
 
 export class HeadlessClient {
   constructor({ cookies = [], device = newDevice(), accountId, fetchImpl = fetch } = {}) {
     this.jar = cookies instanceof CookieJar ? cookies : new CookieJar(cookies);
-    this.device = device;
+    const validId = value => typeof value === 'string' && /^[1-9]\d{0,18}$/u.test(value)
+      && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER);
+    // Repair metadata created by older versions before starting new tasks.
+    this.device = validId(device?.web_id) && validId(device?.device_id) ? device : newDevice();
     this.accountId = accountId;
     this.fetchImpl = fetchImpl;
   }
-  async request(route, { method = 'GET', params = {}, body, headers = {}, timeoutMs = 10000 } = {}) {
+  async request(route, { method = 'GET', params = {}, body, headers = {}, timeoutMs = 10000, signal } = {}) {
     const url = allowedHeadlessUrl(route);
     // Work's protocol revision enables structured messages and its model catalog.
     // This is adapter compatibility metadata; no desktop executable is used.
@@ -97,7 +102,8 @@ export class HeadlessClient {
     const csrf = cookie.split('; ').find(item => item.startsWith('passport_csrf_token='))?.slice('passport_csrf_token='.length);
     const response = await this.fetchImpl(url.href, { method, redirect: 'manual',
       headers: { ...headers, ...(cookie ? { cookie } : {}), ...(csrf ? { 'x-tt-passport-csrf-token': csrf } : {}) },
-      body, signal: AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs))) });
+      body, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs)))])
+        : AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs))) });
     for (const value of response.headers.getSetCookie?.() || []) this.jar.set(value, url);
     if ([401, 403].includes(response.status)) throw Object.assign(new Error('Doubao login expired or access was denied; run "doubao headless login"'), { code: 'login_required' });
     return response;
