@@ -1,4 +1,5 @@
-import { currentApp, resolveApp, isAppTarget } from './app.mjs';
+import { currentApp, resolveApp, isAppTarget, activeProfile } from './app.mjs';
+import { startConnectionBadge } from './connection-badge.mjs';
 
 export function cdpEndpoint(env) {
   return env ? resolveApp(undefined, env).endpoint : currentApp().endpoint;
@@ -231,10 +232,16 @@ export async function withChatClient(callback, endpoint = cdpEndpoint()) {
   }
   const target = await findChatTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();
+  let stopBadge;
   try {
+    if (['work', 'doubao'].includes(currentApp().id)) {
+      stopBadge = await startConnectionBadge(client, {
+        app: currentApp().name, profile: activeProfile(), endpoint,
+      });
+    }
     return await callback(client, target);
   } finally {
-    client.close();
+    try { await stopBadge?.(); } finally { client.close(); }
   }
 }
 
