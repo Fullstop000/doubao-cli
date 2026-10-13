@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import { parseOptions } from '../src/cli.mjs';
-import { projectContext, selectProject, resolveTaskContext, listProjects } from '../src/context.mjs';
+import { projectContext, selectProject, resolveTaskContext, listProjects, enterpriseSkill } from '../src/context.mjs';
 import { conversationExt, sendChatCompletion, AUTOMATIC_MODEL_PROTOCOL, skillMessage } from '../src/protocol.mjs';
 import { currentApp } from '../src/app.mjs';
 
@@ -123,10 +123,34 @@ test('module discovery survives changed ids and never requires a missing module'
   const { appModule } = await import('../src/app-modules.mjs');
   const calls = [];
   const req = id => { assert.ok(req.m[id]); calls.push(id); return { id }; };
-  req.m = { 424242: function(e,t,r){r.d(t,{Wp:()=>s});const s='chat-ioc-manager: store';} };
+  req.m = {
+    424242: function(e,t,r){r.d(t,{Wp:()=>s});const s='chat-ioc-manager: store';},
+    525252: function(e,t,r){r.d(t,{th:()=>X});class ProjectStoreService{async createProject(e,t){} async deleteProject(e,t){}}},
+  };
   assert.equal(appModule(req, 'stores').id, 424242);
+  assert.equal(appModule(req, 'projects').id, 525252);
   assert.throws(() => appModule(req, 'attachments'), /unavailable/);
-  assert.deepEqual(calls, [424242]);
+  req.m[626262] = function(e,t,r){r.d(t,{th:()=>X});class OtherProjectStore{async createProject(e,t){} async deleteProject(e,t){}}};
+  assert.throws(() => appModule(req, 'projects'), /unavailable or ambiguous/);
+  assert.deepEqual(calls, [424242, 525252]);
+});
+
+test('enterprise skill lookup discovers its moved export without loading a fixed chunk', async () => {
+  let chunkLoads = 0;
+  const req = id => {
+    assert.equal(id, 737373);
+    return { Sf: { AGWListUserAndFeaturedSkills: async () => ({ data: { skills: [{
+      name: 'doubao-enterprise-search', display_name: '企业知识', type: 2, external_skill_id: 'skill-1',
+    }] } }) } };
+  };
+  req.m = { 737373: { toString: () => 'r.d(exports,{Sf:()=>skillService,SI:()=>skillState});' } };
+  req.e = async () => { chunkLoads++; throw new Error('Unexpected chunk load'); };
+  const context = vm.createContext({ crypto, window: { '@flow-web/desktop:stable': { push: ([,,resolve]) => resolve(req) } } });
+  const client = { evaluate: expression => vm.runInContext(expression, context) };
+  assert.deepEqual(JSON.parse(JSON.stringify(await enterpriseSkill(client, 'cloud'))), {
+    name: 'doubao-enterprise-search', displayName: '企业知识', type: 2, externalId: 'skill-1',
+  });
+  assert.equal(chunkLoads, 0);
 });
 
 test('generated local workspace is created before provisioning and missing user workspace fails', async () => {

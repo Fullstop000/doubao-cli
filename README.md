@@ -181,8 +181,7 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 - Default timeout: 120 seconds. Timeout does not cancel.
 - Timeout or connection failure: resume with the same IDs; do not resend.
 - `waiting_input`: respond in Doubao, then wait again.
-- `stopped: true`: no tracked task running. `stopped: false`: cancellation unconfirmed, nonzero exit.
-- For Web and Headless, `stopped: true` means the server task tree is terminal; inspect `status` to distinguish `cancelled` from work that completed naturally.
+- `stopped: true`: the tracked task tree is terminal; inspect `status` to distinguish cancellation from natural completion. `stopped: false`: cancellation unconfirmed, nonzero exit.
 - Cancellation: completed tool effects remain.
 
 | State | Action |
@@ -242,6 +241,7 @@ doubao mcp remove <connector-id>
 | `AlwaysAsk` | Doubao always-ask policy |
 
 - Local task permission: repeat `--permission` each turn; omitted value defaults to `FullAccess`.
+- Desktop `AlwaysAsk` uses the native sandbox policy; commands within granted folders can execute without another prompt.
 - Approvals: in Doubao; not guaranteed for every MCP call. Server process is unrestricted by these policies.
 
 ## Updates

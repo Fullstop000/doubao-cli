@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { currentApp, activeProfile } from './app.mjs';
 import { runtimeParameters, evaluateWithWatchdog, updateLiveControls, sendChatCompletion } from './protocol.mjs';
 import { configDirectory } from './config.mjs';
+import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 
 function webIdentityGuard(runtime) {
   if (currentApp().id !== 'web') return { setup: '', check: '', rethrow: '' };
@@ -522,8 +523,8 @@ export async function stopTurn(client, conversationId, options = {}) {
           })()
           : await evaluateWithWatchdog(client, `(async () => {
           const req = await new Promise(resolve => window['@flow-web/desktop:stable'].push([['doubao_stop_' + crypto.randomUUID()], {}, resolve]));
-          await req.e('1383');
-          return req(359531).iv.AGWTaskTerminate({ thread_id: ${JSON.stringify(node.threadId)} });
+          ${APP_MODULE_BOOTSTRAP}
+          return appModule(req, 'skills').iv.AGWTaskTerminate({ thread_id: ${JSON.stringify(node.threadId)} });
         })()`, timeout + 1000);
         if (result.code !== 0) throw new Error(web ? 'Web task cancellation was rejected' : 'Task cancellation rejected: ' + (result.message || result.msg || result.code));
         stopped.add(node.threadId);

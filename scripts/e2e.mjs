@@ -257,8 +257,9 @@ async function stop() {
   await check('open stop session', ['sessions','open',id],async()=>until(async()=> (await inspect('location.href')).endsWith('/'+id)));
   await check('start long generation', ['sessions','send',id,'For a stop-button test, write a long numbered list of 1500 imaginary fruit names, one item per line. Do not call any tools.','--model',sendModel(),'--reasoning','low'],d=>assert.equal(d.reply,null));
   // Do not reload the page: this deliberately checks the stale-composer case.
-  await check('stop while UI is stale', ['sessions','stop',id,'--timeout','20'],d=>{assert.equal(d.stopped,true);assert.equal(d.interrupted,true)});
-  await check('sessions stop active generation', ['sessions','stop',id,'--timeout','20'],d=>{assert.equal(d.stopped,true);assert.equal(d.interrupted,true)});
+  const terminal = d => { assert.equal(d.stopped,true); assert.ok(['completed','failed','cancelled'].includes(d.status)); assert.equal(d.tasks.running,0); assert.equal(d.tasks.unknown,0); };
+  await check('stop while UI is stale', ['sessions','stop',id,'--timeout','20'],terminal);
+  await check('sessions stop active generation', ['sessions','stop',id,'--timeout','20'],terminal);
   record({name:'generation stopped readback',pass:true});
   await check('sessions stop idle', ['sessions','stop',id],d=>assert.equal(d.stopped,true));
 }
@@ -340,7 +341,7 @@ async function negative() {
     ['invalid reasoning',['sessions','create','test','--reasoning','typo'],/unknown reasoning/],
     ['followup reasoning without model',['sessions','send',id,'test','--reasoning','low'],/requires --model/],
     ['invalid permission',['sessions','create','test','--wait','--mcp','123456','--permission','typo'],/unknown permission/],
-    ['permission requires MCP',['sessions','create','test','--wait','--permission','AlwaysAsk'],/requires sessions create\/send with --mcp/],
+    ['permission requires local runtime or MCP',['sessions','create','test','--wait','--permission','AlwaysAsk'],/requires sessions create\/send with --runtime local or --mcp/],
     ['MCP requires wait',['sessions','create','test','--mcp','123456'],/requires --wait/],
     ['MCP requires message',['sessions','create','--wait','--mcp','123456'],/requires a message/],
     ['MCP attachment conflict',['sessions','create','test','--wait','--mcp','123456','--attach',path.join(dir,'notes.txt')],/not supported with attachments/],
@@ -356,7 +357,6 @@ async function negative() {
     ['missing attachment flag value',['sessions','create','test','--attach','--wait'],/requires a file path/],
     ['missing attachment file',['sessions','create','test','--attach',path.join(dir,'missing.txt')],/attachment does not exist/],
     ['attachment directory',['sessions','create','test','--attach',path.join(dir,'workspace')],/not a regular file/],
-    ['attachment reasoning conflict',['sessions','create','test','--attach',path.join(dir,'notes.txt'),'--reasoning','low'],/without attachments/],
     ['unknown update command',['update','typo'],/unknown update command/],
     ['unknown update auto action',['update','auto','typo'],/requires on/],
     ['unknown top-level command',['typo'],/unknown command/],

@@ -118,7 +118,6 @@ export async function enterpriseSkill(client, runtime) {
   const skill = await evaluateWithWatchdog(client, `(async () => {
     ${CONTEXT_BOOTSTRAP}
     ${APP_MODULE_BOOTSTRAP}
-    if (!req.m[359531] && !req.m[609347]) await req.e('1383');
     const response = await appModule(req, 'skills').Sf.AGWListUserAndFeaturedSkills({ runtime_type: ${runtime === 'local' ? 2 : 1} });
     if (response?.code || !Array.isArray(response?.data?.skills)) throw new Error('Doubao skill catalog could not be read');
     const skill = response.data.skills.find(s => s.name === 'doubao-enterprise-search' && s.visible !== false);

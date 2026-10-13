@@ -7,7 +7,9 @@ export function appModule(req, kind) {
     attachmentBlock: { ids: [907216, 613922], match: s => s.includes('S:') && s.includes('transform:') && s.includes('BLOCK_ATTACHMENT') && s.includes('attachmentStates:') },
     skills: { ids: [359531, 609347], match: s => s.includes('Sf:') && s.includes('SI:') },
     sandbox: { ids: [987391, 876207], match: s => s.includes('H:') && s.includes('resolvedSharedFolders:') && s.includes('projectFolders:') && s.length < 1500 },
-    projects: { ids: [847257, 175126], match: s => s.includes('th:') && s.includes('IM_PROJECT_SERVICE_UNAVAILABLE') && s.includes('async createProject(') },
+    // ProjectStoreService exports th(), whose instance owns createProject().
+    // The old error string was removed from newer desktop bundles.
+    projects: { ids: [], match: s => s.includes('th:') && s.includes('async createProject(') && s.includes('async deleteProject(') },
     projectDevice: { ids: [193447, 670245, 82197, 554995], match: s => s.includes('U:') && s.includes('project_shared_get_device_error') && s.includes('getDeviceInfo()') && s.length < 1500 },
   };
   if (kind === 'communication') {
@@ -19,7 +21,10 @@ export function appModule(req, kind) {
   }
   const def = definitions[kind];
   if (!def) throw new Error('Unknown Doubao module: ' + kind);
-  if (!req.m) return req(def.ids[0]);
+  if (!req.m) {
+    if (def.ids.length) return req(def.ids[0]);
+    throw new Error('Doubao ' + kind + ' module discovery is unavailable');
+  }
   for (const id of def.ids) if (req.m[id] && def.match(req.m[id].toString())) return req(id);
   const matches = Object.entries(req.m).filter(([, f]) => def.match(f.toString()));
   if (matches.length !== 1) throw new Error('Doubao ' + kind + ' module is unavailable or ambiguous; update the CLI');

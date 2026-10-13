@@ -40,17 +40,21 @@ test('task links merge repeated cards and hidden progress is omitted',()=>{
  assert.equal(summarizeTurn(id,root,[reply(2,[p,text('answer')])],[]).reply.text,'answer');
 });
 function clientFor(handler) {
+ const moduleCalls=[];let chunkLoads=0;
+ const req=id=>{moduleCalls.push(id);if(id!==777777)throw new Error('Unexpected module '+id);return{iv:{AGWTaskTerminate:async body=>(await handler('https://www.doubao.com/alice/generaltask/terminate',{body:JSON.stringify(body)})).json()}}};
+ req.m={777777:{toString:()=> 'r.d(exports,{Sf:()=>skillService,SI:()=>skillState});'}};
+ req.e=async()=>{chunkLoads++;throw new Error('Unexpected chunk load')};
  const context=vm.createContext({URL,crypto,AbortSignal,AbortController,TextDecoder,setTimeout,clearTimeout,
  performance:{getEntriesByType:()=>[{name:'https://www.doubao.com/im/chain/recent_conv?aid=1044603&device_id=test'}]},
- window:{'@flow-web/desktop:stable':{push:parts=>{const req=()=>({iv:{AGWTaskTerminate:async body=> (await handler('https://www.doubao.com/alice/generaltask/terminate',{body:JSON.stringify(body)})).json()}});req.e=async()=>{};parts[2](req);}},neotix:{taskMode:{runtime:{queryRuntimeInfo:async()=>({env:{}})}}}},
+ window:{'@flow-web/desktop:stable':{push:parts=>parts[2](req)},neotix:{taskMode:{runtime:{queryRuntimeInfo:async()=>({env:{}})}}}},
  fetch:handler});
- return {evaluate:e=>vm.runInContext(e,context),close(){}};
+ return {moduleCalls, get chunkLoads(){return chunkLoads}, evaluate:e=>vm.runInContext(e,context),close(){}};
 }
 test('read rejects an unavailable requested run instead of selecting a newer turn',async()=>{
  const client=clientFor(async()=>Response.json({downlink_body:{batch_get_conv_info_downlink_body:{conversation_info_list:[{conversation_id:id,messages:[root]}]}}}));
  await withApp(resolveApp('work',{}),()=>assert.rejects(readTurn(client,id,{runId:'56322687642882051'}),/requested turn/));
 });
-test('cancellation uses run id and thread terminate, then verifies child status',async()=>{
+test('cancellation resolves the active task service export without loading an unavailable chunk',async()=>{
  let cancelled=false;const calls=[];
  const first=reply(2,[text('working'),task('56320433759901186')]);
  const client=clientFor(async(url,options)=>{
@@ -65,6 +69,8 @@ test('cancellation uses run id and thread terminate, then verifies child status'
  assert.equal(result.stopped,true);assert.equal(result.status,'cancelled');
  assert.equal(calls.find(c=>c.url.includes('break_stream_msg')).body.uplink_body.break_stream_msg_uplink_body.reply_msg_id,runId);
  assert.equal(calls.filter(c=>c.url.includes('/generaltask/terminate')).length,1);
+ assert.deepEqual(client.moduleCalls,[777777]);
+ assert.equal(client.chunkLoads,0);
 });
 test('async stream reconnects with its cursor, follows children and never resubmits completion',async()=>{
  const requests=[];let attempts=0;
