@@ -355,7 +355,7 @@ async function withProtocolAttachments(options, send) {
     try {
       result = await send({ ...options, timeoutMs: remainingMilliseconds(deadline, timeoutMs), attachments: [], attachmentBlocks: snapshot.blocks });
     } catch (error) { sendError = error; }
-    try { await clearUploadedAttachments(client, snapshot, result?.conversationId || sendError?.result?.conversationId); }
+    try { await clearUploadedAttachments(client, snapshot, result?.conversationId || sendError?.result?.conversationId, { deadline }); }
     catch (error) {
       // Cleanup must never hide an accepted turn or prompt an unsafe resend.
       if (result) result.attachmentCleanupWarning = String(error.message || error);
