@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
+import { evaluateWithWatchdog } from './protocol.mjs';
 
 const DROP_AREA = '[data-testid="file_drop_area"]';
 const ATTACHMENT_AREA = '[data-testid="attachment_area"]';
@@ -130,11 +131,33 @@ export async function removeAttachmentsByUploadKey({ list, remove, readDurable }
   if (!targets.size) return;
   const timeoutMs = options.timeoutMs ?? 5_000;
   const intervalMs = options.intervalMs ?? 125;
-  const discoveryDeadline = Date.now() + timeoutMs;
+  // Discovery, deletion and durable readback share one budget. This function
+  // is also serialized into the renderer, so keep its deadline helpers local.
+  const deadline = Math.min(options.deadline ?? Infinity, Date.now() + timeoutMs);
+  const expired = () => new Error('Staged attachment cleanup timed out; could not confirm cleanup in the native draft repository');
+  const remainingMs = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw expired();
+    return ms;
+  };
+  const bounded = async operation => {
+    const ms = remainingMs();
+    let timer;
+    try {
+      const result = await Promise.race([
+        operation(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(expired()), ms); }),
+      ]);
+      // A late native read must never lead to another deletion after expiry.
+      remainingMs();
+      return result;
+    } finally { clearTimeout(timer); }
+  };
+  const pause = () => new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, remainingMs())));
   let ownedRecords = [];
 
-  while (Date.now() < discoveryDeadline) {
-    const records = await list();
+  while (Date.now() < deadline) {
+    const records = await bounded(list);
     const owned = records.filter((record) => targets.has(record.fileKey));
     if (owned.length) {
       for (const [key, count] of targets) {
@@ -149,33 +172,32 @@ export async function removeAttachmentsByUploadKey({ list, remove, readDurable }
         // Delete by a fresh index for each action because deleting one item
         // shifts every later index in that native attachment group.
         for (const target of [...owned].sort((a, b) => b.index - a.index)) {
-          const current = (await list()).filter((record) => record.fileKey === target.fileKey);
+          const current = (await bounded(list)).filter((record) => record.fileKey === target.fileKey);
           if (current.length !== remaining.get(target.fileKey)) continue;
           const record = current.find((item) => item.localKey === target.localKey && item.params.chatId === target.params.chatId && item.params.skillType === target.params.skillType);
           if (record) {
-            await remove(record);
+            await bounded(() => remove(record));
             remaining.set(target.fileKey, remaining.get(target.fileKey) - 1);
           }
         }
         break;
       }
     }
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await pause();
   }
 
   if (!ownedRecords.length) throw new Error('Could not identify staged attachments in the accepted conversation');
   if (typeof readDurable !== 'function') throw new Error('Native attachment draft readback is unavailable');
 
-  const readbackDeadline = Date.now() + timeoutMs;
-  while (Date.now() < readbackDeadline) {
-    const current = await list();
+  while (Date.now() < deadline) {
+    const current = await bounded(list);
     const visible = current.filter((record) => targets.has(record.fileKey));
-    const persistedKeys = await readDurable(ownedRecords);
+    const persistedKeys = await bounded(() => readDurable(ownedRecords));
     const persistedCounts = new Map();
     for (const key of persistedKeys || []) persistedCounts.set(key, (persistedCounts.get(key) || 0) + 1);
     const cleared = [...targets].every(([key]) => !persistedCounts.has(key));
     if (!visible.length && cleared) return;
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await pause();
   }
   throw new Error('Could not confirm staged attachment cleanup in the native draft repository');
 }
@@ -302,8 +324,11 @@ export async function uploadedAttachmentBlocks(client, files) {
   })()`);
 }
 
-export async function clearUploadedAttachments(client, snapshot, acceptedConversationId) {
-  await client.evaluate(`(async () => {
+export async function clearUploadedAttachments(client, snapshot, acceptedConversationId, options = {}) {
+  const deadline = Math.min(options.deadline ?? Infinity, Date.now() + (options.timeoutMs ?? 5_000));
+  const timeoutMs = deadline - Date.now();
+  if (timeoutMs <= 0) throw new Error('Staged attachment cleanup skipped because the operation deadline expired');
+  await evaluateWithWatchdog(client, `(async () => {
     const req = await new Promise(resolve => window['@flow-web/desktop:stable'].push([['doubao_attachment_cleanup_' + crypto.randomUUID()], {}, resolve]));
     ${APP_MODULE_BOOTSTRAP}
     const removeAttachmentsByUploadKey = ${removeAttachmentsByUploadKey.toString()};
@@ -366,6 +391,6 @@ export async function clearUploadedAttachments(client, snapshot, acceptedConvers
           .map(item => item.fileKey)
           .filter(key => typeof key === 'string' && ownedKeys.has(key));
       },
-    }, snapshot.fileKeys);
-  })()`);
+    }, snapshot.fileKeys, { deadline: ${deadline}, timeoutMs: ${timeoutMs} });
+  })()`, timeoutMs);
 }
