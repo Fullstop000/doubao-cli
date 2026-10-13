@@ -109,6 +109,77 @@ export function attachmentUploadReady(state, expected) {
     && !state.progressing;
 }
 
+function inputDraftModule(req) {
+  const match = Object.entries(req.m || {}).find(([, factory]) => {
+    const source = factory.toString();
+    return source.includes('WebInputDraftRepository:') && source.includes('createInputAttachmentDraftUnit:');
+  });
+  if (!match) throw new Error('Native input-draft repository API is unavailable');
+  return req(Number(match[0]));
+}
+
+// Native input-draft restore creates a new localKey from the stable uploaded
+// fileKey. Match the remote identity and its multiplicity, never the pre-send
+// localKey; extra copies are ambiguous and must be left untouched.
+export async function removeAttachmentsByUploadKey({ list, remove, readDurable }, fileKeys, options = {}) {
+  const targets = new Map();
+  for (const key of fileKeys || []) {
+    if (typeof key !== 'string' || !key) throw new Error('Uploaded attachment identity is missing');
+    targets.set(key, (targets.get(key) || 0) + 1);
+  }
+  if (!targets.size) return;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const intervalMs = options.intervalMs ?? 125;
+  const discoveryDeadline = Date.now() + timeoutMs;
+  let ownedRecords = [];
+
+  while (Date.now() < discoveryDeadline) {
+    const records = await list();
+    const owned = records.filter((record) => targets.has(record.fileKey));
+    if (owned.length) {
+      for (const [key, count] of targets) {
+        const matches = owned.filter((record) => record.fileKey === key);
+        if (matches.length > count) throw new Error('Staged attachment identity is ambiguous; nothing else was removed');
+        if (matches.length < count) break;
+      }
+      const complete = [...targets].every(([key, count]) => owned.filter((record) => record.fileKey === key).length === count);
+      if (complete) {
+        ownedRecords = owned;
+        const remaining = new Map(targets);
+        // Delete by a fresh index for each action because deleting one item
+        // shifts every later index in that native attachment group.
+        for (const target of [...owned].sort((a, b) => b.index - a.index)) {
+          const current = (await list()).filter((record) => record.fileKey === target.fileKey);
+          if (current.length !== remaining.get(target.fileKey)) continue;
+          const record = current.find((item) => item.localKey === target.localKey && item.params.chatId === target.params.chatId && item.params.skillType === target.params.skillType);
+          if (record) {
+            await remove(record);
+            remaining.set(target.fileKey, remaining.get(target.fileKey) - 1);
+          }
+        }
+        break;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+
+  if (!ownedRecords.length) throw new Error('Could not identify staged attachments in the accepted conversation');
+  if (typeof readDurable !== 'function') throw new Error('Native attachment draft readback is unavailable');
+
+  const readbackDeadline = Date.now() + timeoutMs;
+  while (Date.now() < readbackDeadline) {
+    const current = await list();
+    const visible = current.filter((record) => targets.has(record.fileKey));
+    const persistedKeys = await readDurable(ownedRecords);
+    const persistedCounts = new Map();
+    for (const key of persistedKeys || []) persistedCounts.set(key, (persistedCounts.get(key) || 0) + 1);
+    const cleared = [...targets].every(([key]) => !persistedCounts.has(key));
+    if (!visible.length && cleared) return;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  throw new Error('Could not confirm staged attachment cleanup in the native draft repository');
+}
+
 async function waitForUploads(client, files, timeoutMs) {
   const expected = {
     files: files.filter((file) => !file.type.startsWith('image/')).length,
@@ -227,19 +298,74 @@ export async function uploadedAttachmentBlocks(client, files) {
     if (keys.some(k => !k)) throw new Error('Attachment upload identifiers are not ready');
     const block = appModule(req, 'attachmentBlock').S({ attachments, attachmentKeys: keys, attachmentStates: states });
     if (block?.content?.attachment_block?.attachments?.length !== expected.length) throw new Error('The app could not encode every attachment');
-    return { blocks: [block], params, localKeys: attachments.map(a => a.localKey) };
+    return { blocks: [block], params, fileKeys: keys };
   })()`);
 }
 
-export async function clearUploadedAttachments(client, snapshot) {
+export async function clearUploadedAttachments(client, snapshot, acceptedConversationId) {
   await client.evaluate(`(async () => {
     const req = await new Promise(resolve => window['@flow-web/desktop:stable'].push([['doubao_attachment_cleanup_' + crypto.randomUUID()], {}, resolve]));
     ${APP_MODULE_BOOTSTRAP}
+    const removeAttachmentsByUploadKey = ${removeAttachmentsByUploadKey.toString()};
+    const inputDraftModule = ${inputDraftModule.toString()};
     const snapshot = ${JSON.stringify(snapshot)};
-    const api = appModule(req, 'attachments'), actions = api.getAttachmentActions(snapshot.params);
-    for (const key of snapshot.localKeys.slice().reverse()) {
-      const index = api.getAttachments(snapshot.params).findIndex(a => a.localKey === key);
-      if (index >= 0) await actions.deleteAttachment({ index });
-    }
+    const api = appModule(req, 'attachments');
+    const stores = appModule(req, 'stores');
+    const store = stores.Wp('attachmentsStore');
+    const uploadStore = stores.Wp('attachmentUploadStore');
+    const originChatId = snapshot.params.chatId;
+    const acceptedChatId = ${JSON.stringify(acceptedConversationId ?? '')};
+    const chatIds = [...new Set([...(typeof originChatId === 'string' ? [originChatId] : []), ...(acceptedChatId ? [String(acceptedChatId)] : [])])];
+    const skillType = snapshot.params.skillType;
+    const list = () => {
+      const map = store.getState().attachmentsMap || {};
+      const preprocess = uploadStore.getState().preprocessTaskMap || {};
+      return Object.entries(map).flatMap(([recordChatId, groups]) => {
+        if (!chatIds.includes(String(recordChatId))) return [];
+        return Object.entries(groups || {}).flatMap(([group, attachments]) => {
+          if (group !== '_' + skillType) return [];
+          const params = { chatId: recordChatId, skillType: group.slice(1) };
+          const keys = api.getAttachmentsKeys(params) || [];
+          return (attachments || []).map((attachment, index) => {
+            const fileKey = keys[index] || attachment.fileKey || attachment.key || preprocess[attachment.localKey]?.key;
+            return {
+              fileKey,
+              localKey: attachment.localKey,
+              index,
+              params,
+            };
+          }).filter(record => record.fileKey);
+        });
+      });
+    };
+    const accountScope = localStorage.getItem('flow_tea_user_id');
+    let draftModule;
+    try { draftModule = inputDraftModule(req); } catch {}
+    await removeAttachmentsByUploadKey({
+      list: () => {
+        return list();
+      },
+      remove: async record => {
+        const actions = api.getAttachmentActions(record.params);
+        await actions.deleteAttachment({ index: record.index });
+      },
+      readDurable: async records => {
+        if (!draftModule) throw new Error('Native input-draft repository API is unavailable');
+        if (!accountScope) throw new Error('Native input-draft account scope is unavailable');
+        // Construct a fresh repository for each read so its per-account hydration cache cannot
+        // mask a write that the native debounce has not flushed yet.
+        const repository = new draftModule.WebInputDraftRepository();
+        await repository.get({ accountScope, conversationScope: 'conversation:' + snapshot.params.chatId, inputId: 'primary' });
+        if (repository.memoryOnlyAccounts?.has(accountScope)) {
+          throw new Error('Native input-draft storage is unavailable; memory fallback cannot confirm durable cleanup');
+        }
+        const persisted = repository.memory.snapshotAccountRecords(accountScope);
+        const ownedKeys = new Set(snapshot.fileKeys);
+        return persisted.flatMap(record => Object.values(record?.units || {})
+          .flatMap(unit => unit?.payload?.items || []))
+          .map(item => item.fileKey)
+          .filter(key => typeof key === 'string' && ownedKeys.has(key));
+      },
+    }, snapshot.fileKeys);
   })()`);
 }

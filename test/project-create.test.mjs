@@ -12,7 +12,7 @@ function clientFor({ deviceId = 'current', mutate, readback } = {}) {
   const calls = [];
   let project;
   const req = id => {
-    if (id === 101) return { th: () => ({ createProject: async (input, options) => {
+    if (id === 424242) return { th: () => ({ createProject: async (input, options) => {
       calls.push(JSON.parse(JSON.stringify({ input, options })));
       if (mutate) return mutate(input, options);
       project = { project_id: '123', name: input.name, status: 1, folders: input.folders?.map(f => ({
@@ -21,12 +21,12 @@ function clientFor({ deviceId = 'current', mutate, readback } = {}) {
       })) };
       return { projectId: '123', operationId: options.operationId };
     } }) };
-    if (id === 102) return { U: async () => ({ deviceId, deviceName: 'This Mac' }) };
+    if (id === 8001) return { U: async () => ({ deviceId, deviceName: 'This Mac' }) };
     throw new Error('Unexpected module ' + id);
   };
   req.m = {
-    101: { toString: () => 'th: IM_PROJECT_SERVICE_UNAVAILABLE async createProject(' },
-    102: { toString: () => 'U: project_shared_get_device_error getDeviceInfo()' },
+    424242: { toString: () => 'r.d(e,{th:()=>X});class ProjectStoreService{async createProject(e,t){} async deleteProject(e,t){}}' },
+    8001: { toString: () => 'U: project_shared_get_device_error getDeviceInfo()' },
   };
   const context = vm.createContext({ URL, crypto, setTimeout, clearTimeout, AbortSignal,
     performance: { getEntriesByType: () => [{ name: `https://www.doubao.com/im/project/list?aid=${currentApp().aid}&device_id=current` }] },
@@ -63,7 +63,7 @@ test('project input validates official weighted name limit and existing director
   assert.equal(parseOptions(['--platform', 'work', 'projects', 'create', 'demo', '--workspace', '.', '--json']).workspace, '.');
 });
 
-test('folderless creation uses the official service once and verifies its exact id', async () => {
+test('folderless creation discovers the moved service export, calls it once, and verifies its exact id', async () => {
   const client = clientFor();
   const result = await createProject(client, { name: '  demo  ' });
   assert.equal(result.id, '123'); assert.equal(result.name, 'demo'); assert.deepEqual(result.folders, []);
