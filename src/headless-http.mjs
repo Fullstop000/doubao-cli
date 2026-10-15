@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { parseFeatureJson, encodeFeatureRequest } from './features.mjs';
 
+export const HEADLESS_PROTOCOL_VERSION = '2.32.10';
 export const HEADLESS_ORIGIN = 'https://www.doubao.com';
 const HOSTS = new Set(['www.doubao.com', 'doubao.com', 'passport.doubao.com']);
 
@@ -94,7 +96,7 @@ export class HeadlessClient {
     // This is adapter compatibility metadata; no desktop executable is used.
     const passport = url.pathname.startsWith('/passport/') || url.pathname === '/';
     for (const [key, value] of Object.entries({ aid: passport ? '497858' : '1044603', device_platform: 'web', samantha_web: '1',
-      ...(!passport ? { pc_version: '2.31.10', doubao_pc_version: '2.31.10' } : {}),
+      ...(!passport ? { pc_version: HEADLESS_PROTOCOL_VERSION, doubao_pc_version: HEADLESS_PROTOCOL_VERSION } : {}),
       version_code: '20800', language: 'zh', region: 'CN', sys_region: 'CN', ...this.device, ...params })) {
       url.searchParams.set(key, String(value));
     }
@@ -109,9 +111,10 @@ export class HeadlessClient {
     return response;
   }
   async json(route, options = {}) {
+    if (route.startsWith('/alice/job_cron/') && options.body) options = { ...options, body: encodeFeatureRequest(JSON.parse(options.body)) };
     const response = await this.request(route, options);
     if (!response.ok) throw new Error(`Doubao HTTP request failed (${response.status})`);
-    try { return await response.json(); }
+    try { return route.startsWith('/alice/job_cron/') ? parseFeatureJson(await response.text()) : await response.json(); }
     catch (error) {
       if (error.name === 'AbortError' || error.name === 'TimeoutError') throw error;
       throw new Error('Doubao returned an invalid JSON response');

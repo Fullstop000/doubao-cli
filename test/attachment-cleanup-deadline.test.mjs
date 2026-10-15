@@ -53,12 +53,19 @@ test('does not start cleanup evaluation when the command deadline is exhausted',
   }, {}, 'accepted', { deadline: Date.now() - 1 }), /operation deadline expired/);
 });
 
-test('caps cleanup polling sleeps at the remaining budget', async () => {
-  const start = Date.now();
-  await assert.rejects(removeAttachmentsByUploadKey({
-    list: () => [], remove: () => assert.fail('no owned records'), readDurable: () => [],
-  }, ['owned'], { timeoutMs: 20, intervalMs: 10_000 }), /Could not identify/);
-  assert.ok(Date.now() - start < 1000);
+test('caps cleanup polling sleeps at the remaining budget', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+  const timers = t.mock.method(globalThis, 'setTimeout');
+  const cleanup = removeAttachmentsByUploadKey({
+    list: () => { t.mock.timers.setTime(1007); return []; },
+    remove: () => assert.fail('no owned records'), readDurable: () => [],
+  }, ['owned'], { timeoutMs: 20, intervalMs: 10_000 });
+  const rejected = assert.rejects(cleanup, /Could not identify/);
+  // Let discovery settle so the only live timer is the polling sleep.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(timers.mock.calls.map(call => call.arguments[1]), [20, 13]);
+  t.mock.timers.tick(13);
+  await rejected;
 });
 
 test('bounds a hung cleanup evaluation with the remaining command budget', async () => {

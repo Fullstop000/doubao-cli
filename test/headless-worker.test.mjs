@@ -90,46 +90,49 @@ test('forwards memory-only cookie auth through the environment, never argv or lo
   }
 });
 
-test('submission worker returns verified ACK while its detached child continues after IPC disconnect', async () => {
-  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'doubao-headless-submit-worker-'));
-  const workerPath = path.join(root, 'fixture-worker.mjs');
-  const proofPath = path.join(root, 'worker-proof.json');
-  const cookie = 'fixture-memory-cookie-never-print';
-  await fs.writeFile(workerPath, `import fs from 'node:fs/promises';\n` +
-    `process.on('message', async message => {\n` +
-    `  if (message.type !== 'start') return;\n` +
-    `  process.send({ type: 'accepted', result: { platform: 'headless', mode: 'work', conversationId, runId, localMessageId, status: 'running', accepted: true, reply: null } });\n` +
-    `  process.on('disconnect', async () => {\n` +
-    `    await new Promise(resolve => setTimeout(resolve, 100));\n` +
-    `    await fs.writeFile(process.env.FIXTURE_PROOF, JSON.stringify({ aliveAfterDisconnect: true, cookieInherited: process.env.DOUBAO_HEADLESS_COOKIE === process.env.FIXTURE_COOKIE, argvSecretFree: !process.argv.join(' ').includes(process.env.FIXTURE_COOKIE), optionsReceived: message.options.args.join(' ') }), { mode: 0o600 });\n` +
-    `    setTimeout(() => process.exit(0), 100);\n` +
-    `  });\n` +
-    `});\n` +
-    `const conversationId = '${conversationId}', runId = '${runId}', localMessageId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';\n`, { mode: 0o600 });
-  const configDir = path.join(root, 'config');
-  const result = await startHeadlessSubmissionWorker({
-    options: { args: ['sessions', 'create', 'fixture message'], profile: 'fixture', timeoutMs: 1000 },
-    configDir, expectedAccountId: '123456', ackTimeoutMs: 5_000, workerPath,
-    env: { HOME: root, PATH: process.env.PATH, DOUBAO_HEADLESS_COOKIE: cookie,
-      FIXTURE_COOKIE: cookie, FIXTURE_PROOF: proofPath },
+test('submission worker returns verified work and goal ACKs while its detached child continues after IPC disconnect', async t => {
+  for (const mode of ['work', 'goal']) await t.test(`${mode} mode`, async () => {
+    const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'doubao-headless-submit-worker-'));
+    const workerPath = path.join(root, 'fixture-worker.mjs');
+    const proofPath = path.join(root, 'worker-proof.json');
+    const cookie = 'fixture-memory-cookie-never-print';
+    await fs.writeFile(workerPath, `import fs from 'node:fs/promises';\n` +
+      `process.on('message', async message => {\n` +
+      `  if (message.type !== 'start') return;\n` +
+      `  const mode = message.options.mode || 'work';\n` +
+      `  process.send({ type: 'accepted', result: { platform: 'headless', mode, ...(mode === 'goal' ? { goalId: 'goal-fixture' } : {}), conversationId, runId, localMessageId, status: 'running', accepted: true, reply: null } });\n` +
+      `  process.on('disconnect', async () => {\n` +
+      `    await new Promise(resolve => setTimeout(resolve, 100));\n` +
+      `    await fs.writeFile(process.env.FIXTURE_PROOF, JSON.stringify({ aliveAfterDisconnect: true, cookieInherited: process.env.DOUBAO_HEADLESS_COOKIE === process.env.FIXTURE_COOKIE, argvSecretFree: !process.argv.join(' ').includes(process.env.FIXTURE_COOKIE), optionsReceived: message.options.args.join(' '), modeReceived: message.options.mode || null }), { mode: 0o600 });\n` +
+      `    setTimeout(() => process.exit(0), 100);\n` +
+      `  });\n` +
+      `});\n` +
+      `const conversationId = '${conversationId}', runId = '${runId}', localMessageId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';\n`, { mode: 0o600 });
+    const configDir = path.join(root, 'config');
+    const result = await startHeadlessSubmissionWorker({
+      options: { args: ['sessions', 'create', 'fixture message'], profile: 'fixture', timeoutMs: 1000, ...(mode === 'goal' ? { mode } : {}) },
+      configDir, expectedAccountId: '123456', ackTimeoutMs: 5_000, workerPath,
+      env: { HOME: root, PATH: process.env.PATH, DOUBAO_HEADLESS_COOKIE: cookie,
+        FIXTURE_COOKIE: cookie, FIXTURE_PROOF: proofPath },
+    });
+    assert.deepEqual({ accepted: result.accepted, mode: result.mode, ...(result.goalId ? { goalId: result.goalId } : {}),
+      conversationId: result.conversationId, runId: result.runId, localMessageId: result.localMessageId, status: result.status }, {
+      accepted: true, mode, ...(mode === 'goal' ? { goalId: 'goal-fixture' } : {}), conversationId, runId,
+      localMessageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'running',
+    });
+    assert.equal(result.child.connected, false);
+    assert.equal(result.child.spawnargs.join(' ').includes(cookie), false);
+    assert.equal((await fs.stat(result.logPath)).mode & 0o777, 0o600);
+    const deadline = Date.now() + 5_000;
+    let proof;
+    while (!proof && Date.now() < deadline) {
+      try { proof = JSON.parse(await fs.readFile(proofPath, 'utf8')); } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
+    }
+    assert.deepEqual(proof, { aliveAfterDisconnect: true, cookieInherited: true, argvSecretFree: true,
+      optionsReceived: 'sessions create fixture message', modeReceived: mode === 'goal' ? 'goal' : null });
+    assert.equal((await fs.readFile(result.logPath, 'utf8')).includes(cookie), false);
+    await fs.rm(root, { recursive: true, force: true });
   });
-  assert.deepEqual({ accepted: result.accepted, mode: result.mode, conversationId: result.conversationId,
-    runId: result.runId, localMessageId: result.localMessageId, status: result.status }, {
-    accepted: true, mode: 'work', conversationId, runId,
-    localMessageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'running',
-  });
-  assert.equal(result.child.connected, false);
-  assert.equal(result.child.spawnargs.join(' ').includes(cookie), false);
-  assert.equal((await fs.stat(result.logPath)).mode & 0o777, 0o600);
-  const deadline = Date.now() + 5_000;
-  let proof;
-  while (!proof && Date.now() < deadline) {
-    try { proof = JSON.parse(await fs.readFile(proofPath, 'utf8')); } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
-  }
-  assert.deepEqual(proof, { aliveAfterDisconnect: true, cookieInherited: true, argvSecretFree: true,
-    optionsReceived: 'sessions create fixture message' });
-  assert.equal((await fs.readFile(result.logPath, 'utf8')).includes(cookie), false);
-  await fs.rm(root, { recursive: true, force: true });
 });
 
 test('submission worker failure before ACK is returned without an accepted result', async () => {

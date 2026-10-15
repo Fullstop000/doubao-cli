@@ -109,11 +109,12 @@ function serializeMessage(value, maxLength = 1000) {
 
 function serializeSubmissionResult(value) {
   if (!value || typeof value !== 'object' || value.platform !== 'headless'
-    || !['chat', 'work'].includes(value.mode) || value.accepted !== true
+    || !['chat', 'work', 'goal'].includes(value.mode) || value.accepted !== true
     || value.status !== 'running' || value.reply !== null) return null;
   try {
     return {
       platform: 'headless', mode: value.mode,
+      ...(value.mode === 'goal' && typeof value.goalId === 'string' && /^[\w-]{1,128}$/u.test(value.goalId) ? { goalId: value.goalId } : {}),
       conversationId: validateId(value.conversationId, 'conversation id'),
       runId: validateId(value.runId, 'run id'),
       localMessageId: typeof value.localMessageId === 'string' && value.localMessageId.length > 0

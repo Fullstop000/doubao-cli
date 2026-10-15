@@ -6,6 +6,7 @@ import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 import { currentApp } from './app.mjs';
 import { defaultWorkspace, evaluateWithWatchdog, runtimeParameters } from './protocol.mjs';
 import { imRequest } from './turns.mjs';
+import { activeGoalFromExtra } from './features.mjs';
 
 const CONTEXT_BOOTSTRAP = `const req = await new Promise(resolve => {
   window['@flow-web/desktop:stable'].push([['doubao_context_' + crypto.randomUUID()], {}, resolve]);
@@ -140,7 +141,7 @@ export async function conversationContext(client, conversationId) {
   if (typeof agentParam === 'string') {
     try { agentParam = JSON.parse(agentParam); } catch { throw new Error('Doubao conversation execution context is invalid'); }
   }
-  return { agentParam: agentParam || null, projectId: conversation.project_reference?.project_id || '' };
+  return { agentParam: agentParam || null, projectId: conversation.project_reference?.project_id || '', activeGoalId: activeGoalFromExtra(extra) };
 }
 
 export function validateTaskOptions(options) {
@@ -174,7 +175,7 @@ export async function resolveTaskContext(client, conversationId, options = {}) {
   const workspace = runtime === 'local' ? path.resolve(selectedWorkspace || defaultWorkspace()) : undefined;
   if (options.workspace && (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory())) throw new Error(`workspace is not a directory: ${workspace}`);
   return { workspace, createWorkspace, taskContext: { runtime, projectId: project?.id || '', projectContext: context,
-    previousAgentParam: previous.agentParam, previousProjectId: previous.projectId,
+    previousAgentParam: previous.agentParam, previousProjectId: previous.projectId, activeGoalId: previous.activeGoalId,
     deviceId: local.deviceId, deviceName: local.deviceName,
     ...(options.enterpriseKnowledge ? { enterpriseSkill: await enterpriseSkill(client, runtime) } : {}) } };
 }
