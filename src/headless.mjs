@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import { requireGoalMode, GOAL_MIN_VERSION, activeGoalFromExtra } from './features.mjs';
+import { createScheduledTaskService } from './scheduled-tasks.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import qrcode from 'qrcode-terminal';
@@ -14,7 +16,7 @@ import { HeadlessLocalRuntime, buildHeadlessLocalTaskParam, prepareHeadlessLocal
 import { createHeadlessApproval } from './headless-approval.mjs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { CookieJar, HeadlessClient, consumeSse } from './headless-http.mjs';
+import { CookieJar, HeadlessClient, consumeSse, HEADLESS_PROTOCOL_VERSION } from './headless-http.mjs';
 import { qrLogin } from './headless-auth.mjs';
 import { reduceStreamEvent, updateLiveControls } from './protocol.mjs';
 import { messageText, readTurn, refreshTurn, waitTurn, stopTurn, receiptStore } from './turns.mjs';
@@ -35,6 +37,7 @@ export function validateHeadlessOptions(options) {
   if (options.cookieFile && command !== 'login') throw new Error('--cookie-file requires doubao headless login');
   const supported = ['login', 'logout', 'status', 'capabilities', 'models', 'profiles', 'usage', 'runtimes'].includes(command)
     || command === 'sessions' && ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(subcommand)
+    || command === 'automations' && ['list', 'get', 'create', 'update', 'delete'].includes(subcommand)
     || command === 'projects' && ['list', 'create'].includes(subcommand)
     || command === 'mcp' && ['register', 'list', 'remove'].includes(subcommand)
     || command === 'model' && (!subcommand || ['current', 'select', 'reasoning'].includes(subcommand));
@@ -70,8 +73,8 @@ async function signedInClient(timeoutMs, profile) {
   return client;
 }
 
-export function completionBody({ conversationId = '', message, mode = 'work', model, reasoning, taskContext, localTaskParam, attachmentBlocks = [], localMessageId = randomUUID() }) {
-  const work = mode === 'work';
+export function completionBody({ conversationId = '', message, mode = 'work', model, reasoning, taskContext, localTaskParam, attachmentBlocks = [], localMessageId = randomUUID(), goalId }) {
+  const work = mode !== 'chat';
   const generalTask = { action: 0, thread_local_message_id: [localMessageId], runtime_type: 1,
     agent_task_param: { runtime_type: 1 }, agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: false },
     need_modify_conversation: false, task_input_json: JSON.stringify({ schema_version: 1, project_context: {} }) };
@@ -97,6 +100,11 @@ export function completionBody({ conversationId = '', message, mode = 'work', mo
     if (projectChanged) generalTask.project_id = taskContext.projectId || '';
     generalTask.need_modify_conversation = existing && (projectChanged || Object.keys(next).some(key => previous[key] !== next[key]));
   }
+  if (mode === 'goal') {
+    if (!goalId) throw new Error('Goal mode requires a verified goal ID');
+    generalTask.action = 4;
+    generalTask.goal_param = { goal_id: goalId };
+  }
   const init = { need_ack_conversation: true };
   return {
     client_meta: { local_conversation_id: 'local_' + Date.now() + '_' + randomUUID(), conversation_id: conversationId,
@@ -107,11 +115,12 @@ export function completionBody({ conversationId = '', message, mode = 'work', mo
       recovery_option: { is_recovery: false, req_create_time_sec: Math.floor(Date.now() / 1000), append_sse_event_scene: 0 },
       need_create_conversation: !conversationId, is_old_user: true, message_from: 0,
       sse_recv_event_options: { support_chunk_delta: true }, general_task_param: generalTask,
+      ...(taskContext?.activeGoalId ? { active_goal_id: taskContext.activeGoalId } : {}),
       ...(!conversationId ? { conversation_init_option: init, conversation_init_ext: { mode_id: work ? '3' : '1', ...(model ? { model_item_key: model.id } : {}),
         ...(reasoning ? { reasoning_effort: reasoning } : {}), ...(localTaskParam ? { agent_task_param: JSON.stringify(localTaskParam.agent_task_param) } : {}) } } : {}),
       ...(model ? { model_config: { model_item_key: model.id, ...(reasoning ? { reasoning_effort: Number(reasoning) } : {}) },
         aggregate_params: { provider_id: model.provider || '', ...(reasoning ? { reasoning_effort: reasoning } : {}) } } : {}) },
-    ext: { general_task_param: JSON.stringify(generalTask), use_deep_think: String(model?.needDeepThink ?? (work ? 9 : 0)), agent_mode: work ? '1' : '2',
+    ext: { ...(taskContext?.activeGoalId ? { active_goal_id: taskContext.activeGoalId } : {}), ...(mode === 'goal' ? { leading_accessory_tags: JSON.stringify([{ tag: 'goal', display_text: '目标' }]) } : {}), general_task_param: JSON.stringify(generalTask), use_deep_think: String(model?.needDeepThink ?? (work ? 9 : 0)), agent_mode: work ? '1' : '2',
       sub_conv_firstmet_type: '1', collection_id: '', is_finish: '1', conversation_init_option: JSON.stringify(init), commerce_credit_config_enable: '0' },
     user_context: [],
   };
@@ -262,6 +271,8 @@ export async function executeHeadless(options) {
   if (command === 'capabilities') return { platform: 'headless', browserRequired: false, appRequired: false,
     login: ['terminal-qr', 'cookie-file'], sessions: ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'],
     runtime: ['cloud', 'local'], models: true, modelSelection: true, reasoning: true, profiles: true, usage: true,
+    goalMode: { supported: true, minimumVersion: GOAL_MIN_VERSION, protocolVersion: HEADLESS_PROTOCOL_VERSION, accountGate: 'goal_mode_enable' },
+    automations: ['list', 'get', 'create', 'update', 'delete'],
     attachments: true, localRuntime: true, mcp: true, projects: true, enterpriseKnowledgeSelection: true,
     note: 'open/current select the CLI conversation; model defaults are scoped to the profile and account' };
   if (command === 'profiles') {
@@ -296,6 +307,14 @@ export async function executeHeadless(options) {
     throw Object.assign(new Error('Headless account changed before background submission'), { code: 'account_changed' });
   }
   if (command === 'status') return { platform: 'headless', profile, loggedIn: true, loginRequired: false, accountId: client.accountId, browserRequired: false, appRequired: false };
+  if (command === 'automations') {
+    const service = createScheduledTaskService(client, { timeoutMs: remaining() });
+    const result = subcommand === 'list' ? { automations: await service.list() }
+      : subcommand === 'get' ? { automation: await service.get(operand) || null }
+      : subcommand === 'create' ? await service.create(options.automationInput)
+      : subcommand === 'update' ? await service.update(operand, options.automationInput) : await service.delete(operand);
+    return { platform: 'headless', ...result };
+  }
   if (command === 'usage') return { platform: 'headless', ...await readHeadlessUsage(client, remaining()) };
   if (command === 'runtimes') return { platform: 'headless', profile, runtimes: [
     { id: 'cloud', name: '云端', available: true },
@@ -370,6 +389,8 @@ export async function executeHeadless(options) {
     }
     const conversationId = subcommand === 'send' ? validateId(operand) : '';
     let mode = options.mode || 'work';
+    const goalId = mode === 'goal' ? randomUUID() : undefined;
+    if (goalId) await requireGoalMode(client, HEADLESS_PROTOCOL_VERSION, remaining());
     let previous = {};
     if (conversationId) {
       const snapshot = await readTurn(client, conversationId, { deadline });
@@ -388,8 +409,8 @@ export async function executeHeadless(options) {
     const selectedModel = options.model || (!conversationId ? state.defaults.modelId : undefined);
     const selectedReasoning = options.reasoning || (!conversationId ? state.defaults.reasoning : undefined);
     const reasoning = selectedReasoning ? resolveReasoningEffort(selectedReasoning).effort : undefined;
-    const model = selectedModel ? await resolveHeadlessModel(client, options.model ? { name: selectedModel } : { id: selectedModel }, mode, remaining())
-      : reasoning ? await resolveHeadlessModel(client, { id: previous.extra?.model_item_key || '9' }, mode, remaining()) : undefined;
+    const model = selectedModel ? await resolveHeadlessModel(client, options.model ? { name: selectedModel } : { id: selectedModel }, mode === 'goal' ? 'work' : mode, remaining())
+      : reasoning ? await resolveHeadlessModel(client, { id: previous.extra?.model_item_key || '9' }, mode === 'goal' ? 'work' : mode, remaining()) : undefined;
     const previousProjectId = previous.conversation?.project_reference?.project_id || '';
     const projectValue = options.project ?? previousProjectId;
     const project = projectValue && projectValue !== 'none' ? selectProject(await listHeadlessProjects(client, remaining()), projectValue) : null;
@@ -398,6 +419,7 @@ export async function executeHeadless(options) {
     const runtimeChoice = options.runtime || (localOptions || previousAgentParam.runtime_type === 2 ? 'local' : 'cloud');
     if (mode === 'chat' && (runtimeChoice === 'local' || project || options.enterpriseKnowledge)) throw new Error('Local runtime, projects and enterprise knowledge require --mode work');
     const taskContext = { runtime: runtimeChoice, projectId: project?.id || '', previousProjectId,
+      activeGoalId: activeGoalFromExtra(previous.extra),
       previousAgentParam: parseExtra(previous.extra?.agent_task_param), projectContext: projectContext(project, '', 'cloud'),
       ...(options.enterpriseKnowledge ? { enterpriseSkill: await headlessEnterpriseSkill(client, runtimeChoice, remaining()) } : {}) };
     if (runtimeChoice === 'local' && !options.wait && !options.backgroundWorker) {
@@ -409,6 +431,7 @@ export async function executeHeadless(options) {
         options: { ...options, runtime: 'local' }, configDir: workerConfigDir, expectedAccountId: client.accountId, ackTimeoutMs: remaining(),
       });
       const accepted = { platform: worker.platform, mode: worker.mode, conversationId: worker.conversationId, runId: worker.runId,
+        ...(worker.goalId ? { goalId: worker.goalId } : {}),
         localMessageId: worker.localMessageId, status: worker.status, accepted: true, reply: null };
       try { await updateHeadlessState({ profile, accountId: client.accountId, currentConversationId: accepted.conversationId }); }
       catch (error) { throw acceptedLocalFailure(error, accepted); }
@@ -448,7 +471,7 @@ export async function executeHeadless(options) {
       }
       const attachmentBlocks = options.attachments?.length
         ? await uploadHeadlessAttachments(client, await resolveAttachmentFiles(options.attachments), remaining()) : [];
-      const body = completionBody({ conversationId, message, mode, model, reasoning, taskContext, localTaskParam, attachmentBlocks });
+      const body = completionBody({ conversationId, message, mode, goalId, model, reasoning, taskContext, localTaskParam, attachmentBlocks });
       // Establish the sandbox route before submit. Opening it after ACK can
       // miss the initial workspace command on a device without a native app.
       if (localRuntime) {
@@ -472,7 +495,7 @@ export async function executeHeadless(options) {
         }
         if (receipt.accepted && !reportedAcceptance && options.onAccepted) {
           reportedAcceptance = true;
-          options.onAccepted({ platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
+          options.onAccepted({ platform: 'headless', mode, ...(goalId ? { goalId } : {}), conversationId: receipt.conversationId, runId: receipt.runId,
             localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null });
         }
       };
@@ -519,7 +542,7 @@ export async function executeHeadless(options) {
           } catch (error) { throw acceptedLocalFailure(error, receipt); }
         }
         await connectors?.close();
-        return { platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
+        return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), conversationId: receipt.conversationId, runId: receipt.runId,
           localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null };
       }
       let engine;
@@ -527,7 +550,7 @@ export async function executeHeadless(options) {
         if (localRuntime) engine = await (enginePromise || startLocalRuntime(client, profile, receipt, connectors, remaining()));
         const result = await waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline,
           onReceipt: checkpoint, loadReceipt: run => store.read(receipt.conversationId, run) });
-        return { platform: 'headless', mode, context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
+        return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
           projectId: project?.id || null, enterpriseKnowledge: Boolean(taskContext.enterpriseSkill) }, accepted: true, ...result };
       } finally { await engine?.close(); }
     } finally {

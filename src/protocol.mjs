@@ -157,7 +157,13 @@ export function conversationExt(model, localMessageId, workspace, options = {}) 
       gtp.skill_selections = [{ name: skill.name, skill_type: skill.type, skill_id: skill.externalId }];
     }
   }
+  if (options.goalId) {
+    gtp.action = 4;
+    gtp.goal_param = { goal_id: options.goalId };
+  }
   return {
+    ...(context?.activeGoalId ? { active_goal_id: context.activeGoalId } : {}),
+    ...(options.goalId ? { leading_accessory_tags: JSON.stringify([{ tag: 'goal', display_text: '目标' }]) } : {}),
     general_task_param: JSON.stringify(gtp),
     use_deep_think: String(model.ndt),
     agent_mode: '1',
@@ -294,6 +300,7 @@ const SEND_EXPRESSION = `(async () => {
         is_old_user: true,
         message_from: 0,
         sse_recv_event_options: { support_chunk_delta: true },
+        ...(args.ext?.active_goal_id ? { active_goal_id: args.ext.active_goal_id } : {}),
         conversation_init_option: !args.conversationId ? JSON.parse(args.ext.conversation_init_option) : undefined,
         conversation_init_ext: !args.conversationId
           ? { model_item_key: args.model.key, reasoning_effort: args.reasoningEffort || '5', mode_id: '3',
@@ -504,7 +511,7 @@ export function defaultWorkspace() {
   return `${HOME}/${currentApp().name}/chats/${new Date().toISOString().slice(0, 10)}/cli-${Date.now()}`;
 }
 
-export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt, onReceipt, resumeRequest, runId, taskContext, attachmentBlocks }) {
+export async function sendChatCompletion(client, { conversationId, message, model, reasoningEffort, timeoutMs, waitForReply = true, workspace, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, localConversationId, localMessageId, debug, withExt, onReceipt, resumeRequest, runId, taskContext, attachmentBlocks, goalId }) {
   const runtime = await runtimeParameters(client);
   localMessageId ||= crypto.randomUUID();
   const receiptBinding = client.subscribe && onReceipt ? '__doubaoReceipt_' + crypto.randomUUID().replaceAll('-', '') : null;
@@ -537,7 +544,7 @@ export async function sendChatCompletion(client, { conversationId, message, mode
     ext: !resumeRequest && (createNew || withExt || taskContext)
       ? conversationExt(model, localMessageId || '%LOCAL_MESSAGE_ID%',
         workspace || defaultWorkspace(),
-        { taskContext, existingConversation: !createNew, clientEnvId: runtime.clientEnvId, deviceId: runtime.params.device_id, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
+        { taskContext, goalId, existingConversation: !createNew, clientEnvId: runtime.clientEnvId, deviceId: runtime.params.device_id, skillPaths, permission, localConnectors, sandboxId, sharedFolderPath, updatePermission: !createNew && Boolean(sandboxId) })
       : null,
   });
   let result;

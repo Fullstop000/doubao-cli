@@ -1,4 +1,5 @@
 import { currentApp } from './app.mjs';
+import { desktopVersion, rendererJsonClient, requireGoalMode } from './features.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { uploadAttachmentsFromClient, uploadedAttachmentBlocks, clearUploadedAttachments } from './attachments.mjs';
 import { withChatClient } from './cdp.mjs';
@@ -242,6 +243,10 @@ export async function stopConversation(id, options = {}) {
 // A receipt identifies the accepted turn even if the streaming connection is lost.
 async function sendTracked(client, request, options) {
   const deadline = Date.now() + request.timeoutMs;
+  if (options.mode === 'goal') {
+    await requireGoalMode(await rendererJsonClient(client), desktopVersion(), request.timeoutMs);
+    request.goalId = crypto.randomUUID();
+  }
   const resolved = await resolveTaskContext(client, request.conversationId, options);
   Object.assign(request, resolved);
   if (resolved.taskContext.runtime === 'local' && !options.mcps?.length) {
@@ -256,6 +261,7 @@ async function sendTracked(client, request, options) {
   }
   request.timeoutMs = remainingMilliseconds(deadline, request.timeoutMs);
   const taskContext = publicTaskContext(resolved.taskContext, resolved.workspace);
+  const goal = request.goalId ? { mode: 'goal', goalId: request.goalId } : {};
   const store = await receiptStore(client);
   let receipt = {};
   const onReceipt = next => {
@@ -277,8 +283,8 @@ async function sendTracked(client, request, options) {
     }
   }
   if (!receipt.conversationId || !receipt.runId) throw new Error('Doubao did not identify the accepted turn');
-  if (!request.waitForReply) return { context: taskContext, conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
-  return { ...await waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) }), context: taskContext };
+  if (!request.waitForReply) return { ...goal, context: taskContext, conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
+  return { ...await waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) }), ...goal, context: taskContext };
 }
 
 export async function taskStatus(id, options = {}) {
@@ -383,6 +389,7 @@ export async function sendMessage(id, message, options = {}) {
 export async function createConversation(message, options = {}) {
   const timeoutMs = options.timeoutMs || 120_000;
   const deadline = Date.now() + timeoutMs;
+  if (options.mode === 'goal' && !message?.trim()) throw new Error('--mode goal requires a message');
   const hasMessage = typeof message === 'string' && message.length > 0;
   if (hasMessage) validateMessage(message);
   validateTaskOptions(options);

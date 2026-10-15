@@ -1,3 +1,5 @@
+import { createScheduledTaskService, validateScheduledTaskCreate, validateScheduledTaskPatch } from './scheduled-tasks.mjs';
+import { rendererJsonClient, goalAvailability, desktopVersion, GOAL_MIN_VERSION } from './features.mjs';
 import fs from 'node:fs';
 import { readUsage, formatUsage } from './usage.mjs';
 import path from 'node:path';
@@ -40,7 +42,7 @@ const HELP = `Usage:
   doubao projects create <name> [--workspace <path>] [--json]
   doubao sessions list [--profile <name>] [--json]
   doubao sessions current [--profile <name>] [--json]
-  doubao sessions create [message] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
+  doubao sessions create [message] [--mode goal] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
   doubao sessions send <conversation-id> <message> [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
@@ -62,6 +64,11 @@ const HELP = `Usage:
   doubao update auto <on|off|status> [--json]
   doubao update notify <on|off|status> [--json]
   doubao capabilities [--json]
+  doubao automations list [--json]
+  doubao automations get <id> [--json]
+  doubao automations create --file <json-path> [--json]
+  doubao automations update <id> --file <json-path> [--json]
+  doubao automations delete <id> [--json]
   doubao web <command> [options]  Web commands; run "doubao web help"
   doubao headless <command> [options]  Browser-free commands; run "doubao headless help"
 
@@ -78,7 +85,7 @@ Application:
   --app work|doubao  Select an app (default: Work if installed, otherwise Doubao)
   --platform work|doubao|web|headless  Select a backend; web and headless namespaces are compatibility aliases
   --target <id>  Select a Doubao web CDP page when several tabs match
-  --mode chat|work  Select the mode for a new web or headless conversation
+  --mode chat|work|goal  Select a new conversation mode (goal: Desktop/Headless, Doubao >=2.32.10)
 
 Environment:
   DOUBAO_APP       Override the application path
@@ -95,6 +102,11 @@ const HEADLESS_HELP = `Usage:
   doubao headless logout [--json]
   doubao headless status [--json]
   doubao headless capabilities [--json]
+  doubao headless automations list [--json]
+  doubao headless automations get <id> [--json]
+  doubao headless automations create --file <json-path> [--json]
+  doubao headless automations update <id> --file <json-path> [--json]
+  doubao headless automations delete <id> [--json]
   doubao headless profiles [--json]
   doubao headless usage [--profile <name>] [--timeout <seconds>] [--json]
   doubao headless runtimes [--json]
@@ -104,7 +116,7 @@ const HEADLESS_HELP = `Usage:
   doubao headless sessions current [--profile <name>] [--json]
   doubao headless sessions open <conversation-id> [--profile <name>] [--json]
   doubao headless sessions read <conversation-id> [--limit <count>] [--json]
-  doubao headless sessions create <message> [--mode chat|work] [--model <model-name>] [--wait] [--timeout <seconds>] [--json]
+  doubao headless sessions create <message> [--mode chat|work|goal] [--model <model-name>] [--wait] [--timeout <seconds>] [--json]
   doubao headless sessions send <conversation-id> <message> [--model <model-name>] [--wait] [--timeout <seconds>] [--json]
   doubao headless sessions status <conversation-id> [--run <run-id>] [--json]
   doubao headless sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
@@ -126,7 +138,7 @@ Help:
   --  Treat the remaining arguments as literal text, including help and --help.
 
 Options:
-  --mode chat|work  Select the mode for a new conversation
+  --mode chat|work|goal  Select the mode for a new conversation
   --model <model-name>  Select an available model by its exact name from headless models
   --reasoning low|medium|high|xhigh|max  Set reasoning effort
   --profile <name>  Select a separate saved Headless account profile
@@ -259,6 +271,7 @@ export function parseOptions(argv) {
   let headlessNamespace = false;
   let targetId;
   let mode;
+  let inputFile;
   let cookieFile;
   let json = false;
   let yes = false;
@@ -307,9 +320,12 @@ export function parseOptions(argv) {
     } else if (argv[index] === '--target') {
       targetId = argv[++index];
       if (!targetId || targetId.startsWith('-')) throw new Error('--target requires a CDP target id');
+    } else if (argv[index] === '--file') {
+      inputFile = argv[++index];
+      if (!inputFile || inputFile.startsWith('-')) throw new Error('--file requires a JSON path');
     } else if (argv[index] === '--mode') {
       mode = argv[++index];
-      if (!['chat', 'work'].includes(mode)) throw new Error('--mode requires chat or work');
+      if (!['chat', 'work', 'goal'].includes(mode)) throw new Error('--mode requires chat or work (or goal on Desktop/Headless)');
     } else if (argv[index] === '--cookie-file') {
       cookieFile = argv[index + 1];
       if (!cookieFile || cookieFile.startsWith('--')) throw new Error('--cookie-file requires a file path');
@@ -402,7 +418,7 @@ export function parseOptions(argv) {
     platform = 'headless';
   }
   if (app && platform && app !== platform) throw new Error('--app and --platform select different backends');
-  const options = { args, app, platform, targetId, mode, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
+  const options = { args, app, platform, targetId, mode, inputFile, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
   const selectedPlatform = platform || app || (process.platform === 'linux' ? 'headless' : undefined);
   const helpPlatform = selectedPlatform;
   const positionalArgs = args.slice(0, literalStart ?? args.length);
@@ -418,8 +434,15 @@ export function parseOptions(argv) {
   const backend = selectedPlatform === 'web' || selectedPlatform === 'headless' ? selectedPlatform : 'desktop';
   validateOptionContract({ ...options, explicitOptions: [...explicitOptions] }, backend);
   if (targetId && !['web', 'headless'].includes(selectedPlatform)) throw new Error('--target requires doubao web (or --platform web)');
-  if (mode && !((selectedPlatform === 'web' || selectedPlatform === 'headless') && args[0] === 'sessions' && args[1] === 'create')) {
-    throw new Error('--mode requires doubao web sessions create or doubao headless sessions create (or a matching --platform selector)');
+  if (mode && backend === 'desktop' && mode !== 'goal') throw new Error('--mode requires goal on Desktop; chat/work require Web or Headless sessions create');
+  if (mode === 'goal' && selectedPlatform === 'web') throw new Error('Goal mode is not supported on doubao web');
+  if (mode === 'goal' && !args.slice(2).join(' ').trim()) throw new Error('--mode goal requires a message');
+  if (args[0] === 'automations' && ['create', 'update'].includes(args[1])) {
+    if (!inputFile) throw new Error('automations create/update requires --file <json-path>');
+    let input;
+    try { input = JSON.parse(fs.readFileSync(inputFile, 'utf8')); }
+    catch (error) { throw new Error(`Cannot read automation JSON: ${error.message}`); }
+    options.automationInput = args[1] === 'create' ? validateScheduledTaskCreate(input) : validateScheduledTaskPatch(input);
   }
   if (runId && (args[0] !== 'sessions' || !['status', 'wait', 'stop'].includes(args[1]))) throw new Error('--run requires sessions status/wait/stop');
   if (args[0] === 'projects' && args[1] === 'create') {
@@ -599,7 +622,7 @@ export async function main(argv) {
   if (options.profile && !['web', 'headless'].includes(app.id)) {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
-    const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage'].includes(command)
+    const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage', 'automations'].includes(command)
       || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop', 'status', 'wait'].includes(subcommand));
     if (usesRenderer && app.profile !== readProfiles(app.dataDir).lastUsed) {
       throw new Error(`Profile ${app.profile} is not active in ${app.name}; switch profiles in the app before automating it`);
@@ -734,10 +757,28 @@ async function run(options) {
     return;
   }
 
+  if (command === 'automations') {
+    const result = await withChatClient(async client => {
+      const service = createScheduledTaskService(await rendererJsonClient(client), { timeoutMs });
+      if (subcommand === 'list') return { automations: await service.list() };
+      if (subcommand === 'get') return { automation: await service.get(operand) || null };
+      if (subcommand === 'create') return service.create(options.automationInput);
+      if (subcommand === 'update') return service.update(operand, options.automationInput);
+      return service.delete(operand);
+    });
+    output(result, json);
+    return;
+  }
+
   if (command === 'capabilities') {
     const cdp = await cdpStatus();
+    const goalMode = cdp.available
+      ? await withChatClient(async client => goalAvailability(await rendererJsonClient(client), desktopVersion())).catch(error => ({ available: false, minimumVersion: GOAL_MIN_VERSION, reason: error.message }))
+      : { available: false, minimumVersion: GOAL_MIN_VERSION, reason: 'cdp_unavailable' };
     const capabilities = {
       status: true,
+      goalMode,
+      automations: cdp.available,
       listSessions: true,
       detectCurrentSession: true,
       openSession: true,
@@ -774,6 +815,8 @@ async function run(options) {
       console.log(`attachments upload\t${capabilities.uploadAttachments ? 'yes' : 'no'}`);
       console.log(`models select\t${capabilities.selectModels ? 'yes' : 'no'}`);
       console.log(`usage\t${capabilities.usage ? 'yes' : 'no'}`);
+      console.log(`goal mode\t${goalMode.available ? 'yes' : 'no'}`);
+      console.log(`automations\t${capabilities.automations ? 'yes' : 'no'}`);
       console.log('self update\tyes');
       console.log('automatic updates\tyes');
       console.log(`note\t${capabilities.note}`);
@@ -999,6 +1042,7 @@ async function run(options) {
   if (subcommand === 'create') {
     const message = args.slice(2).join(' ');
     const result = validateReplyOption(await createConversation(message, {
+      mode: options.mode,
       attachments,
       model,
       reasoning,
