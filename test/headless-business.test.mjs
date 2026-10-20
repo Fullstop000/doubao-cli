@@ -16,6 +16,17 @@ const NEXT_CONVERSATION = '38439138239851268';
 const RUN = '38439138239851267';
 const HEADLESS_APP = resolvePlatform('headless');
 
+test('new cloud conversations bind the project in both initialization fields', () => {
+  for (const projectId of ['project-42', '', undefined]) {
+    const body = completionBody({ message: 'fixture', taskContext: { projectId } });
+    const expected = { need_ack_conversation: true, ...(projectId ? { project_id: projectId } : {}) };
+    assert.equal(body.option.need_create_conversation, true);
+    assert.deepEqual(body.option.conversation_init_option, expected);
+    assert.deepEqual(JSON.parse(body.ext.conversation_init_option), expected);
+    assert.equal(body.option.general_task_param.need_modify_conversation, false);
+  }
+});
+
 test('existing task changes persist runtime, device, permission, workspace and project after local parameter merging', () => {
   const local = { runtime_type: 2, local_device_id: '1234567890123', local_app_id: '1044603', sandbox_auth_type: 0, workspace: '/tmp/fixture' };
   const build = (previous, next, extra = {}) => completionBody({ conversationId: CONVERSATION, message: 'fixture',
@@ -278,6 +289,8 @@ test('confirmed model selection becomes the new-conversation default and task co
   ])));
   assert.equal(created.accepted, true);
   const [body] = requests;
+  assert.equal(body.option.conversation_init_option.project_id, 'project-42');
+  assert.equal(JSON.parse(body.ext.conversation_init_option).project_id, 'project-42');
   assert.equal(body.option.conversation_init_ext.model_item_key, 'model-new');
   assert.equal(body.option.conversation_init_ext.reasoning_effort, '6');
   assert.equal(body.option.model_config.reasoning_effort, 6);

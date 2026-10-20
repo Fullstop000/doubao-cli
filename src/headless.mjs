@@ -97,7 +97,7 @@ export function completionBody({ conversationId = '', message, mode = 'work', mo
     if (projectChanged) generalTask.project_id = taskContext.projectId || '';
     generalTask.need_modify_conversation = existing && (projectChanged || Object.keys(next).some(key => previous[key] !== next[key]));
   }
-  const init = { need_ack_conversation: true };
+  const init = { need_ack_conversation: true, ...(taskContext?.projectId ? { project_id: taskContext.projectId } : {}) };
   return {
     client_meta: { local_conversation_id: 'local_' + Date.now() + '_' + randomUUID(), conversation_id: conversationId,
       bot_id: '7338286299411103781', last_section_id: '', last_message_index: null },
