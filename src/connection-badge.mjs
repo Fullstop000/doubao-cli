@@ -5,8 +5,12 @@ const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.met
 export const BADGE_ID = 'doubao-cli-connection';
 
 // Runs in the selected desktop renderer. Keep dynamic values out of HTML.
-function updateBadge(id, connection, connected) {
+function updateBadge(id, connection, connected, enabled) {
   let host = document.getElementById(id);
+  if (!enabled) {
+    if (host) { clearInterval(host.healthTimer); host.remove(); }
+    return;
+  }
   if (!host && !connected) return;
   if (!document.body) return;
   if (!host) {
@@ -100,12 +104,13 @@ function updateBadge(id, connection, connected) {
   host.refresh();
 }
 
-export function badgeExpression(connection, connected = true) {
-  return `(${updateBadge.toString()})(${JSON.stringify(BADGE_ID)}, ${JSON.stringify(connection)}, ${connected})`;
+export function badgeExpression(connection, connected = true, enabled = true) {
+  return `(${updateBadge.toString()})(${JSON.stringify(BADGE_ID)}, ${JSON.stringify(connection)}, ${connected}, ${enabled})`;
 }
 
 // Cosmetic CDP calls have a separate, short deadline and never fail the command.
-export async function startConnectionBadge(client, { app, profile, endpoint }) {
+export async function startConnectionBadge(client, { app, profile, endpoint }, env = process.env) {
+  const enabled = env.DOUBAO_CLI_CONNECTION_BADGE === '1';
   const connection = { id: randomUUID(), app, profile, endpoint, version: VERSION, pid: process.pid };
   let stopped = false;
   let pending = false;
@@ -115,7 +120,7 @@ export async function startConnectionBadge(client, { app, profile, endpoint }) {
     let timer;
     try {
       const request = Promise.resolve().then(() => client.send('Runtime.evaluate', {
-        expression: badgeExpression(connection, connected), returnByValue: true,
+        expression: badgeExpression(connection, connected, enabled), returnByValue: true,
       })).finally(() => { if (connected) pending = false; });
       await Promise.race([
         request,
@@ -127,6 +132,10 @@ export async function startConnectionBadge(client, { app, profile, endpoint }) {
   const heartbeat = async () => {
     if (!stopped) await evaluate(true);
   };
+  if (!enabled) {
+    await evaluate(false);
+    return async () => {};
+  }
   await heartbeat();
   const timer = setInterval(heartbeat, 2000);
   timer.unref();
