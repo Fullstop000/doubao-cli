@@ -97,6 +97,8 @@ Mutations return `verified: true` only after readback matches. Errors retain a k
 
 2026-10-15 acceptance: Work 2.32.10 and Headless both completed goal turns in cloud and local runtimes. Headless local also returned a detached submission ACK and subsequently read back as completed; one 60-second wait timed out before that readback. Both backends passed task create/get/update/delete with cross-backend readback. All temporary automatic tasks were deleted; the original eight tasks remained. This verifies turn execution and CRUD, not final goal lifecycle state or future scheduled execution.
 
+2026-10-20 compatibility: Work 2.33.1 passed cloud/local goal turns and automatic-task CRUD. Headless passed CRUD and cloud goals; a goal in a temporary project retained its project binding, and the project was deleted after verification. Headless local waiting now observes the server turn while the tool channel starts, so a goal with no tool calls can complete without waiting for SSE headers. Local no-tool and file-write/readback goals both passed. A repeated file-write test exceeded its 90-second wait, then completed through recovery of the same accepted run without resending. Recovery of an already completed local turn also passed. All temporary automatic tasks were deleted; the original 45 tasks remained.
+
 ## Models, reasoning and usage
 
 ```bash

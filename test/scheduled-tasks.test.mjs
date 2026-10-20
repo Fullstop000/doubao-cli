@@ -19,7 +19,7 @@ function fixture(handler) {
     calls.push(call);
     return handler(call, calls.length);
   } };
-  return { calls, service: createScheduledTaskService(client, { timeoutMs: 4321, headers: { 'x-test': 'yes' }, uuid: () => 'local-id' }) };
+  return { calls, service: createScheduledTaskService(client, { timeoutMs: 4321, headers: { 'x-test': 'yes' }, uuid: () => 'local-id', now: () => 1000 }) };
 }
 
 test('create input matches the supported scheduled task schema and rejects unsupported fields', () => {

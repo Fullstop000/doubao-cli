@@ -13,6 +13,23 @@ const text = value => ({ block_type: 10000, content: { text_block: { text: value
 const task = thread => ({ block_type: 10090, content: { complex_task_block: { thread_id: thread, display_type: 'organizer' } } });
 const reply = (index, blocks, extra = {}) => ({ message_id: String(56310000000000000n + BigInt(index)), index_in_conv: String(index), user_type: 2, bot_reply_message_id: runId, content_block: blocks, ext: { is_finish: '1' }, ...extra });
 
+test('an aborted waiter performs no lookup or recovery', async () => {
+ const controller = new AbortController(), failure = new Error('local startup failed');
+ controller.abort(failure);
+ await assert.rejects(waitTurn({ imRequest: () => assert.fail('waiter must stop before lookup') }, id,
+   { runId, signal: controller.signal }), error => error === failure);
+});
+
+test('a waiter aborted during lookup does not write receipts or resume the request', async () => {
+ const controller = new AbortController();
+ const client = { imRequest: async () => {
+   controller.abort(new Error('local startup failed'));
+   return { batch_get_conv_info_downlink_body: { conversation_info_list: [{ conversation_id: id, messages: [root] }] } };
+ }, resumeCompletion: () => assert.fail('must not resume after abort') };
+ await assert.rejects(waitTurn(client, id, { runId, signal: controller.signal, receipt: { requestBody: {} },
+   onReceipt: () => assert.fail('must not write after abort') }), /local startup failed/u);
+});
+
 test('does not finish on a delegation message even after child completion; selects final summary', () => {
  const first = reply(2, [text('delegated'), task('thread')]);
  const nodes = [{ threadId:'thread', status:'completed', messages:[] }];

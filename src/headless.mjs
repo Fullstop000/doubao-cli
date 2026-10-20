@@ -1,4 +1,7 @@
 import fs from 'node:fs/promises';
+import { completionBody } from './headless-completion.mjs';
+export { completionBody } from './headless-completion.mjs';
+import { waitWithLocalRuntime } from './headless-turn.mjs';
 import { requireGoalMode, GOAL_MIN_VERSION, activeGoalFromExtra } from './features.mjs';
 import { createScheduledTaskService } from './scheduled-tasks.mjs';
 import path from 'node:path';
@@ -73,66 +76,13 @@ async function signedInClient(timeoutMs, profile) {
   return client;
 }
 
-export function completionBody({ conversationId = '', message, mode = 'work', model, reasoning, taskContext, localTaskParam, attachmentBlocks = [], localMessageId = randomUUID(), goalId }) {
-  const work = mode !== 'chat';
-  const generalTask = { action: 0, thread_local_message_id: [localMessageId], runtime_type: 1,
-    agent_task_param: { runtime_type: 1 }, agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: false },
-    need_modify_conversation: false, task_input_json: JSON.stringify({ schema_version: 1, project_context: {} }) };
-  if (taskContext) {
-    generalTask.task_input_json = JSON.stringify({ schema_version: 1, project_context: taskContext.projectContext || {} });
-    if (taskContext.enterpriseSkill) {
-      const skill = taskContext.enterpriseSkill;
-      generalTask.selected_skills = [skill.name];
-      generalTask.skill_selections = [{ name: skill.name, skill_type: skill.type, skill_id: skill.externalId }];
-    }
-  }
-  if (localTaskParam) Object.assign(generalTask, localTaskParam, { thread_local_message_id: [localMessageId] });
-  if (taskContext) {
-    const previous = taskContext.previousAgentParam || {};
-    const next = generalTask.agent_task_param;
-    const existing = Boolean(conversationId);
-    generalTask.agent_task_param_change = {
-      runtime_changed: existing && previous.runtime_type !== next.runtime_type,
-      device_changed: existing && ((previous.local_device_id || '') !== (next.local_device_id || '') || (previous.local_app_id || '') !== (next.local_app_id || '')),
-      sandbox_auth_type_changed: existing && previous.sandbox_auth_type !== next.sandbox_auth_type,
-    };
-    const projectChanged = existing && (taskContext.previousProjectId || '') !== (taskContext.projectId || '');
-    if (projectChanged) generalTask.project_id = taskContext.projectId || '';
-    generalTask.need_modify_conversation = existing && (projectChanged || Object.keys(next).some(key => previous[key] !== next[key]));
-  }
-  if (mode === 'goal') {
-    if (!goalId) throw new Error('Goal mode requires a verified goal ID');
-    generalTask.action = 4;
-    generalTask.goal_param = { goal_id: goalId };
-  }
-  const init = { need_ack_conversation: true, ...(taskContext?.projectId ? { project_id: taskContext.projectId } : {}) };
-  return {
-    client_meta: { local_conversation_id: 'local_' + Date.now() + '_' + randomUUID(), conversation_id: conversationId,
-      bot_id: '7338286299411103781', last_section_id: '', last_message_index: null },
-    messages: [{ local_message_id: localMessageId, content_block: [{ block_type: 10000,
-      content: { text_block: { text: message } }, block_id: randomUUID() }, ...attachmentBlocks], message_status: 0 }],
-    option: { create_time_ms: Date.now(), agent_mode: work ? 1 : 2, need_deep_think: model?.needDeepThink ?? (work ? 9 : 0), unique_key: randomUUID(),
-      recovery_option: { is_recovery: false, req_create_time_sec: Math.floor(Date.now() / 1000), append_sse_event_scene: 0 },
-      need_create_conversation: !conversationId, is_old_user: true, message_from: 0,
-      sse_recv_event_options: { support_chunk_delta: true }, general_task_param: generalTask,
-      ...(taskContext?.activeGoalId ? { active_goal_id: taskContext.activeGoalId } : {}),
-      ...(!conversationId ? { conversation_init_option: init, conversation_init_ext: { mode_id: work ? '3' : '1', ...(model ? { model_item_key: model.id } : {}),
-        ...(reasoning ? { reasoning_effort: reasoning } : {}), ...(localTaskParam ? { agent_task_param: JSON.stringify(localTaskParam.agent_task_param) } : {}) } } : {}),
-      ...(model ? { model_config: { model_item_key: model.id, ...(reasoning ? { reasoning_effort: Number(reasoning) } : {}) },
-        aggregate_params: { provider_id: model.provider || '', ...(reasoning ? { reasoning_effort: reasoning } : {}) } } : {}) },
-    ext: { ...(taskContext?.activeGoalId ? { active_goal_id: taskContext.activeGoalId } : {}), ...(mode === 'goal' ? { leading_accessory_tags: JSON.stringify([{ tag: 'goal', display_text: '目标' }]) } : {}), general_task_param: JSON.stringify(generalTask), use_deep_think: String(model?.needDeepThink ?? (work ? 9 : 0)), agent_mode: work ? '1' : '2',
-      sub_conv_firstmet_type: '1', collection_id: '', is_finish: '1', conversation_init_option: JSON.stringify(init), commerce_credit_config_enable: '0' },
-    user_context: [],
-  };
-}
-
-export async function streamCompletion(client, body, { timeoutMs, waitForReply = false, onReceipt = () => {}, runId = '' } = {}) {
+export async function streamCompletion(client, body, { timeoutMs, waitForReply = false, onReceipt = () => {}, runId = '', signal } = {}) {
   const state = { conversationId: body.client_meta.conversation_id, runId, localMessageId: body.messages[0].local_message_id,
     answer: '', thinking: '', completed: false, handoffs: [], liveMessages: [], requestBody: body, accepted: false, requestDispatched: false };
   const checkpoint = () => onReceipt({ ...state });
   try {
     state.requestDispatched = true;
-    const response = await client.request('/chat/completion', { method: 'POST', timeoutMs,
+    const response = await client.request('/chat/completion', { method: 'POST', timeoutMs, ...(signal ? { signal } : {}),
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     await consumeSse(response, async (event, data) => {
       if (event === 'SSE_ACK') {
@@ -490,7 +440,7 @@ export async function executeHeadless(options) {
         if (localRuntime && options.wait && receipt.accepted && receipt.conversationId && !enginePromise) {
           const initialResponse = localChannel;
           localChannel = null;
-          enginePromise = initialResponse.then(response => startLocalRuntime(client, profile, receipt, connectors, remaining(), response));
+          enginePromise = initialResponse.then(response => startLocalRuntime(client, profile, receipt, connectors, remaining(), response, localChannelAbort?.signal));
           enginePromise.catch(() => {});
         }
         if (receipt.accepted && !reportedAcceptance && options.onAccepted) {
@@ -545,14 +495,15 @@ export async function executeHeadless(options) {
         return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), conversationId: receipt.conversationId, runId: receipt.runId,
           localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null };
       }
-      let engine;
       try {
-        if (localRuntime) engine = await (enginePromise || startLocalRuntime(client, profile, receipt, connectors, remaining()));
-        const result = await waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline,
+        const wait = signal => waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline, signal,
           onReceipt: checkpoint, loadReceipt: run => store.read(receipt.conversationId, run) });
+        const result = localRuntime ? await waitWithLocalRuntime(wait,
+          () => enginePromise ||= startLocalRuntime(client, profile, receipt, connectors, remaining(), undefined, localChannelAbort?.signal),
+          { abortStartup: () => localChannelAbort?.abort() }) : await wait();
         return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
           projectId: project?.id || null, enterpriseKnowledge: Boolean(taskContext.enterpriseSkill) }, accepted: true, ...result };
-      } finally { await engine?.close(); }
+      } catch (error) { throw acceptedLocalFailure(error, receipt); }
     } finally {
       localChannelAbort?.abort();
       await localChannel?.then(response => response.body?.cancel()).catch(() => {});
@@ -563,17 +514,21 @@ export async function executeHeadless(options) {
   const conversationId = validateId(operand);
   const pinned = await readTurn(client, conversationId, { runId: options.runId, deadline });
   const receipt = { ...store.read(conversationId, pinned.result.runId), conversationId, runId: pinned.result.runId };
-  let engine, connectors;
-  if (subcommand === 'wait' && receipt.localRuntime) {
+  let connectors;
+  const needsRuntime = subcommand === 'wait' && receipt.localRuntime && !['completed', 'failed', 'cancelled'].includes(pinned.result.status);
+  const runtimeAbort = new AbortController();
+  if (needsRuntime) {
     if (receipt.localRuntime.connectorIds?.length) connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining() });
-    engine = await startLocalRuntime(client, profile, receipt, connectors, remaining());
   }
   const operation = subcommand === 'wait' ? waitTurn : subcommand === 'stop' ? stopTurn : refreshTurn;
   try {
-    const result = await operation(client, conversationId, { runId: receipt.runId, receipt, deadline, timeoutMs: remaining(),
+    const wait = signal => operation(client, conversationId, { runId: receipt.runId, receipt, deadline, timeoutMs: remaining(), signal,
       onReceipt: next => store.save(next), loadReceipt: run => store.read(conversationId, run) });
+    const result = needsRuntime ? await waitWithLocalRuntime(wait,
+      () => startLocalRuntime(client, profile, receipt, connectors, remaining(), undefined, runtimeAbort.signal),
+      { abortStartup: () => runtimeAbort.abort() }) : await wait();
     return { platform: 'headless', ...(result.result || result) };
-  } finally { await engine?.close(); await connectors?.close(); }
+  } finally { runtimeAbort.abort(); await connectors?.close(); }
 }
 
 function acceptedLocalFailure(error, receipt) {
@@ -583,7 +538,7 @@ function acceptedLocalFailure(error, receipt) {
   return error;
 }
 
-async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs, initialResponse) {
+async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs, initialResponse, signal) {
   const spec = receipt.localRuntime;
   // Memory-only authentication creates fresh device metadata per CLI process.
   // A resumed local task must retain the original caller's routing device.
@@ -592,7 +547,7 @@ async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs
     requestTimeoutMs: timeoutMs, initialResponse, callConnector: connectors ? input => connectors.call(input) : undefined,
     approve: createHeadlessApproval({ input: process.stdin, output: process.stderr,
       interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY), workspace: spec.workspace }) });
-  try { await engine.start({ signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }); return engine; }
+  try { await engine.start({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, timeoutMs))]) : AbortSignal.timeout(Math.max(1, timeoutMs)) }); return engine; }
   catch (error) { await engine.close(); if (error.code === 'LOCAL_RUNTIME_BUSY') return null; throw error; }
 }
 

@@ -87,6 +87,16 @@ test('headless completion body encodes a verified goal and requires its ID', () 
   assert.throws(() => completionBody({ mode: 'goal', message: 'Plan this' }), /requires a verified goal ID/u);
 });
 
+test('a new headless goal preserves project binding in both initialization fields', () => {
+  const body = completionBody({ mode: 'goal', message: 'Plan this', goalId: 'goal-uuid',
+    taskContext: { runtime: 'cloud', projectId: 'project-42' } });
+  const expected = { need_ack_conversation: true, project_id: 'project-42' };
+  assert.deepEqual(body.option.conversation_init_option, expected);
+  assert.deepEqual(JSON.parse(body.ext.conversation_init_option), expected);
+  assert.equal(body.option.general_task_param.action, 4);
+  assert.equal(body.option.general_task_param.goal_param.goal_id, 'goal-uuid');
+});
+
 test('follow-up payloads carry a singular active goal without changing the turn action', () => {
   const taskContext = { activeGoalId: 'goal-active' };
   const headless = completionBody({ conversationId: '123456789012', message: 'Continue', taskContext });
