@@ -13,6 +13,8 @@ If the CLI is missing: `npm install --global doubao-cli@latest` (or prefix comma
 
 Use `doubao headless <command>` on Linux or macOS to select Headless explicitly; `doubao --platform headless <command>` is equivalent. Linux also accepts unprefixed commands. On macOS, keep the `headless` prefix on login, session operations and recovery. `--runtime cloud` does not switch the backend.
 
+Legacy `doubao web <command>` and `--platform web` select the same Headless backend, credentials and profiles. Browser login sessions are not imported; run `doubao headless login` to sign in. Browser `--target` and `web cdp` commands are unsupported.
+
 ```bash
 doubao headless login                  # Terminal QR; approve on the phone
 doubao headless status --json
@@ -88,10 +90,6 @@ Pass `--json` to every data-returning command when another program consumes the 
 | Switch model | `doubao model select <model> --json` or per-send `--model <model>` |
 | Set reasoning effort | `doubao model reasoning <level> --json` or `--reasoning <level>` on select/send/create |
 | Update the CLI | `doubao update` (`update check`, `update auto on`; reminders: `update notify on|off|status`) |
-
-## Web compatibility alias
-
-`doubao web <command>` and `doubao --platform web <command>` run Headless with the same help, options, credentials and profiles. They do not start or connect to Chrome. Use `doubao web login` for Headless terminal QR sign-in; browser login sessions are not imported. Browser `--target` and `web cdp` commands are unsupported. Prefer the `headless` prefix for new scripts.
 
 ## Behavior notes
 
