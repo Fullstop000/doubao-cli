@@ -2,7 +2,7 @@
 
 ## Install
 
-Node.js 22+. Desktop: macOS + DoubaoWork.app or Doubao.app. Web: macOS + Chrome. Headless: Linux or macOS.
+Node.js 22+. Desktop: macOS + DoubaoWork.app or Doubao.app. Headless: Linux or macOS.
 
 ```bash
 npm install --global doubao-cli@latest
@@ -16,7 +16,7 @@ doubao --version
 | `doubao` on Linux | Headless |
 | `doubao` on macOS | Work if installed, otherwise Doubao |
 | `doubao headless` | Headless |
-| `doubao web` | Web |
+| `doubao web` / `doubao --platform web` | Headless (compatibility aliases) |
 | `doubao --app work` / `doubao --app doubao` | Selected desktop app |
 
 Keep the same backend, account and profile for each conversation.
@@ -26,19 +26,18 @@ Keep the same backend, account and profile for each conversation.
 ```bash
 doubao cdp launch                    # macOS desktop
 doubao headless login
-doubao web login
 doubao status --json
 ```
 
 - Desktop: sign in in the app; keep the chat window open. Restart requires confirmation (`--yes` for scripts).
 - Headless: scan and approve the terminal QR in the Doubao mobile app; `login --cookie-file <path>` also accepts saved cookies.
-- Web: sign in in Chrome; select multiple matching tabs with `--target <id>` from `web cdp status --json`.
+- `web` commands use the same login, profiles and settings as Headless. Browser login sessions are not imported; run `doubao web login` to sign in. Browser `--target` and `web cdp` commands are unsupported.
 
 [Headless options](docs/headless.md)
 
 ## Commands
 
-Prefix with `headless` or `web` as needed. Use `--json` for data output, `--help` for command options, and `--` before literal option-like messages.
+Prefix with `headless` as needed; `web` remains a compatibility alias. Use `--json` for data output, `--help` for command options, and `--` before literal option-like messages.
 
 ```bash
 doubao help
@@ -58,7 +57,7 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 
 | Option | Values / restrictions |
 | --- | --- |
-| `--mode` | `goal` on Desktop/Headless; `chat`, `work` on Headless/Web; create only |
+| `--mode` | `goal` on Desktop/Headless; `chat`, `work` on Headless; create only |
 | `--runtime` | `local`, `cloud`; task execution, not backend selection |
 | `--model` | Exact name from `models`; Desktop/Headless |
 | `--reasoning` | `low`, `medium`, `high`, `xhigh`, `max`; Desktop/Headless; send requires `--model` |
@@ -106,7 +105,7 @@ doubao automations delete <id> --json
 
 Goal mode requires Doubao 2.32.10+ and the account's `goal_mode_enable` flag. This is a conservative compatibility floor based on the verified desktop protocol; Headless uses the same protocol revision without requiring an installed app. Follow-ups inherit the conversation's active goal. `sessions wait/status` track a turn; turn completion does not establish goal completion.
 
-`task.json` contains the native task fields; `patch.json` contains only the fields to change. See [JSON examples and supported fields](docs/headless.md#automatic-tasks). Create, update and delete verify server readback. An unconfirmed operation retains its ID/operation ID; inspect `list/get` before retrying. Web does not support these commands.
+`task.json` contains the native task fields; `patch.json` contains only the fields to change. See [JSON examples and supported fields](docs/headless.md#automatic-tasks). Create, update and delete verify server readback. An unconfirmed operation retains its ID/operation ID; inspect `list/get` before retrying.
 
 ## Projects and runtime
 
@@ -165,9 +164,7 @@ Auto-update defaults off. `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` disables automatic 
 | --- | --- |
 | `DOUBAO_APP` | Desktop app path |
 | `DOUBAO_DATA_DIR` | App data directory |
-| `DOUBAO_CDP_ENDPOINT` | CDP URL; Work 9226, Doubao 9225, Web 9227 |
-| `DOUBAO_BROWSER_APP` | Web browser app; default `/Applications/Google Chrome.app` |
-| `DOUBAO_WEB_PROFILE_DIR` | Web browser data directory |
+| `DOUBAO_CDP_ENDPOINT` | Desktop CDP URL; Work 9226, Doubao 9225 |
 | `DOUBAO_CLI_CONFIG_DIR` | Settings and recovery directory |
 | `XDG_CONFIG_HOME` | Linux settings root; default `~/.config` |
 | `DOUBAO_HEADLESS_COOKIE` | Headless Cookie header; secret |

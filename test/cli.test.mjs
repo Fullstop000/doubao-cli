@@ -43,19 +43,19 @@ test('documents model selection commands', () => {
   assert.match(result.stdout, /doubao projects create <name> \[--workspace <path>\]/u);
 });
 
-test('web namespace preserves the legacy backend options and literal message text', () => {
+test('web namespace redirects to headless and preserves literal message text', () => {
   for (const operation of [
-    ['login'], ['status'], ['capabilities'], ['cdp', 'status'], ['cdp', 'launch'],
+    ['login'], ['status'], ['capabilities'],
     ['sessions', 'list'], ['sessions', 'current'],
     ['sessions', 'create', '--mode', 'work', '--runtime', 'cloud', '--wait', '--', 'web', '--model'],
     ['sessions', 'send', '38439138239851266', 'web', '--wait', '--expect-json'],
     ...['open', 'read', 'status', 'wait', 'stop'].map(command => ['sessions', command, '38439138239851266']),
   ]) {
     const flags = ['--json'];
-    if (operation[0] !== 'capabilities') flags.push('--target', 'selected-web-tab');
     if (operation[0] === 'login' || operation[0] === 'sessions' && ['open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(operation[1])) flags.push('--timeout', '3');
     assert.deepEqual(parseOptions(['web', ...flags, ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
     assert.deepEqual(parseOptions(['--json', 'web', ...flags.slice(1), ...operation]), parseOptions(['--platform', 'web', ...flags, ...operation]));
+    assert.deepEqual(parseOptions(['web', ...flags, ...operation]), parseRawOptions(['headless', ...flags, ...operation]));
   }
   assert.deepEqual(parseOptions(['sessions', 'create', 'web']).args, ['sessions', 'create', 'web']);
   const literal = parseOptions(['--', 'web', 'status']);
@@ -68,9 +68,11 @@ test('web namespace rejects conflicting desktop selectors and unsupported option
     assert.throws(() => parseOptions(['web', ...selector, 'status']), /doubao web conflicts/u);
     assert.throws(() => parseOptions([...selector, 'web', 'status']), /doubao web conflicts/u);
   }
-  assert.equal(parseOptions(['web', '--platform', 'web', 'status']).platform, 'web');
-  assert.throws(() => parseOptions(['web', 'sessions', 'create', 'must not send', '--model', 'Turbo']), /not supported/u);
-  assert.throws(() => parseOptions(['web', 'status', '--unknown']), /Unknown Web option/u);
+  assert.equal(parseOptions(['web', '--platform', 'web', 'status']).platform, 'headless');
+  assert.equal(parseOptions(['web', 'sessions', 'create', 'must not send', '--model', 'Turbo']).model, 'Turbo');
+  assert.throws(() => parseOptions(['web', 'status', '--unknown']), /Unknown Headless option/u);
+  assert.throws(() => parseOptions(['web', 'status', '--target', 'old-tab']), /--target is not supported/u);
+  assert.throws(() => parseOptions(['web', 'cdp', 'launch']), /not supported on doubao headless/u);
   assert.throws(() => parseOptions(['web', 'login', 'someone']), /accepts no positional arguments/u);
   assert.throws(() => parseOptions(['web', 'login', '--wait']), /--wait requires sessions create\/send/u);
   assert.throws(() => parseOptions(['web', 'sessions', 'read', '38439138239851266', '--mode', 'work']), /--mode requires/u);
@@ -82,11 +84,11 @@ test('web help is scoped and runs without connecting to a browser', () => {
       encoding: 'utf8', env: { ...process.env, DOUBAO_CDP_ENDPOINT: 'http://127.0.0.1:1', DOUBAO_CLI_DISABLE_AUTO_UPDATE: '1' },
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /doubao web sessions create/u);
-    assert.match(result.stdout, /doubao web login \[--timeout <seconds>\]/u);
-    assert.match(result.stdout, /doubao web sessions wait/u);
-    assert.match(result.stdout, /--platform web <command> remains supported/u);
-    assert.doesNotMatch(result.stdout, /doubao profiles|doubao mcp register|--permission <mode>/u);
+    assert.match(result.stdout, /doubao headless sessions create/u);
+    assert.match(result.stdout, /doubao headless login/u);
+    assert.match(result.stdout, /doubao headless sessions wait/u);
+    assert.match(result.stdout, /--platform web are aliases for Headless/u);
+    assert.doesNotMatch(result.stdout, /CDP|opened browser|--target/u);
   }
   const version = spawnSync(process.execPath, [cliPath.pathname, 'web', '--version'], { encoding: 'utf8' });
   assert.equal(version.status, 0, version.stderr);
@@ -105,7 +107,9 @@ test('every desktop and web command exposes scoped help before executing', () =>
   ];
   const web = ['login', 'status', 'capabilities', 'sessions',
     ...['list', 'current', 'create', 'open', 'read', 'send', 'status', 'wait', 'stop'].map(action => `sessions ${action}`),
-    'cdp', 'cdp status', 'cdp launch', 'update', 'update check', 'update auto', 'version'];
+    'projects', 'projects list', 'projects create', 'mcp', 'mcp register', 'mcp list', 'mcp remove',
+    'model', 'model current', 'model select', 'model reasoning', 'automations', 'automations list',
+    'update', 'update check', 'update auto', 'version'];
   for (const [prefix, topics, isWeb] of [[['--platform', 'doubao'], desktop, false], [['web'], web, true]]) {
     for (const topic of topics) {
       const argv = [...prefix, ...topic.split(' '), '--help'];
@@ -117,9 +121,9 @@ test('every desktop and web command exposes scoped help before executing', () =>
       assert.match(result.stdout, /^Usage:\n/u);
       assert.equal(result.stderr, '');
       const usage = topic === 'version' ? '--version' : topic;
-      assert.ok(result.stdout.includes(`  doubao${isWeb ? ' web' : ''} ${usage}`), argv.join(' '));
+      assert.ok(result.stdout.includes(`  doubao${isWeb ? ' headless' : ''} ${usage}`), argv.join(' '));
       if (topic === 'sessions create') assert.doesNotMatch(result.stdout, /sessions send/u);
-      if (isWeb) assert.doesNotMatch(result.stdout, /--permission|--profile|--app/u);
+      if (isWeb) assert.doesNotMatch(result.stdout, /--target|--app/u);
     }
   }
 });
@@ -137,7 +141,7 @@ test('help aliases select the same command and work with operands and backend se
     ['--platform', 'web', 'sessions', 'send', '--help'],
   ]) {
     const options = parseOptions(argv);
-    assert.equal(options.platform, 'web');
+    assert.equal(options.platform, 'headless');
     assert.deepEqual(options.helpPath, ['sessions', 'send']);
   }
   for (const argv of [['--', 'help'], ['--', '--help']]) assert.deepEqual(parseOptions(argv).helpPath, []);
@@ -195,7 +199,7 @@ test('help and help flags after -- or consumed as option values remain literal',
 test('unknown help topics and conflicting backend selectors fail before executing', () => {
   for (const argv of [
     ['typo', '--help'], ['sessions', 'typo', '--help'], ['help', 'typo'],
-    ['web', 'projects', 'create', '--help'], ['web', 'mcp', '--help'],
+    ['web', 'cdp', '--help'],
   ]) assert.throws(() => parseOptions(argv), /Unknown help topic/u);
   assert.throws(() => parseOptions(['web', '--app', 'work', 'sessions', '--help']), /conflicts/u);
 });

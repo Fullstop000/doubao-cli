@@ -28,7 +28,6 @@ import { validateReply, validateSchema } from './validate.mjs';
 import { resolvePermission } from './permissions.mjs';
 import { createProject, listProjects, projectCreationInput, runtimeAvailability, validateTaskOptions } from './context.mjs';
 import { currentApp, resolvePlatform, withApp } from './app.mjs';
-import { executeWeb, validateWebOptions } from './web.mjs';
 import { executeHeadless, validateHeadlessOptions } from './headless.mjs';
 import { headlessOptionsForHelp, validateOptionContract } from './options-contract.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -69,7 +68,7 @@ const HELP = `Usage:
   doubao automations create --file <json-path> [--json]
   doubao automations update <id> --file <json-path> [--json]
   doubao automations delete <id> [--json]
-  doubao web <command> [options]  Web commands; run "doubao web help"
+  doubao web <command> [options]  Compatibility alias for "doubao headless"
   doubao headless <command> [options]  Browser-free commands; run "doubao headless help"
 
 Help:
@@ -83,16 +82,13 @@ Local task execution permission (requires --runtime local or --mcp):
 
 Application:
   --app work|doubao  Select an app (default: Work if installed, otherwise Doubao)
-  --platform work|doubao|web|headless  Select a backend; web and headless namespaces are compatibility aliases
-  --target <id>  Select a Doubao web CDP page when several tabs match
+  --platform work|doubao|headless  Select a backend; web is an alias for headless
   --mode chat|work|goal  Select a new conversation mode (goal: Desktop/Headless, Doubao >=2.32.10)
 
 Environment:
   DOUBAO_APP       Override the application path
   DOUBAO_DATA_DIR  Override the Doubao user-data directory
-  DOUBAO_CDP_ENDPOINT  CDP endpoint (Work: 9226; Doubao: 9225; Web: 9227)
-  DOUBAO_BROWSER_APP  Web browser app path (default: Google Chrome.app)
-  DOUBAO_WEB_PROFILE_DIR  Dedicated browser data directory for web launch
+  DOUBAO_CDP_ENDPOINT  Desktop CDP endpoint (Work: 9226; Doubao: 9225)
   DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
   DOUBAO_CLI_CONNECTION_BADGE  Set to 1 to show the desktop connection badge (default: hidden)
   DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip automatic updates and reminders
@@ -164,63 +160,16 @@ Account:
 
 Compatibility:
   doubao --platform headless <command> remains supported.
-  Run "doubao help" for desktop and update commands.
-`;
-
-const WEB_HELP = `Usage:
-  doubao web login [--timeout <seconds>] [--json]
-  doubao web status [--json]
-  doubao web capabilities [--json]
-  doubao web sessions list [--json]
-  doubao web sessions current [--json]
-  doubao web sessions open <conversation-id> [--json]
-  doubao web sessions read <conversation-id> [--limit <count>] [--json]
-  doubao web sessions create [message] [--mode chat|work] [--runtime cloud] [--wait] [--json]
-  doubao web sessions send <conversation-id> <message> [--runtime cloud] [--wait] [--json]
-  doubao web sessions status <conversation-id> [--run <run-id>] [--json]
-  doubao web sessions wait <conversation-id> [--run <run-id>] [--timeout <seconds>] [--expect-json] [--reply-schema <path>] [--json]
-  doubao web sessions stop <conversation-id> [--run <run-id>] [--timeout <seconds>] [--json]
-  doubao web cdp status [--json]
-  doubao web cdp launch [--json]
-  doubao web update [--json]
-  doubao web update check [--json]
-  doubao web update auto <on|off|status> [--json]
-  doubao web update notify <on|off|status> [--json]
-  doubao web --version
-
-Help:
-  Add --help or -h to any command, or use help <command>.
-  --  Treat the remaining arguments as literal text, including help and --help.
-
-Options:
-  --target <id>  Select a browser page when several Doubao tabs match
-  --mode chat|work  Select the mode for a new conversation
-  --runtime cloud  Work conversations only; local execution is unsupported
-  --timeout <seconds>  Request or wait budget (default: 120)
-  --expect-json / --reply-schema <path>  Validate the final reply; create/send require --wait
-  --  Treat the remaining arguments as message text
-
-Browser:
-  Run "doubao web login" once, then complete sign-in in the opened browser.
-  It starts or reuses the browser and waits for login (default: 120 seconds).
-  Uses the signed-in dedicated browser; credentials are not copied.
-  The browser connection is managed internally (default: http://127.0.0.1:9227).
-  DOUBAO_CDP_ENDPOINT, DOUBAO_BROWSER_APP and DOUBAO_WEB_PROFILE_DIR configure it.
-  Attachments, model selection and desktop task settings are unsupported.
-
-Compatibility:
-  doubao --platform web <command> remains supported.
-  doubao web cdp status / cdp launch remain available for advanced setup.
+  doubao web <command> and --platform web are aliases for Headless, including login.
   Run "doubao help" for desktop and update commands.
 `;
 
 function helpEntries(platform) {
-  const web = platform === 'web';
   const headless = platform === 'headless';
-  const prefix = web ? '  doubao web ' : headless ? '  doubao headless ' : '  doubao ';
-  const helpText = web ? WEB_HELP : headless ? HEADLESS_HELP : HELP;
+  const prefix = headless ? '  doubao headless ' : '  doubao ';
+  const helpText = headless ? HEADLESS_HELP : HELP;
   return helpText.split('\n\n')[0].split('\n').slice(1)
-    .filter(line => line.startsWith(prefix) && (web || headless || !line.startsWith('  doubao web ') && !line.startsWith('  doubao headless ')))
+    .filter(line => line.startsWith(prefix) && (headless || !line.startsWith('  doubao web ') && !line.startsWith('  doubao headless ')))
     .map(line => {
       const tokens = line.slice(prefix.length).split(' ');
       const end = tokens.findIndex(token => ['<', '[', '-'].some(prefix => token.startsWith(prefix)));
@@ -242,18 +191,15 @@ function helpCommandPath(args, platform) {
 }
 
 function commandHelp(helpPath, platform) {
-  const web = platform === 'web';
   const headless = platform === 'headless';
-  if (!helpPath.length) return web ? WEB_HELP : headless ? HEADLESS_HELP : HELP;
+  if (!helpPath.length) return headless ? HEADLESS_HELP : HELP;
   const lines = helpPath[0] === 'version'
-    ? [`  doubao${web ? ' web' : headless ? ' headless' : ''} --version`]
+    ? [`  doubao${headless ? ' headless' : ''} --version`]
     : helpEntries(platform).filter(entry => helpPath.every((token, index) => entry.path[index] === token)).map(entry => entry.line);
-  const options = web
-    ? '  --target <id>  Select a browser page\n  --json  Output results as JSON'
-    : headless
-      ? [...headlessOptionsForHelp(helpPath), '  --json  Output results as JSON'].join('\n')
-    : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|web  Select a backend\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
-  const permission = !web && !headless && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
+  const options = headless
+    ? [...headlessOptionsForHelp(helpPath), '  --json  Output results as JSON'].join('\n')
+    : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|headless  Select a backend (web aliases headless)\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
+  const permission = !headless && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
     ? `\n\nLocal task execution permission${HELP.split('\n\nLocal task execution permission')[1].split('\n\nApplication:')[0]}`
     : '';
   return `Usage:\n${lines.join('\n')}\n\nOptions:\n${options}\n  -h, --help  Show help without executing the command\n  --  Treat the remaining arguments as literal text${permission}\n`;
@@ -408,10 +354,11 @@ export function parseOptions(argv) {
       if (argv[index].startsWith('-')) unknownFlags.push(argv[index]);
     }
   }
+  if (platform === 'web') platform = 'headless';
   if (webNamespace) {
-    if (platform && platform !== 'web') throw new Error(`doubao web conflicts with --platform ${platform}`);
+    if (platform && platform !== 'headless') throw new Error(`doubao web conflicts with --platform ${platform}`);
     if (app) throw new Error(`doubao web conflicts with --app ${app}`);
-    platform = 'web';
+    platform = 'headless';
   }
   if (headlessNamespace) {
     if (platform && platform !== 'headless') throw new Error(`doubao headless conflicts with --platform ${platform}`);
@@ -432,11 +379,9 @@ export function parseOptions(argv) {
   }
   if (help) return { ...options, helpPath: helpCommandPath(positionalArgs, helpPlatform) };
   if (!positionalArgs.length && ['help', '--help', '-h'].includes(args[0])) return { ...options, helpPath: [] };
-  const backend = selectedPlatform === 'web' || selectedPlatform === 'headless' ? selectedPlatform : 'desktop';
+  const backend = selectedPlatform === 'headless' ? 'headless' : 'desktop';
   validateOptionContract({ ...options, explicitOptions: [...explicitOptions] }, backend);
-  if (targetId && !['web', 'headless'].includes(selectedPlatform)) throw new Error('--target requires doubao web (or --platform web)');
   if (mode && backend === 'desktop' && mode !== 'goal') throw new Error('--mode requires goal on Desktop; chat/work require Web or Headless sessions create');
-  if (mode === 'goal' && selectedPlatform === 'web') throw new Error('Goal mode is not supported on doubao web');
   if (mode === 'goal' && !args.slice(2).join(' ').trim()) throw new Error('--mode goal requires a message');
   if (args[0] === 'automations' && ['create', 'update'].includes(args[1])) {
     if (!inputFile) throw new Error('automations create/update requires --file <json-path>');
@@ -483,7 +428,6 @@ export function parseOptions(argv) {
       throw new Error('--expect-json and --reply-schema require a message');
     }
   }
-  if (selectedPlatform === 'web') validateWebOptions(options);
   if (cookieFile && (selectedPlatform !== 'headless' || args[0] !== 'login')) throw new Error('--cookie-file requires doubao headless login');
   if (selectedPlatform === 'headless') validateHeadlessOptions(options);
   return options;
@@ -620,7 +564,7 @@ export async function main(argv) {
   const selectedPlatform = options.platform || options.app || (process.platform === 'linux' ? 'headless' : undefined);
   const app = resolvePlatform(selectedPlatform);
   if (options.targetId) app.targetId = options.targetId;
-  if (options.profile && !['web', 'headless'].includes(app.id)) {
+  if (options.profile && app.id !== 'headless') {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
     const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage', 'automations'].includes(command)
@@ -637,8 +581,7 @@ export async function main(argv) {
     try { return await run(options); }
     catch (error) {
       if (!error.result) throw error;
-      if (app.id === 'web' && options.args[0] === 'login' && !options.json) console.error(`doubao: ${error.message}`);
-      else output({ ...error.result, error: error.code || 'task_error', message: error.message }, options.json);
+      output({ ...error.result, error: error.code || 'task_error', message: error.message }, options.json);
       process.exitCode = 1;
     }
     finally {
@@ -654,7 +597,7 @@ async function run(options) {
   const [command, subcommand, operand] = args;
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
-    console.log(currentApp().id === 'web' ? WEB_HELP : currentApp().id === 'headless' ? HEADLESS_HELP : HELP);
+    console.log(currentApp().id === 'headless' ? HEADLESS_HELP : HELP);
     return;
   }
   if (command === 'version' || command === '--version' || command === '-v') {
@@ -727,16 +670,6 @@ async function run(options) {
     if (json) output(result, true);
     else if (result.updated) console.log(`updated\t${result.latestVersion}`);
     else console.log(`up to date\t${result.currentVersion}`);
-    return;
-  }
-
-  if (currentApp().id === 'web') {
-    const result = await executeWeb(options);
-    const validated = validateReplyOption(result, { expectJson, replySchema }, options.schema);
-    if ((wait || command === 'sessions' && subcommand === 'wait') && validated.status && validated.status !== 'completed') process.exitCode = 1;
-    if (command === 'cdp' && subcommand === 'status' && !validated.available) process.exitCode = 1;
-    if (command === 'sessions' && subcommand === 'stop' && validated.stopped === false) process.exitCode = 1;
-    output(command === 'login' && !json ? 'Doubao Web is signed in and ready.' : validated, json);
     return;
   }
 

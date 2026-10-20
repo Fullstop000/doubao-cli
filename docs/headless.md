@@ -15,6 +15,7 @@ doubao headless sessions list --json
 - Linux defaults to Headless for unprefixed commands such as `doubao login` and `doubao sessions list`.
 - macOS defaults to the desktop app: DoubaoWork when installed, otherwise Doubao, unless `DOUBAO_APP` overrides the app path. Use `doubao headless ...` on macOS.
 - `doubao --platform headless ...` is an equivalent explicit selector on either system.
+- `doubao web ...` and `doubao --platform web ...` are compatibility aliases for Headless, including login, help and all task options. They share Headless credentials and profiles; browser login sessions are not imported. Run `doubao web login` if Headless is not signed in. Browser `--target` and `web cdp` commands are unsupported.
 - Backend selection and task execution are separate. `--runtime cloud` means cloud execution within Headless; it does not select the Headless backend.
 
 ## Sign-in and profiles
@@ -67,7 +68,7 @@ doubao headless automations update <id> --file patch.json --json
 doubao headless automations delete <id> --json
 ```
 
-These commands also work on Desktop without the `headless` prefix. `--profile` selects the account; `--timeout` bounds the whole operation, including pagination and readback. Web is unsupported.
+These commands also work on Desktop without the `headless` prefix. `--profile` selects the account; `--timeout` bounds the whole operation, including pagination and readback.
 
 Example `task.json` (choose a future execution time):
 

@@ -111,10 +111,10 @@ test('follow-up payloads carry a singular active goal without changing the turn 
   assert.equal(JSON.parse(desktop.general_task_param).action, 0);
 });
 
-test('goal mode parses on desktop and headless, and rejects web or an empty message', () => {
+test('goal mode parses on desktop, headless and the web alias, and rejects an empty message', () => {
   assert.equal(parseOptions(['--app', 'doubao', '--mode', 'goal', 'sessions', 'create', 'plan']).mode, 'goal');
   assert.equal(parseOptions(['headless', '--mode', 'goal', 'sessions', 'create', 'plan']).mode, 'goal');
-  assert.throws(() => parseOptions(['web', '--mode', 'goal', 'sessions', 'create', 'plan']), /not supported on doubao web/u);
+  assert.equal(parseOptions(['web', '--mode', 'goal', 'sessions', 'create', 'plan']).platform, 'headless');
   assert.throws(() => parseOptions(['--app', 'doubao', '--mode', 'goal', 'sessions', 'create']), /requires a message/u);
   assert.throws(() => parseOptions(['headless', '--mode', 'goal', 'sessions', 'create']), /requires a message/u);
 });

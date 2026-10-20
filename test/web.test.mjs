@@ -8,18 +8,23 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { resolvePlatform, withApp } from '../src/app.mjs';
 import { CdpClient } from '../src/cdp.mjs';
-import { main, parseOptions } from '../src/cli.mjs';
-import { assertWebReady, sendWebMessage, validateWebOptions, webLaunchSpec, WEB_STATE } from '../src/web.mjs';
+import { parseOptions } from '../src/cli.mjs';
+import { assertWebReady, executeWeb, sendWebMessage, validateWebOptions, webLaunchSpec, WEB_STATE } from '../src/web.mjs';
 
 const web = resolvePlatform('web', {});
 const conversationId = '38439138239851266';
-const cli = new URL('../bin/doubao.mjs', import.meta.url).pathname;
 const inputSelector = 'textarea[data-testid="chat_input_input"], [data-testid="chat_input_input"] [contenteditable="true"]';
 const sendSelector = '[data-testid="chat_input_send_button"]';
 const baseState = {
   href: `https://www.doubao.com/chat/${conversationId}`, ready: true, loginRequired: false,
   mode: 'chat', modeLabel: '对话', accountId: 'signed-in-user', draft: '', attachments: 0, generating: false, sendEnabled: true,
 };
+
+const runWeb = (args, extraOptions = {}) => withApp(web, () => executeWeb({
+  args, attachments: [], mcps: [], commandArgs: [], envPairs: [],
+  enterpriseKnowledge: false, noSkills: false, wait: false, timeoutMs: 120000, limit: 20,
+  ...extraOptions,
+}));
 
 test('web page state reads the active textarea and ignores the hidden rich editor', () => {
   const element = (fields = {}) => ({
@@ -189,7 +194,8 @@ class NativeSendClient extends GuardClient {
 }
 
 test('platform selection preserves the app alias and deterministic desktop defaults', () => {
-  assert.throws(() => parseOptions(['--platform', 'web', '--app', 'work', 'status']), /select different backends/u);
+  assert.throws(() => parseOptions(['--platform', 'web', '--app', 'work', 'status']), /different backends/u);
+  assert.equal(parseOptions(['--platform', 'web', '--platform', 'headless', 'status']).platform, 'headless');
   assert.throws(() => parseOptions(['--app', 'doubao', '--platform', 'work', 'status']), /select different backends/u);
   for (const id of ['work', 'doubao']) {
     const options = parseOptions(['--platform', id, '--app', id, 'status']);
@@ -206,74 +212,41 @@ test('platform selection preserves the app alias and deterministic desktop defau
   assert.throws(() => parseOptions(['--platform', 'chrome']), /--platform requires/u);
 });
 
-test('web target and mode options are accepted only in their supported scope', () => {
-  assert.equal(parseOptions(['--platform', 'web', '--target', 'tab-A', 'status']).targetId, 'tab-A');
+test('web selector parses as Headless and accepts Headless options', () => {
+  assert.equal(parseOptions(['--platform', 'web', 'sessions', 'create', 'test', '--model', 'm']).platform, 'headless');
+  assert.equal(parseOptions(['web', 'sessions', 'create', 'test', '--project', 'p']).platform, 'headless');
+  assert.equal(parseOptions(['--platform', 'web', '--platform', 'headless', 'status']).platform, 'headless');
+  assert.equal(parseOptions(['--platform', 'web', 'sessions', 'create', 'placeholder', '--mode', 'work']).mode, 'work');
+  assert.equal(parseOptions(['--platform', 'web', 'sessions', 'create', 'goal task', '--mode', 'goal']).mode, 'goal');
+  assert.equal(parseOptions(['web', 'automations', 'list']).platform, 'headless');
+  assert.equal(parseOptions(['--platform', 'web', 'automations', 'delete', '123']).args[1], 'delete');
   for (const argv of [
-    ['--platform', 'work', '--target', 'tab-A', 'status'],
-    ['--app', 'doubao', '--target', 'tab-A', 'status'],
-  ]) assert.throws(() => parseOptions(argv), /--target requires doubao web/u);
-  assert.throws(() => parseOptions(['--platform', 'web', '--target']), /requires a CDP target id/u);
-  assert.throws(() => parseOptions(['--platform', 'web', '--target', '--json']), /requires a CDP target id/u);
-  for (const mode of ['chat', 'work']) {
-    assert.equal(parseOptions(['--platform', 'web', 'sessions', 'create', '--mode', mode]).mode, mode);
-  }
+    ['--platform', 'web', '--target', 'tab-A', 'status'],
+    ['--platform', 'web', 'cdp', 'status'],
+  ]) assert.throws(() => parseOptions(argv), /headless/iu);
   const work = parseOptions(['--platform', 'web', 'sessions', 'create', 'test', '--mode', 'work', '--runtime', 'cloud', '--wait']);
   assert.equal(work.runtime, 'cloud');
   assert.equal(work.mode, 'work');
-  assert.equal(parseOptions(['--platform', 'headless', 'sessions', 'create', 'test', '--mode', 'chat']).mode, 'chat');
-  for (const argv of [
-    ['--platform', 'work', 'sessions', 'create', '--mode', 'chat'], ['--platform', 'doubao', 'sessions', 'create', '--mode', 'work'],
-    ['--platform', 'web', 'status', '--mode', 'chat'],
-    ['--platform', 'web', 'sessions', 'send', conversationId, 'test', '--mode', 'work'],
-  ]) assert.throws(() => parseOptions(argv), /--mode requires/u);
-  assert.throws(() => parseOptions(['--platform', 'web', 'sessions', 'create', '--mode', '3']), /--mode requires chat or work/u);
-  for (const action of ['status', 'wait', 'stop']) {
-    const parsed = parseOptions(['--platform', 'web', 'sessions', action, conversationId, '--run', '56325877314422786']);
-    assert.equal(parsed.runId, '56325877314422786');
-  }
+  assert.equal(parseOptions(['--platform', 'web', 'sessions', 'wait', conversationId, '--run', '56325877314422786']).runId,
+    '56325877314422786');
 });
 
-test('unsupported web task flags fail before fetch or desktop profile access', async t => {
-  const fetch = t.mock.method(globalThis, 'fetch', () => assert.fail('unsupported options must not reach the network'));
-  const reads = t.mock.method(fs, 'readFileSync', () => assert.fail('unsupported options must not read a profile'));
-  const cases = [
-    ['--mcp', '123456', '--wait'], ['--model', 'turbo'], ['--reasoning', 'high'],
-    ['--attach', '/tmp/input.txt'], ['--runtime', 'local'], ['--profile', 'Other'],
-    ['--no-skills'], ['--workspace', '/tmp/ws'], ['--project', 'none'], ['--enterprise-knowledge'],
-    ['--runtime', 'local', '--permission', 'AlwaysAsk'], ['--command', '/usr/bin/node'],
-    ['--arg', 'flag'], ['--env', 'KEY=value'],
-  ];
-  for (const flags of cases) {
-    await assert.rejects(main(['--platform', 'web', 'sessions', 'create', 'must not send', ...flags]), /not supported on doubao web/u);
-  }
-  for (const command of [['profiles'], ['mcp', 'list'], ['models'], ['runtimes'], ['projects', 'list'], ['usage']]) {
-    await assert.rejects(main(['--platform', 'web', ...command]), /not supported on doubao web/u);
-  }
-  assert.equal(fetch.mock.callCount(), 0);
-  assert.equal(reads.mock.callCount(), 0);
-});
-
-test('web wait flags cannot silently apply to a draft or an unrelated command', () => {
-  for (const args of [
-    ['--platform', 'web', 'status', '--wait'],
-    ['--platform', 'web', 'sessions', 'create', '--wait'],
-    ['--platform', 'web', 'sessions', 'send', conversationId, '--wait'],
-  ]) assert.throws(() => parseOptions(args), /Web --wait requires/u);
-  validateWebOptions(parseOptions(['--platform', 'web', 'sessions', 'wait', conversationId, '--expect-json']));
+test('web module wait validation remains available to internal callers', () => {
+  const status = parseOptions(['--platform', 'headless', 'status']);
+  assert.throws(() => validateWebOptions({ ...status, wait: true }), /Web --wait requires/u);
+  const wait = parseOptions(['--platform', 'headless', 'sessions', 'wait', conversationId]);
+  validateWebOptions(wait);
 });
 
 test('unavailable web status never reads desktop metadata or invokes a native bridge', async t => {
   isolatedConfig(t);
-  const output = [];
-  t.mock.method(console, 'log', value => output.push(value));
   const reads = t.mock.method(fs, 'readFileSync', () => assert.fail('Web status must not read desktop metadata'));
   const spawn = t.mock.method(childProcess, 'spawnSync', () => assert.fail('Web status must not invoke a native app'));
   syncBuiltinESMExports();
   const urls = [];
   t.mock.method(globalThis, 'fetch', async url => { urls.push(url); throw new Error('offline'); });
   try {
-    await main(['--platform', 'web', 'status', '--json']);
-    const status = JSON.parse(output[0]);
+    const status = await runWeb(['status']);
     assert.equal(status.platform, 'web');
     assert.equal(status.ready, false);
     assert.equal(status.cdp.available, false);
@@ -288,33 +261,13 @@ test('unavailable web status never reads desktop metadata or invokes a native br
   }
 });
 
-test('CLI web status and rejected options work with no desktop data directory', t => {
-  const directory = isolatedConfig(t);
-  const env = { ...process.env, DOUBAO_CLI_CONFIG_DIR: directory, DOUBAO_CLI_DISABLE_AUTO_UPDATE: '1',
-    DOUBAO_APP: '/missing/DoubaoWork.app', DOUBAO_DATA_DIR: '/missing/doubao-data',
-    DOUBAO_CDP_ENDPOINT: 'http://127.0.0.1:1' };
-  const result = childProcess.spawnSync(process.execPath, [cli, '--platform', 'web', 'status', '--json'], { encoding: 'utf8', env });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).platform, 'web');
-  assert.equal(JSON.parse(result.stdout).cdp.available, false);
-  assert.doesNotMatch(result.stderr, /Local State|Doubao profile metadata/u);
-  const rejected = childProcess.spawnSync(process.execPath, [cli, '--platform', 'web', 'sessions', 'create', 'hello', '--attach', '/tmp/a'], { encoding: 'utf8', env });
-  assert.equal(rejected.status, 1);
-  assert.match(rejected.stderr, /--attach is not supported on doubao web/u);
-  assert.equal(rejected.stdout, '');
-});
-
-test('standalone web wait exits nonzero for a server state that is not completed', async t => {
+test('web wait returns server and account verification state', async t => {
   isolatedConfig(t);
   const runId = '56325877314422786';
   let terminalState = 'waiting_input';
   let disconnectFinalState = false;
   let mismatchFinalState = false;
   let stateReads = 0;
-  const output = [];
-  const previousExitCode = process.exitCode;
-  t.after(() => { process.exitCode = previousExitCode; });
-  t.mock.method(console, 'log', value => output.push(JSON.parse(value)));
   t.mock.method(globalThis, 'fetch', async url => Response.json(url.endsWith('/version')
     ? { Browser: 'test', 'Protocol-Version': '1.3' }
     : [{ id: 'web-page', type: 'page', url: baseState.href, webSocketDebuggerUrl: 'ws://fixture' }]));
@@ -368,35 +321,33 @@ test('standalone web wait exits nonzero for a server state that is not completed
     stateReads = 0;
     disconnectFinalState = false;
     mismatchFinalState = false;
-    process.exitCode = 0;
-    await main(['--platform', 'web', 'sessions', 'wait', conversationId, '--run', runId, '--json']);
-    assert.equal(output.at(-1).status, state);
-    assert.equal(process.exitCode, state === 'completed' ? 0 : 1, state);
+    const result = await runWeb(['sessions', 'wait', conversationId], { runId });
+    assert.equal(result.status, state);
   }
   terminalState = 'completed';
   stateReads = 0;
   disconnectFinalState = true;
   mismatchFinalState = false;
-  process.exitCode = 0;
-  await main(['--platform', 'web', 'sessions', 'wait', conversationId, '--run', runId, '--json']);
-  assert.equal(process.exitCode, 1);
-  assert.equal(output.at(-1).status, 'completed');
-  assert.equal(output.at(-1).conversationId, conversationId);
-  assert.equal(output.at(-1).runId, runId);
-  assert.equal(output.at(-1).identityVerified, false);
-  assert.match(output.at(-1).message, /CDP client is not connected/u);
+  await assert.rejects(runWeb(['sessions', 'wait', conversationId], { runId }), error => {
+    assert.equal(error.result.status, 'completed');
+    assert.equal(error.result.conversationId, conversationId);
+    assert.equal(error.result.runId, runId);
+    assert.equal(error.result.identityVerified, false);
+    assert.match(error.message, /CDP client is not connected/u);
+    return true;
+  });
 
   stateReads = 0;
   disconnectFinalState = false;
   mismatchFinalState = true;
-  process.exitCode = 0;
-  await main(['--platform', 'web', 'sessions', 'wait', conversationId, '--run', runId, '--json']);
-  assert.equal(process.exitCode, 1);
-  assert.equal(output.at(-1).status, 'completed');
-  assert.equal(output.at(-1).conversationId, conversationId);
-  assert.equal(output.at(-1).runId, runId);
-  assert.equal(output.at(-1).identityVerified, false);
-  assert.match(output.at(-1).message, /Web account changed/u);
+  await assert.rejects(runWeb(['sessions', 'wait', conversationId], { runId }), error => {
+    assert.equal(error.result.status, 'completed');
+    assert.equal(error.result.conversationId, conversationId);
+    assert.equal(error.result.runId, runId);
+    assert.equal(error.result.identityVerified, false);
+    assert.match(error.message, /Web account changed/u);
+    return true;
+  });
 
 });
 
@@ -639,14 +590,12 @@ test('unknown native submission is not retried and preserves its error when focu
   assert.ok([...client.listeners.values()].every(callbacks => !callbacks.size));
 });
 
-test('CLI web draft creation and open restore focus before disconnect on success or UI error', async t => {
+test('web draft creation and open restore focus before disconnect on success or UI error', async t => {
   isolatedConfig(t);
-  const output = [];
   let state;
   let focused;
   let failMutation;
   let calls;
-  t.mock.method(console, 'log', value => output.push(JSON.parse(value)));
   t.mock.method(globalThis, 'fetch', async url => Response.json(url.endsWith('/version')
     ? { Browser: 'test', 'Protocol-Version': '1.3' }
     : [{ id: 'web-page', type: 'page', url: baseState.href, webSocketDebuggerUrl: 'ws://fixture' }]));
@@ -679,20 +628,20 @@ test('CLI web draft creation and open restore focus before disconnect on success
     assert.equal(focused, false, 'disconnect must follow focus restoration');
     calls.push(['close']);
   });
-  for (const command of [
-    ['sessions', 'create', '--mode', 'chat'],
-    ['sessions', 'open', '38439138239851267'],
+  for (const [command, extraOptions] of [
+    [['sessions', 'create'], { mode: 'chat' }],
+    [['sessions', 'open', '38439138239851267'], {}],
   ]) {
     for (const failed of [false, true]) {
       state = { ...baseState };
       focused = false;
       failMutation = failed;
       calls = [];
-      const operation = main(['--platform', 'web', ...command, '--json']);
+      const operation = runWeb(command, extraOptions);
       if (failed) await assert.rejects(operation, /synthetic UI failure/u);
       else {
-        await operation;
-        assert.equal(output.at(-1)[command[1] === 'open' ? 'opened' : 'created'], true);
+        const result = await operation;
+        assert.equal(result[command[1] === 'open' ? 'opened' : 'created'], true);
       }
       assert.deepEqual(calls.filter(call => call[0] === 'Emulation.setFocusEmulationEnabled')
         .map(call => call[1].enabled), [true, false]);
@@ -703,7 +652,7 @@ test('CLI web draft creation and open restore focus before disconnect on success
   }
 });
 
-test('CLI web navigation and draft creation stop when the pinned account changes', async t => {
+test('web navigation and draft creation stop when the pinned account changes', async t => {
   isolatedConfig(t);
   t.mock.method(globalThis, 'fetch', async url => Response.json(url.endsWith('/version')
     ? { Browser: 'test', 'Protocol-Version': '1.3' }
@@ -729,21 +678,19 @@ test('CLI web navigation and draft creation stop when the pinned account changes
   });
   t.mock.method(CdpClient.prototype, 'close', () => { assert.equal(focused, false); });
 
-  for (const args of [
-    ['sessions', 'open', '38439138239851267'],
-    ['sessions', 'create', '--mode', 'chat'],
+  for (const [args, extraOptions] of [
+    [['sessions', 'open', '38439138239851267'], {}],
+    [['sessions', 'create'], { mode: 'chat' }],
   ]) {
     state = { ...baseState };
     focused = false;
-    await assert.rejects(main(['--platform', 'web', ...args, '--json']), /Web account changed/u);
+    await assert.rejects(runWeb(args, extraOptions), /Web account changed/u);
     assert.equal(focused, false);
   }
 });
 
 test('web sidebar list guards origin and pinned UID during evaluation and before return', async t => {
   isolatedConfig(t);
-  const outputs = [];
-  t.mock.method(console, 'log', value => outputs.push(JSON.parse(value)));
   t.mock.method(globalThis, 'fetch', async url => Response.json(url.endsWith('/version')
     ? { Browser: 'test', 'Protocol-Version': '1.3' }
     : [{ id: 'web-page', type: 'page', url: baseState.href, webSocketDebuggerUrl: 'ws://fixture' }]));
@@ -772,9 +719,8 @@ test('web sidebar list guards origin and pinned UID during evaluation and before
     evaluationUrl = scenario.url;
     evaluationUid = scenario.uid;
     switchAfterList = scenario.after;
-    await assert.rejects(main(['--platform', 'web', 'sessions', 'list', '--json']), scenario.error);
+    await assert.rejects(runWeb(['sessions', 'list']), scenario.error);
   }
-  assert.deepEqual(outputs, []);
 });
 
 test('cloud runtime and requested creation mode fail safely on a mismatched composer', async t => {

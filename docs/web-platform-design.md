@@ -1,5 +1,7 @@
 # Doubao Web 平台设计
 
+`doubao web` 和 `--platform web` 已改为 Headless 的兼容入口；以下保留浏览器实现的历史设计，不再对应可选择的 CLI 后端。当前使用方式见 [Headless](headless.md)。
+
 目标：保留 Doubao Work 与普通豆包桌面的现有行为，增加 doubao.com 的普通对话和云端工作任务。网页使用浏览器中已登录的账号；不导出凭据，不自动切换账号或平台。
 
 ## 调研结论
