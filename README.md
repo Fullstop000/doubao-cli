@@ -42,6 +42,7 @@ Prefix with `headless` or `web` as needed. Use `--json` for data output, `--help
 
 ```bash
 doubao help
+doubao config connection-badge <on|off|status> [--json]
 doubao capabilities --json
 doubao sessions list --json
 doubao sessions create "Summarize this" --wait --json
@@ -183,3 +184,7 @@ npx skills add Fullstop000/doubao-cli
 [Skill reference](skills/doubao/SKILL.md)
 
 License: [MIT](LICENSE)
+
+### Desktop connection badge
+
+`doubao config connection-badge on|off|status` saves or reads the desktop badge preference without login. Default: off. A saved preference takes priority over `DOUBAO_CLI_CONNECTION_BADGE=1`, which enables the badge when no preference has been saved. Settings persist in `connection-badge.json` under the CLI settings directory (`DOUBAO_CLI_CONFIG_DIR` overrides it). Active commands observe changes within two seconds; `off` also removes the badge from the selected available desktop page immediately. Web and Headless never display it. `--json` includes `enabled`, `settingsPath`, and `displayUpdated` (null for status, false when live refresh is unavailable).

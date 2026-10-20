@@ -15,7 +15,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export function validateWebOptions(options) {
   const [command, subcommand] = options.args;
-  if (!command || ['help', '--help', '-h', 'version', '--version', '-v', 'update'].includes(command)) return;
+  if (!command || ['help', '--help', '-h', 'version', '--version', '-v', 'update', 'config'].includes(command)) return;
   const unsupported = [
     ['--profile', options.profile !== undefined],
     ['--attach', options.attachments.length], ['--model', options.model !== undefined],

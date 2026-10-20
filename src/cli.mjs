@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { getDataDir, readProfiles, resolveProfile } from './storage.mjs';
 import { sessionIndex } from './sessions.mjs';
 import { listProfiles, formatProfiles } from './profiles.mjs';
-import { cdpStatus, withChatClient } from './cdp.mjs';
+import { cdpStatus, withChatClient, refreshConnectionBadgeVisibility } from './cdp.mjs';
 import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
 import { createConversation, openConversation, readConversation, sendMessage, setConversationReasoning, stopConversation, taskStatus, waitConversation } from './automation.mjs';
 import { currentModel, listModels, selectModel } from './models.mjs';
@@ -31,9 +31,11 @@ import { currentApp, resolvePlatform, withApp } from './app.mjs';
 import { executeWeb, validateWebOptions } from './web.mjs';
 import { executeHeadless, validateHeadlessOptions } from './headless.mjs';
 import { headlessOptionsForHelp, validateOptionContract } from './options-contract.mjs';
+import { connectionBadgeSettingsPath, readConnectionBadgeSettings, setConnectionBadgeEnabled } from './connection-badge-settings.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
+  doubao config connection-badge <on|off|status> [--json]
   doubao status [--profile <name>] [--json]
   doubao usage [--profile <name>] [--json]
   doubao profiles [--json]
@@ -101,6 +103,7 @@ Environment:
 const HEADLESS_HELP = `Usage:
   doubao headless login [--cookie-file <path>] [--timeout <seconds>] [--json]
   doubao headless logout [--json]
+  doubao headless config connection-badge <on|off|status> [--json]
   doubao headless status [--json]
   doubao headless capabilities [--json]
   doubao headless automations list [--json]
@@ -169,6 +172,7 @@ Compatibility:
 
 const WEB_HELP = `Usage:
   doubao web login [--timeout <seconds>] [--json]
+  doubao web config connection-badge <on|off|status> [--json]
   doubao web status [--json]
   doubao web capabilities [--json]
   doubao web sessions list [--json]
@@ -614,6 +618,27 @@ export async function main(argv) {
   if (options.helpPath) {
     const helpPlatform = options.platform || options.app || (process.platform === 'linux' ? 'headless' : undefined);
     console.log(commandHelp(options.helpPath, helpPlatform));
+    return;
+  }
+  if (options.args[0] === 'config') {
+    const action = options.args[2] || 'status';
+    const settingsPath = connectionBadgeSettingsPath();
+    const settings = action === 'status'
+      ? readConnectionBadgeSettings(settingsPath)
+      : setConnectionBadgeEnabled(action === 'on', settingsPath);
+    let displayUpdated = null;
+    if (action !== 'status' && process.platform === 'darwin'
+      && !['web', 'headless'].includes(options.platform)) {
+      const app = resolvePlatform(options.platform || options.app);
+      displayUpdated = await withApp(app, () => refreshConnectionBadgeVisibility(settings.enabled));
+    }
+    const result = { ...settings, settingsPath, displayUpdated };
+    if (options.json) output(result, true);
+    else {
+      console.log(`connection badge\t${settings.enabled ? 'on' : 'off'}`);
+      console.log(`settings\t${settingsPath}`);
+      if (displayUpdated === false) console.log('display\tsetting saved; applies when a desktop renderer connects');
+    }
     return;
   }
   options.schema = loadReplySchema(options);
