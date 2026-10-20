@@ -1,4 +1,9 @@
 import fs from 'node:fs/promises';
+import { completionBody } from './headless-completion.mjs';
+export { completionBody } from './headless-completion.mjs';
+import { waitWithLocalRuntime } from './headless-turn.mjs';
+import { requireGoalMode, GOAL_MIN_VERSION, activeGoalFromExtra } from './features.mjs';
+import { createScheduledTaskService } from './scheduled-tasks.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import qrcode from 'qrcode-terminal';
@@ -14,7 +19,7 @@ import { HeadlessLocalRuntime, buildHeadlessLocalTaskParam, prepareHeadlessLocal
 import { createHeadlessApproval } from './headless-approval.mjs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { CookieJar, HeadlessClient, consumeSse } from './headless-http.mjs';
+import { CookieJar, HeadlessClient, consumeSse, HEADLESS_PROTOCOL_VERSION } from './headless-http.mjs';
 import { qrLogin } from './headless-auth.mjs';
 import { reduceStreamEvent, updateLiveControls } from './protocol.mjs';
 import { messageText, readTurn, refreshTurn, waitTurn, stopTurn, receiptStore } from './turns.mjs';
@@ -35,6 +40,7 @@ export function validateHeadlessOptions(options) {
   if (options.cookieFile && command !== 'login') throw new Error('--cookie-file requires doubao headless login');
   const supported = ['login', 'logout', 'status', 'capabilities', 'models', 'profiles', 'usage', 'runtimes'].includes(command)
     || command === 'sessions' && ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(subcommand)
+    || command === 'automations' && ['list', 'get', 'create', 'update', 'delete'].includes(subcommand)
     || command === 'projects' && ['list', 'create'].includes(subcommand)
     || command === 'mcp' && ['register', 'list', 'remove'].includes(subcommand)
     || command === 'model' && (!subcommand || ['current', 'select', 'reasoning'].includes(subcommand));
@@ -70,60 +76,13 @@ async function signedInClient(timeoutMs, profile) {
   return client;
 }
 
-export function completionBody({ conversationId = '', message, mode = 'work', model, reasoning, taskContext, localTaskParam, attachmentBlocks = [], localMessageId = randomUUID() }) {
-  const work = mode === 'work';
-  const generalTask = { action: 0, thread_local_message_id: [localMessageId], runtime_type: 1,
-    agent_task_param: { runtime_type: 1 }, agent_task_param_change: { runtime_changed: false, device_changed: false, sandbox_auth_type_changed: false },
-    need_modify_conversation: false, task_input_json: JSON.stringify({ schema_version: 1, project_context: {} }) };
-  if (taskContext) {
-    generalTask.task_input_json = JSON.stringify({ schema_version: 1, project_context: taskContext.projectContext || {} });
-    if (taskContext.enterpriseSkill) {
-      const skill = taskContext.enterpriseSkill;
-      generalTask.selected_skills = [skill.name];
-      generalTask.skill_selections = [{ name: skill.name, skill_type: skill.type, skill_id: skill.externalId }];
-    }
-  }
-  if (localTaskParam) Object.assign(generalTask, localTaskParam, { thread_local_message_id: [localMessageId] });
-  if (taskContext) {
-    const previous = taskContext.previousAgentParam || {};
-    const next = generalTask.agent_task_param;
-    const existing = Boolean(conversationId);
-    generalTask.agent_task_param_change = {
-      runtime_changed: existing && previous.runtime_type !== next.runtime_type,
-      device_changed: existing && ((previous.local_device_id || '') !== (next.local_device_id || '') || (previous.local_app_id || '') !== (next.local_app_id || '')),
-      sandbox_auth_type_changed: existing && previous.sandbox_auth_type !== next.sandbox_auth_type,
-    };
-    const projectChanged = existing && (taskContext.previousProjectId || '') !== (taskContext.projectId || '');
-    if (projectChanged) generalTask.project_id = taskContext.projectId || '';
-    generalTask.need_modify_conversation = existing && (projectChanged || Object.keys(next).some(key => previous[key] !== next[key]));
-  }
-  const init = { need_ack_conversation: true, ...(taskContext?.projectId ? { project_id: taskContext.projectId } : {}) };
-  return {
-    client_meta: { local_conversation_id: 'local_' + Date.now() + '_' + randomUUID(), conversation_id: conversationId,
-      bot_id: '7338286299411103781', last_section_id: '', last_message_index: null },
-    messages: [{ local_message_id: localMessageId, content_block: [{ block_type: 10000,
-      content: { text_block: { text: message } }, block_id: randomUUID() }, ...attachmentBlocks], message_status: 0 }],
-    option: { create_time_ms: Date.now(), agent_mode: work ? 1 : 2, need_deep_think: model?.needDeepThink ?? (work ? 9 : 0), unique_key: randomUUID(),
-      recovery_option: { is_recovery: false, req_create_time_sec: Math.floor(Date.now() / 1000), append_sse_event_scene: 0 },
-      need_create_conversation: !conversationId, is_old_user: true, message_from: 0,
-      sse_recv_event_options: { support_chunk_delta: true }, general_task_param: generalTask,
-      ...(!conversationId ? { conversation_init_option: init, conversation_init_ext: { mode_id: work ? '3' : '1', ...(model ? { model_item_key: model.id } : {}),
-        ...(reasoning ? { reasoning_effort: reasoning } : {}), ...(localTaskParam ? { agent_task_param: JSON.stringify(localTaskParam.agent_task_param) } : {}) } } : {}),
-      ...(model ? { model_config: { model_item_key: model.id, ...(reasoning ? { reasoning_effort: Number(reasoning) } : {}) },
-        aggregate_params: { provider_id: model.provider || '', ...(reasoning ? { reasoning_effort: reasoning } : {}) } } : {}) },
-    ext: { general_task_param: JSON.stringify(generalTask), use_deep_think: String(model?.needDeepThink ?? (work ? 9 : 0)), agent_mode: work ? '1' : '2',
-      sub_conv_firstmet_type: '1', collection_id: '', is_finish: '1', conversation_init_option: JSON.stringify(init), commerce_credit_config_enable: '0' },
-    user_context: [],
-  };
-}
-
-export async function streamCompletion(client, body, { timeoutMs, waitForReply = false, onReceipt = () => {}, runId = '' } = {}) {
+export async function streamCompletion(client, body, { timeoutMs, waitForReply = false, onReceipt = () => {}, runId = '', signal } = {}) {
   const state = { conversationId: body.client_meta.conversation_id, runId, localMessageId: body.messages[0].local_message_id,
     answer: '', thinking: '', completed: false, handoffs: [], liveMessages: [], requestBody: body, accepted: false, requestDispatched: false };
   const checkpoint = () => onReceipt({ ...state });
   try {
     state.requestDispatched = true;
-    const response = await client.request('/chat/completion', { method: 'POST', timeoutMs,
+    const response = await client.request('/chat/completion', { method: 'POST', timeoutMs, ...(signal ? { signal } : {}),
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     await consumeSse(response, async (event, data) => {
       if (event === 'SSE_ACK') {
@@ -262,6 +221,8 @@ export async function executeHeadless(options) {
   if (command === 'capabilities') return { platform: 'headless', browserRequired: false, appRequired: false,
     login: ['terminal-qr', 'cookie-file'], sessions: ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'],
     runtime: ['cloud', 'local'], models: true, modelSelection: true, reasoning: true, profiles: true, usage: true,
+    goalMode: { supported: true, minimumVersion: GOAL_MIN_VERSION, protocolVersion: HEADLESS_PROTOCOL_VERSION, accountGate: 'goal_mode_enable' },
+    automations: ['list', 'get', 'create', 'update', 'delete'],
     attachments: true, localRuntime: true, mcp: true, projects: true, enterpriseKnowledgeSelection: true,
     note: 'open/current select the CLI conversation; model defaults are scoped to the profile and account' };
   if (command === 'profiles') {
@@ -296,6 +257,14 @@ export async function executeHeadless(options) {
     throw Object.assign(new Error('Headless account changed before background submission'), { code: 'account_changed' });
   }
   if (command === 'status') return { platform: 'headless', profile, loggedIn: true, loginRequired: false, accountId: client.accountId, browserRequired: false, appRequired: false };
+  if (command === 'automations') {
+    const service = createScheduledTaskService(client, { timeoutMs: remaining() });
+    const result = subcommand === 'list' ? { automations: await service.list() }
+      : subcommand === 'get' ? { automation: await service.get(operand) || null }
+      : subcommand === 'create' ? await service.create(options.automationInput)
+      : subcommand === 'update' ? await service.update(operand, options.automationInput) : await service.delete(operand);
+    return { platform: 'headless', ...result };
+  }
   if (command === 'usage') return { platform: 'headless', ...await readHeadlessUsage(client, remaining()) };
   if (command === 'runtimes') return { platform: 'headless', profile, runtimes: [
     { id: 'cloud', name: '云端', available: true },
@@ -370,6 +339,8 @@ export async function executeHeadless(options) {
     }
     const conversationId = subcommand === 'send' ? validateId(operand) : '';
     let mode = options.mode || 'work';
+    const goalId = mode === 'goal' ? randomUUID() : undefined;
+    if (goalId) await requireGoalMode(client, HEADLESS_PROTOCOL_VERSION, remaining());
     let previous = {};
     if (conversationId) {
       const snapshot = await readTurn(client, conversationId, { deadline });
@@ -388,8 +359,8 @@ export async function executeHeadless(options) {
     const selectedModel = options.model || (!conversationId ? state.defaults.modelId : undefined);
     const selectedReasoning = options.reasoning || (!conversationId ? state.defaults.reasoning : undefined);
     const reasoning = selectedReasoning ? resolveReasoningEffort(selectedReasoning).effort : undefined;
-    const model = selectedModel ? await resolveHeadlessModel(client, options.model ? { name: selectedModel } : { id: selectedModel }, mode, remaining())
-      : reasoning ? await resolveHeadlessModel(client, { id: previous.extra?.model_item_key || '9' }, mode, remaining()) : undefined;
+    const model = selectedModel ? await resolveHeadlessModel(client, options.model ? { name: selectedModel } : { id: selectedModel }, mode === 'goal' ? 'work' : mode, remaining())
+      : reasoning ? await resolveHeadlessModel(client, { id: previous.extra?.model_item_key || '9' }, mode === 'goal' ? 'work' : mode, remaining()) : undefined;
     const previousProjectId = previous.conversation?.project_reference?.project_id || '';
     const projectValue = options.project ?? previousProjectId;
     const project = projectValue && projectValue !== 'none' ? selectProject(await listHeadlessProjects(client, remaining()), projectValue) : null;
@@ -398,6 +369,7 @@ export async function executeHeadless(options) {
     const runtimeChoice = options.runtime || (localOptions || previousAgentParam.runtime_type === 2 ? 'local' : 'cloud');
     if (mode === 'chat' && (runtimeChoice === 'local' || project || options.enterpriseKnowledge)) throw new Error('Local runtime, projects and enterprise knowledge require --mode work');
     const taskContext = { runtime: runtimeChoice, projectId: project?.id || '', previousProjectId,
+      activeGoalId: activeGoalFromExtra(previous.extra),
       previousAgentParam: parseExtra(previous.extra?.agent_task_param), projectContext: projectContext(project, '', 'cloud'),
       ...(options.enterpriseKnowledge ? { enterpriseSkill: await headlessEnterpriseSkill(client, runtimeChoice, remaining()) } : {}) };
     if (runtimeChoice === 'local' && !options.wait && !options.backgroundWorker) {
@@ -409,6 +381,7 @@ export async function executeHeadless(options) {
         options: { ...options, runtime: 'local' }, configDir: workerConfigDir, expectedAccountId: client.accountId, ackTimeoutMs: remaining(),
       });
       const accepted = { platform: worker.platform, mode: worker.mode, conversationId: worker.conversationId, runId: worker.runId,
+        ...(worker.goalId ? { goalId: worker.goalId } : {}),
         localMessageId: worker.localMessageId, status: worker.status, accepted: true, reply: null };
       try { await updateHeadlessState({ profile, accountId: client.accountId, currentConversationId: accepted.conversationId }); }
       catch (error) { throw acceptedLocalFailure(error, accepted); }
@@ -448,7 +421,7 @@ export async function executeHeadless(options) {
       }
       const attachmentBlocks = options.attachments?.length
         ? await uploadHeadlessAttachments(client, await resolveAttachmentFiles(options.attachments), remaining()) : [];
-      const body = completionBody({ conversationId, message, mode, model, reasoning, taskContext, localTaskParam, attachmentBlocks });
+      const body = completionBody({ conversationId, message, mode, goalId, model, reasoning, taskContext, localTaskParam, attachmentBlocks });
       // Establish the sandbox route before submit. Opening it after ACK can
       // miss the initial workspace command on a device without a native app.
       if (localRuntime) {
@@ -467,12 +440,12 @@ export async function executeHeadless(options) {
         if (localRuntime && options.wait && receipt.accepted && receipt.conversationId && !enginePromise) {
           const initialResponse = localChannel;
           localChannel = null;
-          enginePromise = initialResponse.then(response => startLocalRuntime(client, profile, receipt, connectors, remaining(), response));
+          enginePromise = initialResponse.then(response => startLocalRuntime(client, profile, receipt, connectors, remaining(), response, localChannelAbort?.signal));
           enginePromise.catch(() => {});
         }
         if (receipt.accepted && !reportedAcceptance && options.onAccepted) {
           reportedAcceptance = true;
-          options.onAccepted({ platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
+          options.onAccepted({ platform: 'headless', mode, ...(goalId ? { goalId } : {}), conversationId: receipt.conversationId, runId: receipt.runId,
             localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null });
         }
       };
@@ -519,17 +492,18 @@ export async function executeHeadless(options) {
           } catch (error) { throw acceptedLocalFailure(error, receipt); }
         }
         await connectors?.close();
-        return { platform: 'headless', mode, conversationId: receipt.conversationId, runId: receipt.runId,
+        return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), conversationId: receipt.conversationId, runId: receipt.runId,
           localMessageId: receipt.localMessageId, status: 'running', accepted: true, reply: null };
       }
-      let engine;
       try {
-        if (localRuntime) engine = await (enginePromise || startLocalRuntime(client, profile, receipt, connectors, remaining()));
-        const result = await waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline,
+        const wait = signal => waitTurn(client, receipt.conversationId, { runId: receipt.runId, receipt, deadline, signal,
           onReceipt: checkpoint, loadReceipt: run => store.read(receipt.conversationId, run) });
-        return { platform: 'headless', mode, context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
+        const result = localRuntime ? await waitWithLocalRuntime(wait,
+          () => enginePromise ||= startLocalRuntime(client, profile, receipt, connectors, remaining(), undefined, localChannelAbort?.signal),
+          { abortStartup: () => localChannelAbort?.abort() }) : await wait();
+        return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
           projectId: project?.id || null, enterpriseKnowledge: Boolean(taskContext.enterpriseSkill) }, accepted: true, ...result };
-      } finally { await engine?.close(); }
+      } catch (error) { throw acceptedLocalFailure(error, receipt); }
     } finally {
       localChannelAbort?.abort();
       await localChannel?.then(response => response.body?.cancel()).catch(() => {});
@@ -540,17 +514,21 @@ export async function executeHeadless(options) {
   const conversationId = validateId(operand);
   const pinned = await readTurn(client, conversationId, { runId: options.runId, deadline });
   const receipt = { ...store.read(conversationId, pinned.result.runId), conversationId, runId: pinned.result.runId };
-  let engine, connectors;
-  if (subcommand === 'wait' && receipt.localRuntime) {
+  let connectors;
+  const needsRuntime = subcommand === 'wait' && receipt.localRuntime && !['completed', 'failed', 'cancelled'].includes(pinned.result.status);
+  const runtimeAbort = new AbortController();
+  if (needsRuntime) {
     if (receipt.localRuntime.connectorIds?.length) connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining() });
-    engine = await startLocalRuntime(client, profile, receipt, connectors, remaining());
   }
   const operation = subcommand === 'wait' ? waitTurn : subcommand === 'stop' ? stopTurn : refreshTurn;
   try {
-    const result = await operation(client, conversationId, { runId: receipt.runId, receipt, deadline, timeoutMs: remaining(),
+    const wait = signal => operation(client, conversationId, { runId: receipt.runId, receipt, deadline, timeoutMs: remaining(), signal,
       onReceipt: next => store.save(next), loadReceipt: run => store.read(conversationId, run) });
+    const result = needsRuntime ? await waitWithLocalRuntime(wait,
+      () => startLocalRuntime(client, profile, receipt, connectors, remaining(), undefined, runtimeAbort.signal),
+      { abortStartup: () => runtimeAbort.abort() }) : await wait();
     return { platform: 'headless', ...(result.result || result) };
-  } finally { await engine?.close(); await connectors?.close(); }
+  } finally { runtimeAbort.abort(); await connectors?.close(); }
 }
 
 function acceptedLocalFailure(error, receipt) {
@@ -560,7 +538,7 @@ function acceptedLocalFailure(error, receipt) {
   return error;
 }
 
-async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs, initialResponse) {
+async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs, initialResponse, signal) {
   const spec = receipt.localRuntime;
   // Memory-only authentication creates fresh device metadata per CLI process.
   // A resumed local task must retain the original caller's routing device.
@@ -569,7 +547,7 @@ async function startLocalRuntime(client, profile, receipt, connectors, timeoutMs
     requestTimeoutMs: timeoutMs, initialResponse, callConnector: connectors ? input => connectors.call(input) : undefined,
     approve: createHeadlessApproval({ input: process.stdin, output: process.stderr,
       interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY), workspace: spec.workspace }) });
-  try { await engine.start({ signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }); return engine; }
+  try { await engine.start({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, timeoutMs))]) : AbortSignal.timeout(Math.max(1, timeoutMs)) }); return engine; }
   catch (error) { await engine.close(); if (error.code === 'LOCAL_RUNTIME_BUSY') return null; throw error; }
 }
 

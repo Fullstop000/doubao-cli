@@ -49,11 +49,55 @@ doubao headless sessions wait <conversation-id> --run <run-id> --timeout 600 --j
 doubao headless sessions stop <conversation-id> --run <run-id> --json
 ```
 
-New sessions default to cloud Work; choose `--mode chat` for ordinary chat. `sessions open` and `current` select the CLI's current conversation and do not open a UI. Listing returns recent sessions; `read` returns up to 100 recent messages.
+New sessions default to cloud Work; choose `--mode chat` for ordinary chat, or `--mode goal` to define a measurable objective. Goal mode uses the 2.32.10 protocol revision and checks the account's `goal_mode_enable` flag before sending. Desktop requires installed Doubao 2.32.10+; Headless requires no app. Follow-ups inherit one active goal; multiple active goals require resolution in Doubao. A completed turn does not establish completion of the whole goal.
+
+`sessions open` and `current` select the CLI's current conversation and do not open a UI. Listing returns recent sessions; `read` returns up to 100 recent messages.
 
 Save both `conversationId` and `runId` from an accepted send. Without `--wait`, create/send returns after acceptance with `reply: null`; Headless starts a background worker to continue local execution when needed. If a process times out or disconnects, use `sessions wait` with the same IDs. Do not resend an accepted request. Recovery reopens the same request with its original message identity. A `waiting_input` task needs a response through Doubao's interactive UI before waiting again. `stop` reports server state and does not undo tool effects; a terminal task can report stopped without having been cancelled.
 
 Headless options are validated against the command contract. Unknown flags, unsupported backend options, and misplaced options fail before a request is sent. Use `--` when a message begins with option-like text. For data-returning commands, `--json` provides machine-readable output.
+
+## Automatic tasks
+
+```bash
+doubao headless automations list --json
+doubao headless automations get <id> --json
+doubao headless automations create --file task.json --json
+doubao headless automations update <id> --file patch.json --json
+doubao headless automations delete <id> --json
+```
+
+These commands also work on Desktop without the `headless` prefix. `--profile` selects the account; `--timeout` bounds the whole operation, including pagination and readback. Web is unsupported.
+
+Example `task.json` (choose a future execution time):
+
+```json
+{
+  "title": "Review the report",
+  "prompt": "Summarize the latest report and list open questions.",
+  "timezone": "Asia/Shanghai",
+  "runtime_config": { "runtime_type": 1 },
+  "schedule": { "repeat_type": 1, "execute_at": "2026-12-01T09:00:00+08:00" }
+}
+```
+
+Example `patch.json`:
+
+```json
+{ "title": "Review the weekly report", "prompt": "Summarize the weekly report." }
+```
+
+Runtime types: `1` cloud, `2` a native local device. Local schedules require that device's configuration and availability; Headless does not install a scheduler or start local workers for future tasks. Repeat types: `1` once, `2` hourly, `3` daily, `4` weekly, `5` custom. Daily/weekly schedules use `time: { "hour": 9, "minute": 0 }`; weekly schedules also use `weekdays` (`1` Monday through `7` Sunday). Custom schedules require the service's `parse_token`.
+
+Create requires `title`, `prompt`, and `timezone`. Optional native fields are `schedule`, `runtime_config`, `deep_think_switch`, `model_config`, `parse_token`, `project_id`, `sandbox_auth_type` (`0` AlwaysAsk, `1` AskOnRisk, `2` FullAccess), `local_connector_tools`, and `lark_connector_id`. The default `create_context.bot_id` is the Work bot; the CLI generates a unique `local_job_id` for each submission.
+
+Updates accept `title`, `prompt`, `schedule`, `parse_token`, `sandbox_auth_type`, `local_connector_tools`, and `lark_connector_id`. Connector updates use `{ "value": "..." }` or `{ "clear": true }`. Runtime, model and timezone are fixed at creation by the native update API.
+
+Mutations return `verified: true` only after readback matches. Errors retain a known task ID and an operation ID; inspect `list/get` before repeating an uncertain mutation. Task IDs remain exact strings in CLI output. The list folds the service's change history and omits deleted tasks.
+
+2026-10-15 acceptance: Work 2.32.10 and Headless both completed goal turns in cloud and local runtimes. Headless local also returned a detached submission ACK and subsequently read back as completed; one 60-second wait timed out before that readback. Both backends passed task create/get/update/delete with cross-backend readback. All temporary automatic tasks were deleted; the original eight tasks remained. This verifies turn execution and CRUD, not final goal lifecycle state or future scheduled execution.
+
+2026-10-20 compatibility: Work 2.33.1 passed cloud/local goal turns and automatic-task CRUD. Headless passed CRUD and cloud goals; a goal in a temporary project retained its project binding, and the project was deleted after verification. Headless local waiting now observes the server turn while the tool channel starts, so a goal with no tool calls can complete without waiting for SSE headers. Local no-tool and file-write/readback goals both passed. A repeated file-write test exceeded its 90-second wait, then completed through recovery of the same accepted run without resending. Recovery of an already completed local turn also passed. All temporary automatic tasks were deleted; the original 45 tasks remained.
 
 ## Models, reasoning and usage
 

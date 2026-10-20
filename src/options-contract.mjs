@@ -10,8 +10,10 @@ function allowed(flag, command, backend) {
     case '--yes': return backend === 'desktop' && command[0] === 'cdp' && command[1] === 'launch';
     case '--limit': return SESSION_LIST_OR_READ(command, backend);
     case '--run': return sessionState;
-    case '--mode': return ['web', 'headless'].includes(backend) && command[0] === 'sessions' && command[1] === 'create';
+    case '--mode': return command[0] === 'sessions' && command[1] === 'create';
+    case '--file': return backend !== 'web' && command[0] === 'automations' && ['create', 'update'].includes(command[1]);
     case '--timeout':
+      if (backend !== 'web' && command[0] === 'automations') return true;
       if (backend === 'headless') return ['login', 'status', 'models', 'profiles', 'usage', 'runtimes'].includes(command[0])
         || command[0] === 'sessions' || command[0] === 'projects' && ['list', 'create'].includes(command[1])
         || command[0] === 'model' && (!command[1] || ['current', 'select', 'reasoning'].includes(command[1]))
@@ -23,8 +25,8 @@ function allowed(flag, command, backend) {
     case '--target': return backend === 'web' && ['login', 'status', 'cdp', 'sessions'].includes(command[0]);
     case '--profile':
       if (backend === 'web') return false;
-      if (backend === 'headless') return ['login', 'logout', 'status', 'models', 'usage', 'runtimes', 'projects', 'model', 'mcp', 'sessions'].includes(command[0]);
-      return ['status', 'usage', 'runtimes', 'projects', 'sessions', 'mcp', 'models', 'model'].includes(command[0]);
+      if (backend === 'headless') return ['automations', 'login', 'logout', 'status', 'models', 'usage', 'runtimes', 'projects', 'model', 'mcp', 'sessions'].includes(command[0]);
+      return ['automations', 'status', 'usage', 'runtimes', 'projects', 'sessions', 'mcp', 'models', 'model'].includes(command[0]);
     case '--cookie-file': return backend === 'headless' && command[0] === 'login';
     case '--model': return ['desktop', 'headless'].includes(backend) && sessionMessage;
     case '--reasoning': return ['desktop', 'headless'].includes(backend) && (sessionMessage
@@ -45,11 +47,12 @@ function allowed(flag, command, backend) {
 }
 
 const HEADLESS_HELP_OPTIONS = [
-  ['--profile', '<name>', 'Select an independent Headless account profile', command => ['login', 'logout', 'status', 'models', 'usage', 'runtimes', 'projects', 'model', 'mcp', 'sessions'].includes(command[0])],
+  ['--profile', '<name>', 'Select an independent Headless account profile', command => ['automations', 'login', 'logout', 'status', 'models', 'usage', 'runtimes', 'projects', 'model', 'mcp', 'sessions'].includes(command[0])],
+  ['--file', '<json-path>', 'Read automation creation fields or update patch from JSON', command => allowed('--file', command, 'headless')],
   ['--cookie-file', '<path>', 'Import cookies from a session file during login', command => command[0] === 'login'],
   ['--timeout', '<seconds>', 'Set the request or wait budget', command => allowed('--timeout', command, 'headless')],
   ['--limit', '<count>', 'Limit the number of listed sessions', command => allowed('--limit', command, 'headless')],
-  ['--mode', 'chat|work', 'Select the mode for a new conversation', command => allowed('--mode', command, 'headless')],
+  ['--mode', 'chat|work|goal', 'Select the mode for a new conversation', command => allowed('--mode', command, 'headless')],
   ['--model', '<model-name>', 'Select an available model by its exact name', command => allowed('--model', command, 'headless')],
   ['--reasoning', 'low|medium|high|xhigh|max', 'Set reasoning effort', command => allowed('--reasoning', command, 'headless')],
   ['--wait', '', 'Wait for the reply after sending a message', command => allowed('--wait', command, 'headless')],
@@ -63,7 +66,7 @@ const HEADLESS_HELP_OPTIONS = [
   ['--attach', '<path>', 'Attach a file to a new message', command => allowed('--attach', command, 'headless')],
   ['--expect-json', '', 'Require a JSON response', command => allowed('--expect-json', command, 'headless')],
   ['--reply-schema', '<path>', 'Validate a JSON response against a schema', command => allowed('--reply-schema', command, 'headless')],
-  ['--mcp', '<connector-id>', 'Use an MCP connector with a local task', command => allowed('--mcp', command, 'headless')],
+  ['--mcp', '<connector-id>', 'Use an MCP connector with a local task', SESSION_CREATE_OR_SEND],
   ['--command', '<path>', 'Set the stdio MCP server executable', command => allowed('--command', command, 'headless')],
   ['--arg', '<value>', 'Add a stdio MCP server argument', command => allowed('--arg', command, 'headless')],
   ['--env', 'KEY=VALUE', 'Set a stdio MCP server environment variable', command => allowed('--env', command, 'headless')],
@@ -76,6 +79,7 @@ export function headlessOptionsForHelp(helpPath) {
     const children = {
       sessions: ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'],
       projects: ['list', 'create'],
+      automations: ['list', 'get', 'create', 'update', 'delete'],
       mcp: ['register', 'list', 'remove'],
       model: ['current', 'select', 'reasoning'],
     }[helpPath[0]] || [];
@@ -116,6 +120,10 @@ function validatePositionalContract(options) {
   const minimum = (count, message) => { if (args.length < count) fail(message); };
 
   if (['status', 'capabilities', 'models', 'usage', 'profiles', 'runtimes'].includes(command)) exact(1, `${command} accepts no positional arguments`);
+  if (command === 'automations') {
+    if (!['list', 'get', 'create', 'update', 'delete'].includes(subcommand)) fail('automations requires list, get, create, update, or delete');
+    exact(['list', 'create'].includes(subcommand) ? 2 : 3, `automations ${subcommand} ${['list', 'create'].includes(subcommand) ? 'accepts no positional arguments' : 'requires exactly one task ID'}`);
+  }
   if (command === 'sessions') {
     if (['list', 'current'].includes(subcommand)) exact(2, `sessions ${subcommand} accepts no positional arguments`);
     if (['read', 'open', 'status', 'wait', 'stop'].includes(subcommand)) exact(3, `sessions ${subcommand} requires exactly one conversation ID`);

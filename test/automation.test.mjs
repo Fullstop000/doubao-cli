@@ -83,7 +83,8 @@ test('waits for image preview loading and upload progress completion', () => {
   }, expected), true);
 });
 
-test('cleans rehydrated uploads by stable fileKey and waits for durable readback', async () => {
+test('cleans rehydrated uploads by stable fileKey and waits for durable readback', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const imageKey = 'tos-cn/example/image.png';
   const preSendLocalKey = 'pre-send:random-upload-id';
   const chatId = 'accepted';
@@ -102,9 +103,13 @@ test('cleans rehydrated uploads by stable fileKey and waits for durable readback
     remove: async (record) => {
       removed.push(record.localKey);
       attachments.splice(attachments.findIndex((item) => item.localKey === record.localKey), 1);
-      if (attachments.length === 1) setTimeout(() => { durable = attachments.map(({ fileKey }) => fileKey); }, 8);
     },
-    readDurable: async () => { readbacks += 1; return durable; },
+    readDurable: async () => {
+      readbacks += 1;
+      t.mock.timers.setTime(1000 + readbacks);
+      if (readbacks === 2) durable = attachments.map(({ fileKey }) => fileKey);
+      return durable;
+    },
   }, [imageKey, imageKey], { timeoutMs: 100, intervalMs: 1 });
 
   assert.notEqual(preSendLocalKey, removed[0]);
@@ -119,7 +124,8 @@ test('cleans rehydrated uploads by stable fileKey and waits for durable readback
   assert.ok(readbacks > 1);
 });
 
-test('does not remove a stable upload identity when duplicate ownership is ambiguous', async () => {
+test('does not remove a stable upload identity when duplicate ownership is ambiguous', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const records = [0, 1, 2].map((index) => ({
     fileKey: 'remote-image', localKey: `rehydrated:${index}`, index,
     params: { chatId: 'accepted', skillType: 'default' },

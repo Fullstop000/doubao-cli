@@ -394,10 +394,12 @@ export async function waitTurn(client, conversationId, options = {}) {
   receipt.localMessageId ||= options.localMessageId;
   let snapshot = options.snapshot, lastError, resumed = false;
   do {
+    options.signal?.throwIfAborted();
     try {
       const saved = options.loadReceipt?.(receipt.runId);
       if (saved?.cancellation) receipt.cancellation = saved.cancellation;
       snapshot = await readTurn(client, conversationId, { ...options, runId: receipt.runId || options.runId, receipt, deadline });
+      options.signal?.throwIfAborted();
       receipt.runId = snapshot.result.runId;
       receipt.localMessageId ||= snapshot.result.localMessageId;
       reconcileLiveControls(snapshot, receipt);
@@ -410,6 +412,7 @@ export async function waitTurn(client, conversationId, options = {}) {
       if (error.code !== 'turn_unavailable') break;
     }
     if (Date.now() >= deadline) break;
+    options.signal?.throwIfAborted();
     try {
       if (currentApp().id !== 'web' && !resumed && receipt.requestBody && !receipt.handoffs?.length && !receipt.liveMessages?.some(m => pendingInputs([m]).length)) {
         resumed = true;
@@ -417,7 +420,7 @@ export async function waitTurn(client, conversationId, options = {}) {
           const send = client.resumeCompletion || ((options) => sendChatCompletion(client, options));
           const result = await send({ conversationId, runId: receipt.runId,
             localMessageId: receipt.localMessageId, model: {}, resumeRequest: receipt.requestBody,
-            timeoutMs: Math.max(1, deadline - Date.now()), waitForReply: true,
+            timeoutMs: Math.max(1, deadline - Date.now()), waitForReply: true, ...(options.signal ? { signal: options.signal } : {}),
             onReceipt: next => { Object.assign(receipt, next); options.onReceipt?.(receipt); } });
           Object.assign(receipt, result); options.onReceipt?.(receipt);
         } catch (error) {
