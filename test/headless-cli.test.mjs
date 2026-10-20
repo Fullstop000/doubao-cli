@@ -1,10 +1,56 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { main, parseOptions } from '../src/cli.mjs';
 import { resolvePlatform } from '../src/app.mjs';
 
 const cliPath = new URL('../bin/doubao.mjs', import.meta.url);
+
+test('web aliases share Headless login, credentials and HTTPS session requests', async t => {
+  const config = fs.mkdtempSync(path.join(os.tmpdir(), 'doubao-web-alias-'));
+  const keys = ['DOUBAO_CLI_CONFIG_DIR', 'DOUBAO_CLI_DISABLE_AUTO_UPDATE', 'DOUBAO_HEADLESS_COOKIE'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  process.env.DOUBAO_CLI_CONFIG_DIR = config;
+  process.env.DOUBAO_CLI_DISABLE_AUTO_UPDATE = '1';
+  delete process.env.DOUBAO_HEADLESS_COOKIE;
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(config, { recursive: true, force: true });
+  });
+  const cookieFile = path.join(config, 'fixture-cookie.txt');
+  fs.writeFileSync(cookieFile, 'sessionid=fixture-session', { mode: 0o600 });
+  const accountId = '123456789012345678', conversationId = '38439138239851266';
+  const output = [], requests = [];
+  t.mock.method(console, 'log', value => output.push(JSON.parse(value)));
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    const url = new URL(input);
+    assert.equal(url.origin, 'https://www.doubao.com');
+    requests.push(url.pathname);
+    if (url.pathname === '/passport/account/info/v2/') return Response.json({ data: { user_id_str: accountId } });
+    assert.equal(url.pathname, '/im/conversation/batch_get');
+    assert.deepEqual(JSON.parse(init.body).uplink_body.batch_get_conv_info_uplink_body.conversation_id, [conversationId]);
+    return Response.json({ status_code: 0, downlink_body: { batch_get_conv_info_downlink_body: {
+      conversation_info_list: [{ conversation_id: conversationId, messages: [] }],
+    } } });
+  });
+  await main(['web', 'login', '--profile', 'alias', '--cookie-file', cookieFile, '--json']);
+  await main(['--platform', 'web', 'sessions', 'read', conversationId, '--profile', 'alias', '--json']);
+  await main(['headless', 'status', '--profile', 'alias', '--json']);
+  assert.ok(output.every(result => result.platform === 'headless'));
+  assert.equal(output[0].loggedIn, true);
+  assert.equal(output[0].browserRequired, false);
+  assert.equal(output[1].conversationId, conversationId);
+  assert.equal(output[2].accountId, accountId);
+  assert.equal(output[2].loggedIn, true);
+  assert.equal(requests.filter(route => route === '/im/conversation/batch_get').length, 1);
+  assert.equal(fs.existsSync(path.join(config, 'web-browser')), false);
+});
 
 test('resolves headless without probing or requiring an installed app', () => {
   const app = resolvePlatform('headless', {}, () => assert.fail('headless resolution must not inspect installed apps'));
@@ -46,9 +92,11 @@ test('headless login cookie paths and literal message text parse without changin
 });
 
 test('headless rejects conflicting selectors, desktop selection, and misplaced headless options', () => {
-  for (const selector of [['--platform', 'web'], ['--platform', 'work'], ['--platform', 'doubao']]) {
+  for (const selector of [['--platform', 'work'], ['--platform', 'doubao']]) {
     assert.throws(() => parseOptions(['headless', ...selector, 'status']), /conflicts/u);
   }
+  assert.equal(parseOptions(['headless', '--platform', 'web', 'status']).platform, 'headless');
+  assert.equal(parseOptions(['web', '--platform', 'headless', 'status']).platform, 'headless');
   assert.throws(() => parseOptions(['headless', '--app', 'doubao', 'status']), /conflicts/u);
   assert.throws(() => parseOptions(['--platform', 'headless', '--app', 'work', 'status']), /different backends/u);
   assert.throws(() => parseOptions(['headless', 'status', '--target', '123']), /--target is not supported/u);

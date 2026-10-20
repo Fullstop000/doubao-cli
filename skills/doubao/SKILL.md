@@ -5,13 +5,15 @@ description: "Control Doubao through a Linux/macOS headless HTTPS CLI, or macOS 
 
 # Doubao CLI
 
-`doubao` supports direct headless HTTPS, macOS desktop CDP, and a dedicated Chrome profile. Requires Node.js 22+ and Doubao account sign-in. Linux defaults to Headless; macOS defaults to Work when installed, otherwise Doubao (unless `DOUBAO_APP` overrides the path). Desktop/browser backends require macOS.
+`doubao` supports direct headless HTTPS and macOS desktop CDP. `doubao web` is a compatibility alias for Headless. Requires Node.js 22+ and Doubao account sign-in. Linux defaults to Headless; macOS defaults to Work when installed, otherwise Doubao (unless `DOUBAO_APP` overrides the path). The desktop backend requires macOS.
 
 If the CLI is missing: `npm install --global doubao-cli@latest` (or prefix commands with `npx --yes doubao-cli@latest`).
 
 ## Headless
 
 Use `doubao headless <command>` on Linux or macOS to select Headless explicitly; `doubao --platform headless <command>` is equivalent. Linux also accepts unprefixed commands. On macOS, keep the `headless` prefix on login, session operations and recovery. `--runtime cloud` does not switch the backend.
+
+Legacy `doubao web <command>` and `--platform web` select the same Headless backend, credentials and profiles. Browser login sessions are not imported; run `doubao headless login` to sign in. Browser `--target` and `web cdp` commands are unsupported.
 
 ```bash
 doubao headless login                  # Terminal QR; approve on the phone
@@ -88,26 +90,6 @@ Pass `--json` to every data-returning command when another program consumes the 
 | Switch model | `doubao model select <model> --json` or per-send `--model <model>` |
 | Set reasoning effort | `doubao model reasoning <level> --json` or `--reasoning <level>` on select/send/create |
 | Update the CLI | `doubao update` (`update check`, `update auto on`; reminders: `update notify on|off|status`) |
-
-## Experimental Web support (CLI 0.14.0+)
-
-Web is opt-in; desktop remains the default (Work when installed, otherwise Doubao). Use the same Web namespace for login and every follow-up:
-
-```bash
-doubao web login --timeout 120
-doubao web status --json
-doubao web capabilities --json
-doubao web sessions create "Hello" --mode chat --wait --json
-doubao web sessions create "Write a short plan" --mode work --runtime cloud --wait --json
-doubao web sessions wait <conversation-id> --run <run-id> --json
-```
-
-- `web login` starts or reuses a dedicated Chrome instance/profile and waits for a ready signed-in Doubao page. Sign in manually using the website's login button and code/QR flow; the CLI does not open the login modal for you. A timeout keeps the browser open for you to finish later. Credentials are not copied from your normal Chrome profile.
-- Choose accounts in the browser's native UI. The CLI does not select accounts automatically, switch accounts, or fall back to desktop/another account. Keep the same account for a task's follow-up commands.
-- Multiple matching Doubao tabs require `--target <id>`; a requested target that is missing or no longer matches fails instead of selecting another tab. Find target IDs with `doubao web cdp status --json`.
-- Create with `--mode chat|work`; `--runtime cloud` applies to Work tasks. Sending to an existing conversation follows its actual mode. Website-native model, project, and enterprise-knowledge settings are retained; the CLI does not modify them.
-- Web does not support CLI attachment uploads, model/reasoning settings, local runtime, MCP, workspace, project selection, enterprise-knowledge selection, quota queries, or desktop profiles. Unsupported options are rejected before connecting.
-- Save `conversationId` and `runId`; `wait`, `status`, and `stop` operate on that accepted run. A timeout does not resend. `stopped: true` means the server task tree is terminal, not that it was cancelled; inspect status to distinguish cancellation from natural completion.
 
 ## Behavior notes
 

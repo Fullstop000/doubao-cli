@@ -9,7 +9,7 @@ const headless = args => parseOptions(['--platform', 'headless', ...args]);
 test('explicit confirmation and limits are accepted only where handlers use them', () => {
   assert.equal(desktop(['cdp', 'launch', '--yes']).yes, true);
   assert.throws(() => desktop(['sessions', 'create', 'hello', '--yes']), /--yes requires cdp launch/u);
-  assert.throws(() => web(['cdp', 'launch', '--yes']), /--yes requires cdp launch/u);
+  assert.throws(() => web(['cdp', 'launch', '--yes']), /desktop platform/u);
   assert.equal(headless(['sessions', 'list', '--limit', '8']).limit, 8);
   assert.equal(headless(['sessions', 'read', '38439138239851266', '--limit', '8']).limit, 8);
   assert.equal(web(['sessions', 'read', '38439138239851266', '--limit', '8']).limit, 8);
@@ -74,7 +74,7 @@ test('runtime and reply checks stay on task operations', () => {
 
 test('unknown flags fail on desktop and literal text after -- is preserved', () => {
   assert.throws(() => desktop(['sessions', 'list', '--not-an-option']), /Unknown option: --not-an-option/u);
-  assert.throws(() => web(['sessions', 'list', '--not-an-option']), /Unknown Web option: --not-an-option/u);
+  assert.throws(() => web(['sessions', 'list', '--not-an-option']), /Unknown Headless option: --not-an-option/u);
   assert.throws(() => headless(['sessions', 'list', '--not-an-option']), /Unknown Headless option: --not-an-option/u);
   const literal = headless(['sessions', 'create', '--', 'literal', '--not-an-option']);
   assert.deepEqual(literal.args, ['sessions', 'create', 'literal', '--not-an-option']);
