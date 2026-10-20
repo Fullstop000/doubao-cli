@@ -105,7 +105,7 @@ export function completionBody({ conversationId = '', message, mode = 'work', mo
     generalTask.action = 4;
     generalTask.goal_param = { goal_id: goalId };
   }
-  const init = { need_ack_conversation: true };
+  const init = { need_ack_conversation: true, ...(taskContext?.projectId ? { project_id: taskContext.projectId } : {}) };
   return {
     client_meta: { local_conversation_id: 'local_' + Date.now() + '_' + randomUUID(), conversation_id: conversationId,
       bot_id: '7338286299411103781', last_section_id: '', last_message_index: null },
