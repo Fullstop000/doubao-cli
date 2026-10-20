@@ -4,6 +4,7 @@ const SESSION_LIST_OR_READ = (command, backend) => command[0] === 'sessions'
   && (command[1] === 'read' || backend === 'headless' && command[1] === 'list');
 
 function allowed(flag, command, backend) {
+  if (command[0] === 'config') return ['--json', '--app', '--platform'].includes(flag);
   const sessionMessage = SESSION_CREATE_OR_SEND(command);
   const sessionState = SESSION_STATE(command);
   switch (flag) {
@@ -123,6 +124,12 @@ function validatePositionalContract(options) {
   if (command === 'automations') {
     if (!['list', 'get', 'create', 'update', 'delete'].includes(subcommand)) fail('automations requires list, get, create, update, or delete');
     exact(['list', 'create'].includes(subcommand) ? 2 : 3, `automations ${subcommand} ${['list', 'create'].includes(subcommand) ? 'accepts no positional arguments' : 'requires exactly one task ID'}`);
+  }
+  if (command === 'config') {
+    if (subcommand !== 'connection-badge') fail('config requires connection-badge');
+    if (args.length < 2 || args.length > 3 || !['on', 'off', 'status'].includes(args[2] || 'status')) {
+      fail('config connection-badge accepts on, off, or status');
+    }
   }
   if (command === 'sessions') {
     if (['list', 'current'].includes(subcommand)) exact(2, `sessions ${subcommand} accepts no positional arguments`);

@@ -1,9 +1,23 @@
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { BADGE_ID, badgeExpression, startConnectionBadge } from '../src/connection-badge.mjs';
+import { BADGE_ID, badgeExpression, badgeVisibilityExpression, startConnectionBadge } from '../src/connection-badge.mjs';
 import { CdpClient, withChatClient } from '../src/cdp.mjs';
 import { resolveApp, resolvePlatform, withApp } from '../src/app.mjs';
+
+test.beforeEach(t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'doubao-badge-test-'));
+  const previous = process.env.DOUBAO_CLI_CONFIG_DIR;
+  process.env.DOUBAO_CLI_CONFIG_DIR = directory;
+  t.after(() => {
+    if (previous === undefined) delete process.env.DOUBAO_CLI_CONFIG_DIR;
+    else process.env.DOUBAO_CLI_CONFIG_DIR = previous;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+});
 
 // A small DOM fixture executes the actual injected script, including its events
 // and timers, without a browser dependency or access to the user's account.
@@ -13,12 +27,13 @@ function page() {
   let now = 100000;
   let nextTimer = 1;
   const element = () => ({
-    style: {}, dataset: {}, hidden: true, offsetHeight: 24,
+    style: {}, dataset: {}, hidden: true, offsetHeight: 28,
+    get isConnected() { return nodes.get(this.id) === this; },
+    remove() { if (nodes.get(this.id) === this) nodes.delete(this.id); },
     listeners: {}, attributes: {},
     addEventListener(name, callback) { this.listeners[name] = callback; },
     setAttribute(name, value) { this.attributes[name] = value; },
-    getBoundingClientRect: () => ({ width: 170 }),
-    remove() { nodes.delete(this.id); },
+    getBoundingClientRect: () => ({ width: 164 }),
     attachShadow() {
       const children = new Map();
       this.shadowRoot = {
@@ -37,14 +52,24 @@ function page() {
     createElement: element,
     querySelector: () => null,
   };
+  const listeners = new Map();
+  const window = {
+    innerWidth: 1000, innerHeight: 700,
+    addEventListener(name, callback) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name).add(callback);
+    },
+    removeEventListener(name, callback) { listeners.get(name)?.delete(callback); },
+  };
   const context = vm.createContext({
-    document, window: { innerWidth: 1000 },
+    document, window,
     Date: class extends Date { static now() { return now; } },
     setInterval: callback => { const id = nextTimer++; timers.set(id, callback); return id; },
     clearInterval: id => timers.delete(id),
   });
   return {
-    document, nodes, timers,
+    document, nodes, timers, window, listeners,
+    resize(width, height) { window.innerWidth = width; window.innerHeight = height; for (const f of listeners.get("resize") || []) f(); },
     evaluate: expression => vm.runInContext(expression, context),
     run: (connection, connected = true) => vm.runInContext(badgeExpression(connection, connected), context),
     tick(ms) { now += ms; for (const callback of [...timers.values()]) callback(); },
@@ -53,7 +78,7 @@ function page() {
   };
 }
 const info = { id: 'one', app: 'DoubaoWork', profile: 'Default', endpoint: 'http://127.0.0.1:9226', version: '0.17.0', pid: 42 };
-const enabledEnv = { DOUBAO_CLI_CONNECTION_BADGE: '1' };
+const enabledEnv = { env: { DOUBAO_CLI_CONNECTION_BADGE: '1' } };
 
 test('badge defaults off, removes an existing badge, and only accepts explicit opt-in', async () => {
   for (const value of [undefined, '', '0', 'true']) {
@@ -62,7 +87,7 @@ test('badge defaults off, removes an existing badge, and only accepts explicit o
     let calls = 0;
     const stop = await startConnectionBadge({ send: async (method, params) => {
       calls++; p.evaluate(params.expression);
-    } }, info, { DOUBAO_CLI_CONNECTION_BADGE: value });
+    } }, info, { env: { DOUBAO_CLI_CONNECTION_BADGE: value } });
     assert.equal(p.nodes.size, 0);
     assert.equal(p.timers.size, 0);
     await stop();
@@ -163,9 +188,9 @@ test('desktop callbacks retain their results and errors, clean up the badge, and
   });
   assert.equal(closed, 2);
   assert.equal(requests.length, 4);
-  assert.ok(requests[0].endsWith(', true, true)'));
-  assert.ok(requests[1].endsWith(', false, true)'));
-  assert.ok(requests[3].endsWith(', false, true)'));
+  assert.ok(requests[0].endsWith(', true)'));
+  assert.ok(requests[1].endsWith(', false)'));
+  assert.ok(requests[3].endsWith(', false)'));
 });
 
 test('web connections do not inject a desktop badge', async t => {
@@ -190,4 +215,107 @@ test('expanded connection details stay within the viewport near either edge', ()
   panel.getBoundingClientRect = () => ({ left: 800, right: 1080 });
   p.tick(1000);
   assert.equal(panel.style.transform, 'translateX(-88px)');
+});
+
+
+test('disabling removes the existing badge and timer; old heartbeats cannot recreate it until enabled', () => {
+  const p = page();
+  p.run(info);
+  p.evaluate(badgeVisibilityExpression(false));
+  assert.equal(p.nodes.size, 0);
+  assert.equal(p.timers.size, 0);
+  p.run(info); p.run(info, false);
+  assert.equal(p.nodes.size, 0);
+  p.evaluate(badgeVisibilityExpression(true));
+  p.run(info);
+  assert.equal(p.health(), 'connected');
+});
+
+test('an active connection observes setting changes, including an initially disabled badge', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const p = page();
+  let enabled = false;
+  let calls = 0;
+  const client = { send: async (method, params) => {
+    calls++;
+    p.evaluate(params.expression);
+    return {};
+  } };
+  const stop = await startConnectionBadge(client, info, { readEnabled: () => enabled });
+  assert.equal(p.nodes.size, 0);
+  assert.equal(calls, 1);
+  const tick = async () => {
+    t.mock.timers.tick(2000);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  await tick(); assert.equal(calls, 1, 'disabled connections do not keep injecting scripts');
+  enabled = true;
+  await tick(); assert.equal(p.health(), 'connected');
+  enabled = false;
+  await tick(); assert.equal(p.nodes.size, 0); assert.equal(p.timers.size, 0);
+  enabled = true;
+  await tick(); assert.equal(p.health(), 'connected');
+  await stop(); assert.equal(p.health(), 'disconnected');
+  const finished = calls;
+  await tick(); assert.equal(calls, finished);
+});
+
+test('a failed visibility update is retried and does not fail the task', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const p = page();
+  p.evaluate(badgeVisibilityExpression(false));
+  let fail = true;
+  const client = { send: async (method, params) => {
+    if (fail) throw new Error('context destroyed');
+    p.evaluate(params.expression);
+    return {};
+  } };
+  const stop = await startConnectionBadge(client, info, { readEnabled: () => true });
+  fail = false;
+  t.mock.timers.tick(2000);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(p.health(), 'connected');
+  await stop();
+});
+
+
+test('resize repositions disconnected badges immediately and disabling releases listeners', () => {
+  const p = page();
+  p.document.querySelector = () => ({ getBoundingClientRect: () => ({ left: 800, top: 8, height: 32, width: 32 }) });
+  p.run(info);
+  const host = p.host();
+  assert.equal(host.style.right, '208px');
+  p.run(info, false);
+  assert.equal(p.timers.size, 0);
+  p.resize(600, 400);
+  assert.equal(host.style.right, '12px', 'offscreen anchor falls back without waiting for a heartbeat');
+  p.resize(1000, 700);
+  assert.equal(host.style.right, '208px');
+  p.evaluate(badgeVisibilityExpression(false));
+  assert.equal(p.listeners.get('resize').size, 0);
+  assert.equal(p.listeners.get('scroll').size, 0);
+});
+
+test('details flip above low anchors and scroll within a short viewport', () => {
+  const p = page();
+  p.document.querySelector = () => ({ getBoundingClientRect: () => ({ left: 800, top: 620, height: 32, width: 32 }) });
+  p.run(info);
+  const root = p.host().shadowRoot;
+  const panel = root.querySelector('.panel');
+  panel.getBoundingClientRect = () => ({ left: 512, right: 792, height: 220 });
+  root.querySelector('.pill').listeners.click();
+  assert.equal(panel.style.bottom, '100%');
+  assert.equal(panel.style.maxHeight, '608px');
+  p.resize(320, 180);
+  assert.equal(panel.style.top, '100%');
+  assert.equal(panel.style.maxHeight, '126px');
+});
+
+test('a narrow window places the badge below search instead of covering it', () => {
+  const p = page();
+  p.resize(180, 300);
+  p.document.querySelector = () => ({ getBoundingClientRect: () => ({ left: 128, top: 12, height: 32, width: 32 }) });
+  p.run(info);
+  assert.equal(p.host().style.top, '52px');
+  assert.equal(p.host().style.right, '12px');
 });

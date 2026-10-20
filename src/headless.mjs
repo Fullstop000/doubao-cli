@@ -30,7 +30,7 @@ const validateId = value => { if (!ID.test(value || '')) throw new Error('conver
 
 export function validateHeadlessOptions(options) {
   const [command, subcommand] = options.args;
-  if (!command || ['help', 'version', '--version', '-v', 'update'].includes(command)) return;
+  if (!command || ['help', 'version', '--version', '-v', 'update', 'config'].includes(command)) return;
   const unsupported = [
     ['--target', options.targetId],
   ].find(([, supplied]) => supplied);

@@ -1,5 +1,5 @@
 import { currentApp, resolveApp, isAppTarget, activeProfile } from './app.mjs';
-import { startConnectionBadge } from './connection-badge.mjs';
+import { startConnectionBadge, badgeVisibilityExpression } from './connection-badge.mjs';
 
 export function cdpEndpoint(env) {
   return env ? resolveApp(undefined, env).endpoint : currentApp().endpoint;
@@ -257,5 +257,35 @@ export async function withBackgroundClient(callback, endpoint = cdpEndpoint()) {
     return await callback(client, target);
   } finally {
     client.close();
+  }
+}
+
+// Settings remain usable offline. Only touch a matching, already-open desktop
+// page; never launch the app, navigate, or wait indefinitely for its renderer.
+export async function refreshConnectionBadgeVisibility(enabled, endpoint = cdpEndpoint()) {
+  if (!['work', 'doubao'].includes(currentApp().id)) return false;
+  let client;
+  let finished = false;
+  let timer;
+  const refresh = async () => {
+    const targets = await fetchJson(`${endpoint}/json/list`, 500);
+    if (finished) return false;
+    const target = targets.find(item => item.type === 'page' && isAppTarget(item.url));
+    if (!target?.webSocketDebuggerUrl) return false;
+    client = new CdpClient(target.webSocketDebuggerUrl);
+    await client.connect();
+    if (finished) return false;
+    return await client.evaluate(badgeVisibilityExpression(enabled)) === true;
+  };
+  try {
+    return await Promise.race([
+      refresh(),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), 1500); }),
+    ]);
+  } catch { return false; }
+  finally {
+    finished = true;
+    clearTimeout(timer);
+    client?.close();
   }
 }
