@@ -172,6 +172,7 @@ Auto-update defaults off. `DOUBAO_CLI_DISABLE_AUTO_UPDATE=1` disables automatic 
 | `XDG_CONFIG_HOME` | Linux settings root; default `~/.config` |
 | `DOUBAO_HEADLESS_COOKIE` | Headless Cookie header; secret |
 | `DOUBAO_CLI_DISABLE_AUTO_UPDATE` | `1` to disable automatic updates/reminders |
+| `DOUBAO_CLI_CONNECTION_BADGE` | `1` to show the desktop connection badge; hidden by default |
 
 ## Agent skill
 

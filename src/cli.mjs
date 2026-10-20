@@ -94,6 +94,7 @@ Environment:
   DOUBAO_BROWSER_APP  Web browser app path (default: Google Chrome.app)
   DOUBAO_WEB_PROFILE_DIR  Dedicated browser data directory for web launch
   DOUBAO_CLI_CONFIG_DIR  Override the doubao-cli settings directory
+  DOUBAO_CLI_CONNECTION_BADGE  Set to 1 to show the desktop connection badge (default: hidden)
   DOUBAO_CLI_DISABLE_AUTO_UPDATE  Set to 1 to skip automatic updates and reminders
 `;
 
