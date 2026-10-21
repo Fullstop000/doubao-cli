@@ -163,7 +163,7 @@ async function terminateBeforeAck(child) {
 
 /** Run a local-capable submission in a detached process that owns both completion and SSE. */
 export async function startHeadlessSubmissionWorker({ options, configDir = configDirectory(), expectedAccountId,
-  ackTimeoutMs = SUBMISSION_ACK_TIMEOUT_MS, logPath, env = process.env, workerPath = WORKER_FILE } = {}) {
+  ackTimeoutMs = SUBMISSION_ACK_TIMEOUT_MS, logPath, env = process.env, workerPath = WORKER_FILE, fullAccessConfirmed = false } = {}) {
   const safeOptions = plainJsonOptions(options);
   const expected = expectedAccountId == null ? undefined : validateAccountId(String(expectedAccountId));
   if (!Number.isFinite(ackTimeoutMs) || ackTimeoutMs < 1 || ackTimeoutMs > 2_147_000_000) {
@@ -257,7 +257,7 @@ export async function startHeadlessSubmissionWorker({ options, configDir = confi
       void terminateBeforeAck(child);
       return;
     }
-    child.send({ type: 'start', options: safeOptions, expectedAccountId: expected }, error => {
+    child.send({ type: 'start', options: safeOptions, expectedAccountId: expected, fullAccessConfirmed: fullAccessConfirmed === true }, error => {
       if (error) {
         fail(Object.assign(new Error('Could not send headless submission to worker'), { code: 'SUBMISSION_WORKER_IPC_FAILED', cause: error }));
         void terminateBeforeAck(child);
@@ -316,7 +316,7 @@ async function runSubmissionWorker() {
         completed = true;
         if (process.connected) process.send({ type: 'accepted', result: safeResult });
       };
-      await withApp(resolvePlatform('headless'), () => executeHeadless(options));
+      await withApp(resolvePlatform('headless'), () => executeHeadless(options, { fullAccessConfirmed: message.fullAccessConfirmed === true }));
       if (!completed) await fail(Object.assign(new Error('Headless submission ended before a verified acceptance receipt'), { code: 'SUBMISSION_WORKER_NO_ACK' }), 'SUBMISSION_WORKER_NO_ACK');
     } catch (error) {
       await fail(error, typeof error?.code === 'string' ? error.code : 'SUBMISSION_WORKER_FAILED');

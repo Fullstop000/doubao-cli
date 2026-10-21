@@ -29,7 +29,7 @@ async function fixture(t, { tools = [TOOL], connectorOptions = {} } = {}) {
   } };
   let closeCount = 0;
   const makeMcpClient = config => {
-    calls.push({ mcp: 'spawn', command: config.command, params: config.params });
+    calls.push({ mcp: 'spawn', command: config.command, params: config.params, env: config.env });
     return {
       transport: { stderr: new EventEmitter() },
       client: {
@@ -47,14 +47,18 @@ async function fixture(t, { tools = [TOOL], connectorOptions = {} } = {}) {
 
 test('register verifies a real stdio MCP server before remote mutation and stores secrets privately', async t => {
   const fx = await fixture(t);
-  const result = await fx.connectors.register({ name: 'Local Search', command: process.execPath, params: ['server.js'], env: { API_TOKEN: 'secret-value' } });
+  const env = { API_TOKEN: 'secret-value', SAFE_LABEL: 'local-only', OPAQUE_CREDENTIAL_17: 'opaque-value' };
+  const result = await fx.connectors.register({ name: 'Local Search', command: process.execPath, params: ['server.js'], env });
   assert.deepEqual(result, { connectorId: CONNECTOR, status: 'READY', tools: ['lookup'] });
   assert.deepEqual(fx.calls.slice(0, 3).map(call => call.mcp || call.route.split('/').at(-1)), ['spawn', 'initialize', 'listTools']);
   assert.equal(fx.calls[3].route.endsWith('/create_personal'), true);
+  assert.deepEqual(fx.calls[0].env, env, 'the local stdio server receives the configured environment');
+  assert.deepEqual(fx.calls[3].body.mcp_config.stdio_config.env, {}, 'environment values never leave the local machine');
   const store = fx.connectors.storePath;
   assert.equal((await fs.stat(store)).mode & 0o777, 0o600);
   const contents = await fs.readFile(store, 'utf8');
   assert.match(contents, /secret-value/u);
+  assert.match(contents, /opaque-value/u);
   assert.doesNotMatch(JSON.stringify(await fx.connectors.list()), /secret-value/u);
   assert.deepEqual(await fx.connectors.snapshot([CONNECTOR]), [{ connectorId: CONNECTOR, mcpToolsList: [{
     name: 'lookup', description: 'Look up an item', inputSchema: JSON.stringify(TOOL.inputSchema),
@@ -200,8 +204,10 @@ test('official SDK client initializes a portable stdio server and invokes its ad
   t.after(() => fs.rm(configDir, { recursive: true, force: true }));
   const connectorId = '87654322';
   let remote = [];
+  const calls = [];
   const client = { async json(route, options) {
     const body = JSON.parse(options.body);
+    calls.push({ route, body });
     if (route.endsWith('/create_personal')) {
       remote = [{ connector_id: connectorId, name: body.name, enabled: true }];
       return { data: { connector: { connector_id: connectorId } } };
@@ -215,14 +221,19 @@ test('official SDK client initializes a portable stdio server and invokes its ad
     import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
     const server = new Server({ name: 'fixture', version: '1' }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [${JSON.stringify(TOOL)}] }));
-    server.setRequestHandler(CallToolRequestSchema, async request => ({ content: [{ type: 'text', text: request.params.arguments.id }], isError: false }));
+    server.setRequestHandler(CallToolRequestSchema, async request => ({ content: [{ type: 'text', text: [request.params.arguments.id, process.env.SAFE_LABEL, process.env.OPAQUE_CREDENTIAL_17].join('|') }], isError: false }));
     await server.connect(new StdioServerTransport());
     process.stderr.write('private-server-diagnostic');
   `;
   const connectors = new HeadlessConnectors({ client, profile: 'sdk', accountId: ACCOUNT, configDir });
   t.after(() => connectors.close());
-  await connectors.register({ name: 'SDK fixture', command: process.execPath, params: ['-e', server], env: {} });
+  const env = { SAFE_LABEL: 'stdio-local-value', OPAQUE_CREDENTIAL_17: 'stdio-token-value' };
+  await connectors.register({ name: 'SDK fixture', command: process.execPath, params: ['-e', server], env });
+  assert.deepEqual(calls.find(call => call.route.endsWith('/create_personal')).body.mcp_config.stdio_config.env, {});
+  const stored = JSON.parse(await fs.readFile(connectors.storePath, 'utf8'));
+  assert.deepEqual(stored.connectors[connectorId].env, env, 'local connector storage retains the configured stdio environment');
   const result = await connectors.call({ connectorId, toolName: 'lookup', arguments: { id: 'real-sdk' } });
-  assert.equal(result.mcpResponseJson.content[0].text, 'real-sdk');
+  assert.equal(result.mcpResponseJson.content[0].text, 'real-sdk|stdio-local-value|stdio-token-value',
+    'a real stdio child process receives the configured local environment');
   assert.doesNotMatch(JSON.stringify(result), /private-server-diagnostic/u);
 });

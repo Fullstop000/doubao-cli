@@ -16,7 +16,8 @@ import { resolveAttachmentFiles } from './attachments.mjs';
 import { uploadHeadlessAttachments } from './headless-attachments.mjs';
 import { HeadlessConnectors } from './headless-mcp.mjs';
 import { HeadlessLocalRuntime, buildHeadlessLocalTaskParam, prepareHeadlessLocalChannel } from './headless-local-runtime.mjs';
-import { createHeadlessApproval } from './headless-approval.mjs';
+import { createHeadlessApproval, confirmHeadlessFullAccess } from './headless-approval.mjs';
+import { resolvePermission, DEFAULT_HEADLESS_PERMISSION } from './permissions.mjs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { CookieJar, HeadlessClient, consumeSse, HEADLESS_PROTOCOL_VERSION } from './headless-http.mjs';
@@ -213,7 +214,17 @@ export async function listHeadlessProfileMetadata({ configDir, timeoutMs = 15_00
   return { defaultProfile: 'default', metadataProfile, profiles, accountLookupError };
 }
 
-export async function executeHeadless(options) {
+export async function executeHeadless(options, { confirmFullAccess = confirmHeadlessFullAccess, fullAccessConfirmed = false } = {}) {
+  // Consent is scoped to this invocation, never persisted in a recovery receipt
+  // or accepted through a CLI flag such as --yes.
+  const authorizeFullAccess = async workspace => {
+    if (fullAccessConfirmed === true) return;
+    if (await confirmFullAccess({ workspace }) !== true) {
+      throw Object.assign(new Error('FullAccess requires explicit confirmation in an interactive terminal; use AskOnRisk or AlwaysAsk otherwise'),
+        { code: 'FULL_ACCESS_CONFIRMATION_REQUIRED' });
+    }
+    fullAccessConfirmed = true;
+  };
   const [command, subcommand, operand] = options.args;
   const profile = validateHeadlessProfileName(options.profile || 'default');
   const started = Date.now(), deadline = started + options.timeoutMs;
@@ -368,6 +379,12 @@ export async function executeHeadless(options) {
     const localOptions = options.workspace || options.permission || options.noSkills || options.mcps?.length;
     const runtimeChoice = options.runtime || (localOptions || previousAgentParam.runtime_type === 2 ? 'local' : 'cloud');
     if (mode === 'chat' && (runtimeChoice === 'local' || project || options.enterpriseKnowledge)) throw new Error('Local runtime, projects and enterprise knowledge require --mode work');
+    const inheritedPermission = previousAgentParam.runtime_type === 2
+      ? ({ 0: 'AlwaysAsk', 1: 'AskOnRisk', 2: 'FullAccess' })[previousAgentParam.sandbox_auth_type] : undefined;
+    const localPermission = ['AlwaysAsk', 'AskOnRisk', 'FullAccess'][resolvePermission(options.permission ?? inheritedPermission ?? DEFAULT_HEADLESS_PERMISSION)];
+    if (runtimeChoice === 'local' && localPermission === 'FullAccess') {
+      await authorizeFullAccess(options.workspace || previousAgentParam.workspace);
+    }
     const taskContext = { runtime: runtimeChoice, projectId: project?.id || '', previousProjectId,
       activeGoalId: activeGoalFromExtra(previous.extra),
       previousAgentParam: parseExtra(previous.extra?.agent_task_param), projectContext: projectContext(project, '', 'cloud'),
@@ -379,6 +396,7 @@ export async function executeHeadless(options) {
       const workerConfigDir = await fs.realpath(configuredRoot);
       const worker = await startHeadlessSubmissionWorker({
         options: { ...options, runtime: 'local' }, configDir: workerConfigDir, expectedAccountId: client.accountId, ackTimeoutMs: remaining(),
+        fullAccessConfirmed,
       });
       const accepted = { platform: worker.platform, mode: worker.mode, conversationId: worker.conversationId, runId: worker.runId,
         ...(worker.goalId ? { goalId: worker.goalId } : {}),
@@ -397,7 +415,7 @@ export async function executeHeadless(options) {
         if (options.workspace && !(await fs.stat(workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`);
         await fs.mkdir(workspace, { recursive: true });
         const sandboxId = `cli-${randomUUID()}`;
-        const local = buildHeadlessLocalTaskParam({ workspace, sandboxId, deviceId: client.device.device_id, permission: options.permission });
+        const local = buildHeadlessLocalTaskParam({ workspace, sandboxId, deviceId: client.device.device_id, permission: localPermission });
         localTaskParam = JSON.parse(local.general_task_param);
         Object.assign(localTaskParam.agent_task_param, { device_name: os.hostname(), folder_name: path.basename(workspace), local_app_id: '1044603' });
         const localInput = JSON.parse(localTaskParam.task_input_json);
@@ -416,7 +434,7 @@ export async function executeHeadless(options) {
         await fs.mkdir(profileDirectory, { recursive: true, mode: 0o700 });
         const journalDirectory = path.join(await fs.realpath(profileDirectory), 'runtime', createHash('sha256').update(client.accountId).digest('hex'));
         await fs.mkdir(journalDirectory, { recursive: true, mode: 0o700 });
-        localRuntime = { workspace, sandboxId, deviceId: client.device.device_id, permission: options.permission || 'FullAccess',
+        localRuntime = { workspace, sandboxId, deviceId: client.device.device_id, permission: localPermission,
           connectorIds: options.mcps || [], journalPath: path.join(journalDirectory, sandboxId + '.json') };
       }
       const attachmentBlocks = options.attachments?.length
@@ -518,6 +536,9 @@ export async function executeHeadless(options) {
   const needsRuntime = subcommand === 'wait' && receipt.localRuntime && !['completed', 'failed', 'cancelled'].includes(pinned.result.status);
   const runtimeAbort = new AbortController();
   if (needsRuntime) {
+    if (resolvePermission(receipt.localRuntime.permission ?? DEFAULT_HEADLESS_PERMISSION) === 2) {
+      await authorizeFullAccess(receipt.localRuntime.workspace);
+    }
     if (receipt.localRuntime.connectorIds?.length) connectors = new HeadlessConnectors({ client, profile, accountId: client.accountId, requestTimeoutMs: remaining() });
   }
   const operation = subcommand === 'wait' ? waitTurn : subcommand === 'stop' ? stopTurn : refreshTurn;

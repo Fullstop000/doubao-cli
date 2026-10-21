@@ -1,13 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { createHeadlessApproval } from '../src/headless-approval.mjs';
+import { confirmHeadlessFullAccess, createHeadlessApproval } from '../src/headless-approval.mjs';
 
 function streams() {
   const input = new PassThrough();
   const output = new PassThrough();
   return { input, output, readOutput: () => output.read()?.toString('utf8') || '' };
 }
+
+test('FullAccess requires an explicit yes from a TTY and explains its reach', async () => {
+  const { input, output, readOutput } = streams();
+  const pending = confirmHeadlessFullAccess({ input, output, interactive: true, workspace: '/tmp/private-workspace' });
+  input.write('yes\n');
+  assert.equal(await pending, true);
+  const prompt = readOutput();
+  assert.match(prompt, /Enable FullAccess for this turn\?/u);
+  assert.match(prompt, /inherit environment credentials/u);
+  assert.match(prompt, /send tool results to Doubao/u);
+  assert.match(prompt, /cwd \/tmp\/private-workspace/u);
+  assert.match(prompt, /\[y\/N\]/u);
+  input.destroy();
+  output.destroy();
+});
+
+test('FullAccess denies no, EOF, and non-TTY requests', async () => {
+  const no = streams();
+  const noPending = confirmHeadlessFullAccess({ ...no, interactive: true });
+  no.input.write('no\n');
+  assert.equal(await noPending, false);
+  no.input.destroy();
+  no.output.destroy();
+
+  const eof = streams();
+  const eofPending = confirmHeadlessFullAccess({ ...eof, interactive: true });
+  eof.input.end();
+  assert.equal(await eofPending, false);
+  eof.output.destroy();
+
+  const nonTty = streams();
+  assert.equal(await confirmHeadlessFullAccess({ ...nonTty, interactive: false }), false);
+  assert.equal(nonTty.readOutput(), '');
+  nonTty.input.destroy();
+  nonTty.output.destroy();
+});
 
 test('TTY approval shows a bounded command and working directory while stripping ANSI escapes', async () => {
   const { input, output, readOutput } = streams();

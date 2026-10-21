@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolvePermission } from './permissions.mjs';
+import { resolvePermission, DEFAULT_HEADLESS_PERMISSION } from './permissions.mjs';
 
 const SSE_PATH = '/alice/office/tool_local/chunk_stream';
 const TOOL_RESULT_PATH = '/alice/office/tool_local/upload_tool_call_result';
@@ -418,7 +418,7 @@ async function walkFiles(root, options, signal) {
   return { results, truncated: results.length >= max };
 }
 
-export function buildHeadlessLocalTaskParam({ workspace, sandboxId = `route-${randomUUID()}`, deviceId, permission = 'FullAccess', homeDir = process.env.HOME || process.cwd() } = {}) {
+export function buildHeadlessLocalTaskParam({ workspace, sandboxId = `route-${randomUUID()}`, deviceId, permission = DEFAULT_HEADLESS_PERMISSION, homeDir = process.env.HOME || process.cwd() } = {}) {
   const resolvedWorkspace = path.resolve(requiredString(workspace, 'workspace'));
   const routeId = requiredString(sandboxId, 'sandbox id', 256);
   const device = requiredDeviceId(deviceId);
@@ -440,7 +440,7 @@ export function buildHeadlessLocalTaskParam({ workspace, sandboxId = `route-${ra
 
 /** A portable HTTP/SSE local-tool executor. It does not emulate native app services. */
 export class HeadlessLocalRuntime {
-  constructor({ client, sandboxId, deviceId, conversationId, workspace, permission = 'FullAccess', callConnector,
+  constructor({ client, sandboxId, deviceId, conversationId, workspace, permission = DEFAULT_HEADLESS_PERMISSION, callConnector,
     approve, onReady = () => {}, onError = () => {}, requestTimeoutMs = 300_000, toolTimeoutMs = 120_000,
     maxOutputBytes = MAX_RESULT_BYTES, maxToolCalls = MAX_RECORDED_CALLS, journalPath, accountId, initialResponse } = {}) {
     if (typeof client?.request !== 'function' || typeof client?.json !== 'function') throw new TypeError('runtime client must provide request() and json()');

@@ -47,7 +47,15 @@ function approvalPrompt(request, workspace) {
   const risk = visibleText(request?.risk || 'approval-required', 40);
   const operation = operationSummary(request, workspace);
   const workspaceLabel = workspace ? visibleText(path.resolve(workspace), 240) : 'configured workspace';
+  if (request?.risk === 'enable-full-access') {
+    return `\n[local runtime: FullAccess] Enable FullAccess for this turn? Commands can read, modify or delete files accessible to this user, inherit environment credentials, and send tool results to Doubao. There is no OS sandbox; cwd ${workspaceLabel}. [y/N] `;
+  }
   return `\n[local runtime: ${permission}; ${risk}] Approve ${tool}: ${operation}; cwd ${workspaceLabel}? [y/N] `;
+}
+
+/** FullAccess must be explicitly confirmed in the caller's terminal per turn. */
+export async function confirmHeadlessFullAccess(options = {}) {
+  return createHeadlessApproval(options)({ permission: 'FullAccess', risk: 'enable-full-access' });
 }
 
 /** Create the explicit TTY approval callback used by HeadlessLocalRuntime. */
