@@ -103,17 +103,20 @@ test('submission worker returns verified work and goal ACKs while its detached c
       `  process.send({ type: 'accepted', result: { platform: 'headless', mode, ...(mode === 'goal' ? { goalId: 'goal-fixture' } : {}), conversationId, runId, localMessageId, status: 'running', accepted: true, reply: null } });\n` +
       `  process.on('disconnect', async () => {\n` +
       `    await new Promise(resolve => setTimeout(resolve, 100));\n` +
-      `    await fs.writeFile(process.env.FIXTURE_PROOF, JSON.stringify({ aliveAfterDisconnect: true, cookieInherited: process.env.DOUBAO_HEADLESS_COOKIE === process.env.FIXTURE_COOKIE, argvSecretFree: !process.argv.join(' ').includes(process.env.FIXTURE_COOKIE), optionsReceived: message.options.args.join(' '), modeReceived: message.options.mode || null }), { mode: 0o600 });\n` +
+      `    await fs.writeFile(process.env.FIXTURE_PROOF, JSON.stringify({ aliveAfterDisconnect: true, cookieInherited: process.env.DOUBAO_HEADLESS_COOKIE === process.env.FIXTURE_COOKIE, argvSecretFree: !process.argv.join(' ').includes(process.env.FIXTURE_COOKIE), optionsReceived: message.options.args.join(' '), modeReceived: message.options.mode || null, ipcFullAccessConfirmed: message.fullAccessConfirmed === true, optionsFullAccessConfirmed: message.options.fullAccessConfirmed ?? null, optionsYes: message.options.yes ?? null, authInArgv: process.argv.some(value => value === '--yes' || value.includes('fullAccessConfirmed')), authInEnv: Object.keys(process.env).some(key => /FULL_ACCESS_CONFIRMED/u.test(key)) }), { mode: 0o600 });\n` +
       `    setTimeout(() => process.exit(0), 100);\n` +
       `  });\n` +
       `});\n` +
       `const conversationId = '${conversationId}', runId = '${runId}', localMessageId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';\n`, { mode: 0o600 });
     const configDir = path.join(root, 'config');
+    const explicitConfirmation = mode === 'goal';
     const result = await startHeadlessSubmissionWorker({
-      options: { args: ['sessions', 'create', 'fixture message'], profile: 'fixture', timeoutMs: 1000, ...(mode === 'goal' ? { mode } : {}) },
+      options: { args: ['sessions', 'create', 'fixture message'], profile: 'fixture', timeoutMs: 1000,
+        fullAccessConfirmed: !explicitConfirmation, yes: true, ...(mode === 'goal' ? { mode } : {}) },
       configDir, expectedAccountId: '123456', ackTimeoutMs: 5_000, workerPath,
       env: { HOME: root, PATH: process.env.PATH, DOUBAO_HEADLESS_COOKIE: cookie,
         FIXTURE_COOKIE: cookie, FIXTURE_PROOF: proofPath },
+      ...(explicitConfirmation ? { fullAccessConfirmed: true } : {}),
     });
     assert.deepEqual({ accepted: result.accepted, mode: result.mode, ...(result.goalId ? { goalId: result.goalId } : {}),
       conversationId: result.conversationId, runId: result.runId, localMessageId: result.localMessageId, status: result.status }, {
@@ -129,7 +132,9 @@ test('submission worker returns verified work and goal ACKs while its detached c
       try { proof = JSON.parse(await fs.readFile(proofPath, 'utf8')); } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
     }
     assert.deepEqual(proof, { aliveAfterDisconnect: true, cookieInherited: true, argvSecretFree: true,
-      optionsReceived: 'sessions create fixture message', modeReceived: mode === 'goal' ? 'goal' : null });
+      optionsReceived: 'sessions create fixture message', modeReceived: mode === 'goal' ? 'goal' : null,
+      ipcFullAccessConfirmed: explicitConfirmation, optionsFullAccessConfirmed: !explicitConfirmation,
+      optionsYes: true, authInArgv: false, authInEnv: false });
     assert.equal((await fs.readFile(result.logPath, 'utf8')).includes(cookie), false);
     await fs.rm(root, { recursive: true, force: true });
   });

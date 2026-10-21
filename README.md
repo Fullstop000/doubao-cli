@@ -138,9 +138,10 @@ doubao mcp remove <connector-id>
 ```
 
 - Repeat `--arg` and `--env KEY=VALUE` for server arguments/environment.
-- `--mcp` requires a message; repeat `--mcp` and `--permission` each turn. Permission: `FullAccess` (default), `AskOnRisk`, `AlwaysAsk`.
+- `--mcp` requires a message; repeat `--mcp` each turn. New Headless local conversations default to `AskOnRisk`; follow-ups inherit the saved permission unless overridden with `--permission`. Desktop defaults to `FullAccess`.
 - Desktop MCP requires `--wait`; incompatible with `--attach`. Approvals occur in the app.
 - Headless approvals require terminal input/output and `--wait`; without `--wait`, operations requiring approval are denied.
+- Headless `FullAccess` requires explicit terminal confirmation each turn, including local task recovery; `--yes` cannot bypass it. Headless MCP `--env` values remain in the local store/process and are omitted from remote registration.
 - Permission policies do not restrict the MCP server process.
 
 ## Updates

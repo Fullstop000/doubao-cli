@@ -184,9 +184,11 @@ export class HeadlessConnectors {
     throw connectorError('Doubao connector list exceeds the supported page limit', 'connector_list_incomplete');
   }
 
-  async createRemote({ name, command, params, env }) {
+  async createRemote({ name, command, params }) {
     const result = await this.post('/alice/office/skills/manage/connector/create_personal', {
-      name, mcp_config: { transport_type: 3, stdio_config: { command, params, env } },
+      // Environment values belong only to the local process/store. Even an
+      // innocuous variable name may contain a credential, so send none of them.
+      name, mcp_config: { transport_type: 3, stdio_config: { command, params, env: {} } },
     });
     const id = result?.data?.connector?.connector_id;
     if (id == null || !validId(String(id))) throw connectorError('Doubao did not confirm connector creation', 'connector_create_unconfirmed');
