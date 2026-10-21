@@ -30,9 +30,11 @@ import { createProject, listProjects, projectCreationInput, runtimeAvailability,
 import { currentApp, resolvePlatform, withApp } from './app.mjs';
 import { executeHeadless, validateHeadlessOptions } from './headless.mjs';
 import { headlessOptionsForHelp, validateOptionContract } from './options-contract.mjs';
+import { runSkinCommand } from './skin/index.mjs';
 const CLI_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const HELP = `Usage:
+  doubao skin <on|off|status> [--json]
   doubao status [--profile <name>] [--json]
   doubao usage [--profile <name>] [--json]
   doubao profiles [--json]
@@ -95,6 +97,7 @@ Environment:
 `;
 
 const HEADLESS_HELP = `Usage:
+  doubao headless skin <on|off|status> [--json]
   doubao headless login [--cookie-file <path>] [--timeout <seconds>] [--json]
   doubao headless logout [--json]
   doubao headless status [--json]
@@ -196,7 +199,9 @@ function commandHelp(helpPath, platform) {
   const lines = helpPath[0] === 'version'
     ? [`  doubao${headless ? ' headless' : ''} --version`]
     : helpEntries(platform).filter(entry => helpPath.every((token, index) => entry.path[index] === token)).map(entry => entry.line);
-  const options = headless
+  const options = helpPath[0] === 'skin'
+    ? '  --app work|doubao  Select the desktop app\n  --platform work|doubao|headless  Select a backend\n  --json  Output results as JSON'
+    : headless
     ? [...headlessOptionsForHelp(helpPath), '  --json  Output results as JSON'].join('\n')
     : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|headless  Select a backend (web aliases headless)\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
   const permission = !headless && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
@@ -560,6 +565,7 @@ export async function main(argv) {
     console.log(commandHelp(options.helpPath, helpPlatform));
     return;
   }
+  if (options.args[0] === 'skin') return runSkinCommand(options);
   options.schema = loadReplySchema(options);
   const selectedPlatform = options.platform || options.app || (process.platform === 'linux' ? 'headless' : undefined);
   const app = resolvePlatform(selectedPlatform);

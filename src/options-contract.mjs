@@ -4,6 +4,7 @@ const SESSION_LIST_OR_READ = (command, backend) => command[0] === 'sessions'
   && (command[1] === 'read' || backend === 'headless' && command[1] === 'list');
 
 function allowed(flag, command, backend) {
+  if (command[0] === 'skin') return ['--json', '--app', '--platform'].includes(flag);
   const sessionMessage = SESSION_CREATE_OR_SEND(command);
   const sessionState = SESSION_STATE(command);
   switch (flag) {
@@ -120,6 +121,9 @@ function validatePositionalContract(options) {
   const minimum = (count, message) => { if (args.length < count) fail(message); };
 
   if (['status', 'capabilities', 'models', 'usage', 'profiles', 'runtimes'].includes(command)) exact(1, `${command} accepts no positional arguments`);
+  if (command === 'skin' && (args.length > 2 || !['on', 'off', 'status'].includes(subcommand || 'status'))) {
+    fail('skin accepts on, off, or status');
+  }
   if (command === 'automations') {
     if (!['list', 'get', 'create', 'update', 'delete'].includes(subcommand)) fail('automations requires list, get, create, update, or delete');
     exact(['list', 'create'].includes(subcommand) ? 2 : 3, `automations ${subcommand} ${['list', 'create'].includes(subcommand) ? 'accepts no positional arguments' : 'requires exactly one task ID'}`);

@@ -41,6 +41,7 @@ Prefix with `headless` as needed; `web` remains a compatibility alias. Use `--js
 
 ```bash
 doubao help
+doubao skin on|off|status --json
 doubao capabilities --json
 doubao sessions list --json
 doubao sessions create "Summarize this" --wait --json
@@ -181,3 +182,9 @@ npx skills add Fullstop000/doubao-cli
 [Skill reference](skills/doubao/SKILL.md)
 
 License: [MIT](LICENSE)
+
+### Desktop skin
+
+Desktop chat connections (including `cdp launch`) automatically apply an installed `doubao-skin` skill. Auto-loading defaults to on and preserves the last theme, including the native appearance. The skill must provide `src/integration.mjs`; `doubao skin status --json` reports its path and compatibility. Discovery is limited to the selected app's active profile (`.user_skills` then `.skills`); `DOUBAO_SKIN_ROOT` overrides the skill directory.
+
+`doubao skin off` saves the preference and tries to restore the current desktop immediately; `on` enables it again. Theme selections and custom images are retained. Preferences live in `skin.json` under the CLI settings directory (`DOUBAO_CLI_CONFIG_DIR` overrides it). If the desktop is unavailable, the setting applies on the next connection. Help/version, offline commands, Web and Headless do not auto-load skins. This integration never installs a skill, restarts the app, or opens another debugging port. Skin failures do not fail the CLI command.
