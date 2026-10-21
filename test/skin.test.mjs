@@ -132,14 +132,19 @@ test('desktop integration reuses its existing socket and preserves callback erro
 
 test('explicit refresh closes a stalled socket within its own budget', async t => {
   const { env, app } = fixture(t);
-  t.mock.method(globalThis, 'fetch', async url => Response.json(url.endsWith('/version') ? {} : [
-    { type: 'page', url: 'doubao://doubao-chat/chat', webSocketDebuggerUrl: 'ws://test' },
-  ]));
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    requests.push(url);
+    return Response.json([
+      { type: 'page', url: 'doubao://doubao-chat/chat', webSocketDebuggerUrl: 'ws://test' },
+    ]);
+  });
   let closes = 0;
   t.mock.method(CdpClient.prototype, 'connect', () => new Promise(() => {}));
   t.mock.method(CdpClient.prototype, 'close', () => { closes++; });
   assert.equal((await refreshDesktopSkin(app, { env, timeoutMs: 30 })).state, 'unavailable');
   assert.equal(closes, 1);
+  assert.deepEqual(requests, [`${app.endpoint}/json/list`]);
 });
 
 test('skin CLI validates before effects and retains preferences across processes without CDP', t => {

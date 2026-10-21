@@ -78,10 +78,8 @@ export async function refreshDesktopSkin(app, { env = process.env, timeoutMs = 1
   let client;
   try {
     return await bounded(async isActive => {
-      const { cdpStatus, findChatTarget, CdpClient } = await import('../cdp.mjs');
+      const { findChatTarget, CdpClient } = await import('../cdp.mjs');
       return withApp(app, async () => {
-        const status = await cdpStatus(app.endpoint, 500);
-        if (!status.available) throw new Error(status.error || 'desktop CDP is unavailable');
         const target = await findChatTarget(app.endpoint, 500);
         if (!isActive()) throw new Error('skin refresh timed out');
         client = new CdpClient(target.webSocketDebuggerUrl);
