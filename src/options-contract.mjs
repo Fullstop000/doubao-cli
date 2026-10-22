@@ -10,6 +10,7 @@ function allowed(flag, command, backend) {
   switch (flag) {
     case '--yes': return backend === 'desktop' && command[0] === 'cdp' && command[1] === 'launch';
     case '--limit': return SESSION_LIST_OR_READ(command, backend);
+    case '--all': return backend === 'headless' && command[0] === 'sessions' && command[1] === 'list';
     case '--run': return sessionState;
     case '--mode': return command[0] === 'sessions' && command[1] === 'create';
     case '--file': return backend !== 'web' && command[0] === 'automations' && ['create', 'update'].includes(command[1]);
@@ -53,6 +54,7 @@ const HEADLESS_HELP_OPTIONS = [
   ['--cookie-file', '<path>', 'Import cookies from a session file during login', command => command[0] === 'login'],
   ['--timeout', '<seconds>', 'Set the request or wait budget', command => allowed('--timeout', command, 'headless')],
   ['--limit', '<count>', 'Limit the number of listed sessions', command => allowed('--limit', command, 'headless')],
+  ['--all', '', 'Follow all session pages and remove duplicate IDs', command => allowed('--all', command, 'headless')],
   ['--mode', 'chat|work|goal', 'Select the mode for a new conversation', command => allowed('--mode', command, 'headless')],
   ['--model', '<model-name>', 'Select an available model by its exact name', command => allowed('--model', command, 'headless')],
   ['--reasoning', 'low|medium|high|xhigh|max', 'Set reasoning effort', command => allowed('--reasoning', command, 'headless')],
@@ -102,6 +104,7 @@ function optionError(flag, command, backend) {
   if (flag === '--timeout') return `${flag} is not valid for ${command.join(' ') || 'this command'}`;
   if (flag === '--yes') return '--yes requires cdp launch on a desktop platform';
   if (flag === '--limit') return '--limit requires sessions list or read';
+  if (flag === '--all') return '--all requires doubao headless sessions list';
   if (flag === '--target' && backend === 'web') return `--target is not used by doubao web ${command.join(' ')}`;
   if (flag === '--target') return '--target requires doubao web';
   if (flag === '--cookie-file') return '--cookie-file requires doubao headless login';
@@ -195,6 +198,7 @@ export function validateOptionContract(options, backend) {
     }
   }
 
+  if (options.all && options.explicitOptions?.includes('--limit')) throw new Error('--all cannot be combined with --limit');
   if (backend === 'headless' && options.limit > 100 && (options.args[0] === 'sessions'
     && (options.args[1] === 'list' || options.args[1] === 'read'))) {
     throw new Error('--limit requires an integer from 1 to 100 on doubao headless');

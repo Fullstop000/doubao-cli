@@ -15,9 +15,36 @@ test('merges account-scoped snapshots without leaking other signed-in accounts',
     { uid: 'me', schema: 'conversation-list-data-device-group-v1', data: { devices: [{ conversations: [{ conversation_id: 'draft', name: 'draft' }] }] } },
   ];
   assert.deepEqual(sessionsFromSnapshots(rows, 'me'), [
-    { id: first.conversation_id, title: 'latest' }, { id: second.conversation_id, title: 'project' },
+    { id: first.conversation_id, title: 'latest', runtime: 'cloud' },
+    { id: second.conversation_id, title: 'project', runtime: 'cloud' },
   ]);
   assert.deepEqual(sessionsFromSnapshots(rows, 'missing'), []);
+});
+
+test('classifies saved runtimes and defaults missing context to cloud like Works', () => {
+  const conversations = [
+    { conversation_id: '38443439495332098', extra: JSON.stringify({ agent_task_param: JSON.stringify({ runtime_type: 2 }) }) },
+    { conversation_id: '38443439495332099', extra: { agent_task_param: { runtime_type: 1 } } },
+    { conversation_id: '38443439495332100', extra: '{}' },
+    { conversation_id: '38443439495332101', extra: '{invalid' },
+    { conversation_id: '38443439495332102', extra: { agent_task_param: '{invalid' } },
+    { conversation_id: '38443439495332103', extra: { agent_task_param: { runtime_type: 99 } } },
+  ];
+  const rows = [{ uid: 'me', data: { devices: [{ conversations }] } }];
+  assert.deepEqual(sessionsFromSnapshots(rows, 'me').map(x => x.runtime),
+    ['local', 'cloud', 'cloud', 'cloud', 'cloud', 'unknown']);
+});
+
+test('client runtime selection takes precedence over snapshot context', () => {
+  const conversations = [
+    { conversation_id: '38443439495332098', extra: { agent_task_param: { runtime_type: 2 } } },
+    { conversation_id: '38443439495332099', extra: { agent_task_param: { runtime_type: 1 } } },
+    { conversation_id: '38443439495332100', extra: { agent_task_param: { runtime_type: 2 } } },
+  ];
+  const types = new Map([[conversations[0].conversation_id, 1], [conversations[1].conversation_id, 2]]);
+  const rows = [{ uid: 'me', data: { conversations } }];
+  assert.deepEqual(sessionsFromSnapshots(rows, 'me', id => types.get(id)).map(x => x.runtime),
+    ['cloud', 'local', 'local']);
 });
 
 test('stop uses the latest server turn and confirms interruption even with a stale page', async () => {

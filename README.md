@@ -37,6 +37,10 @@ doubao status --json
 
 ## Commands
 
+Desktop `sessions list` includes `runtime` (`cloud` / `local`) in JSON and a `RUNTIME` column in text output. It uses the client's current runtime selection, then saved context, defaulting to cloud as Doubao Works does. `local` includes other PCs; it does not necessarily mean this computer. Without CDP, the disk-cache fallback reports `unknown`. The list covers cached sessions, not necessarily the full account history.
+
+`headless sessions list` uses the same runtime classification from server-saved context, without CDP or the desktop app. JSON includes `runtime`; text includes a `RUNTIME` column and `hasMore` line. Use `doubao headless sessions list --all --json` to follow `/im/chain/recent_conv` until `hasMore: false`, removing duplicate session IDs. Without `--all`, the default total limit is 20 (`--limit` accepts 1–100); paging continues until that limit or the end. `--all` and `--limit` cannot be combined. JSON `pages` counts successfully read pages, and `--timeout` applies to the whole traversal. The observed intermittent server error is retried twice on the same page. This lists all sessions exposed by that API, not deleted or otherwise inaccessible history. Desktop listing reads the app's IndexedDB snapshots, so the two lists can differ in coverage. Unsaved desktop runtime selections are only visible to the desktop backend.
+
 Prefix with `headless` as needed; `web` remains a compatibility alias. Use `--json` for data output, `--help` for command options, and `--` before literal option-like messages.
 
 ```bash
@@ -44,6 +48,7 @@ doubao help
 doubao skin on|off|status --json
 doubao capabilities --json
 doubao sessions list --json
+doubao headless sessions list --all --json
 doubao sessions create "Summarize this" --wait --json
 doubao sessions read <conversation-id> --limit 5 --json
 doubao sessions send <conversation-id> "Continue" --wait --json

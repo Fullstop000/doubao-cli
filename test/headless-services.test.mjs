@@ -7,6 +7,7 @@ import {
   headlessEnterpriseSkill,
   createHeadlessProject,
   listHeadlessProjects,
+  listHeadlessSessions,
   modifyHeadlessModel,
   readHeadlessUsage,
   readHeadlessConversation,
@@ -14,6 +15,114 @@ import {
 } from '../src/headless-services.mjs';
 
 const id = '38439138239851266';
+
+const sessionCell = (offset, runtime = 1) => ({ conversation: {
+  conversation_id: String(BigInt(id) + BigInt(offset)), name: `session-${offset}`,
+  conv_extra: { agent_task_param: { runtime_type: runtime } },
+} });
+
+test('Headless all-session listing follows older cursors through empty pages and deduplicates IDs', async () => {
+  const calls = [];
+  const pages = [
+    { cells: [sessionCell(0, 2), { conversation: { conversation_id: 'draft' } }], has_more: true, next_conv_version: '300' },
+    { cells: [], has_more: true, next_conv_version: '200' },
+    { cells: [sessionCell(0), sessionCell(1)], has_more: true, next_conv_version: '100' },
+    { cells: [sessionCell(2)], has_more: false },
+  ];
+  const result = await listHeadlessSessions({ async imRequest(...args) {
+    calls.push(args);
+    return { pull_recent_conv_chain_downlink_body: pages[calls.length - 1] };
+  } }, { all: true });
+  assert.deepEqual(calls.map(x => x[3].conv_version), [0, 300, 200, 100]);
+  assert.deepEqual(calls.map(x => x[3].direction), [3, 1, 1, 1]);
+  assert.deepEqual(calls.map(x => x[3].option.need_coco_conversation), [true, false, false, false]);
+  assert.ok(calls.every(x => x[0] === 'chain/recent_conv' && x[3].limit === 100 && x[3].option.not_need_message));
+  assert.ok(calls.every(x => x[3].option.need_pc_pin_chain === true));
+  assert.deepEqual(result.sessions.map(x => x.runtime), ['local', 'cloud', 'cloud']);
+  assert.equal(result.hasMore, false);
+  assert.equal(result.pages, 4);
+});
+
+test('Headless all-session listing carries the Work pinned phase across a cursor reset', async () => {
+  const calls = [];
+  const pages = [
+    { cells: [sessionCell(0)], has_more: true, next_conv_version: '100', extra: { pc_pin_query_type: 0 } },
+    { cells: [], has_more: true, next_conv_version: '0', extra: { pc_pin_query_type: 1 } },
+    { cells: [sessionCell(1)], has_more: true, next_conv_version: '500', extra: { pc_pin_query_type: 1 } },
+    { cells: [sessionCell(2)], has_more: false },
+  ];
+  const result = await listHeadlessSessions({ async imRequest(...args) {
+    calls.push(args); return { pull_recent_conv_chain_downlink_body: pages[calls.length - 1] };
+  } }, { all: true });
+  assert.deepEqual(calls.map(x => [x[3].conv_version, x[3].option.pc_pin_query_type]), [[0, 0], [100, 0], [0, 1], [500, 1]]);
+  assert.deepEqual(calls.map(x => x[3].direction), [3, 1, 3, 1]);
+  assert.equal(result.sessions.length, 3);
+  assert.equal(result.hasMore, false);
+});
+
+test('Headless session limit counts unique sessions across pages and preserves truncation status', async () => {
+  let calls = 0;
+  const result = await listHeadlessSessions({ async imRequest() {
+    calls++;
+    return { pull_recent_conv_chain_downlink_body: calls === 1
+      ? { cells: [sessionCell(0), sessionCell(0)], has_more: true, next_conv_version: '100' }
+      : { cells: [sessionCell(0), sessionCell(1), sessionCell(2), sessionCell(3)], has_more: false } };
+  } }, { limit: 3 });
+  assert.equal(calls, 2);
+  assert.equal(result.sessions.length, 3);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.pages, 2);
+});
+
+test('Headless session paging retries the same read after an intermittent server rejection, with a fixed retry limit', async () => {
+  const requests = [];
+  const rejected = () => Object.assign(new Error('Doubao IM request was rejected (712010702)'), { code: 'request_rejected' });
+  const result = await listHeadlessSessions({ async imRequest(...args) {
+    requests.push(args[3]);
+    if (requests.length === 1) throw rejected();
+    return { pull_recent_conv_chain_downlink_body: { cells: [sessionCell(0)], has_more: false } };
+  } }, { all: true });
+  assert.deepEqual(requests[0], requests[1]);
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.pages, 1);
+  let calls = 0;
+  await assert.rejects(listHeadlessSessions({ async imRequest() { calls++; throw rejected(); } }, { all: true }),
+    error => error.code === 'request_rejected');
+  assert.equal(calls, 3);
+  calls = 0;
+  await assert.rejects(listHeadlessSessions({ async imRequest() {
+    calls++; throw Object.assign(new Error('login required'), { code: 'login_required' });
+  } }, { all: true }), error => error.code === 'login_required');
+  assert.equal(calls, 1);
+});
+
+test('Headless session pagination rejects missing, repeated, reversed and unsafe cursors', async () => {
+  for (const next of [undefined, null, '', 'bad', '0', '9007199254740993', true, {}]) {
+    await assert.rejects(listHeadlessSessions({ async imRequest() {
+      return { pull_recent_conv_chain_downlink_body: { cells: [], has_more: true, next_conv_version: next } };
+    } }, { all: true }), error => error.code === 'session_pagination_invalid', String(next));
+  }
+  for (const next of ['100', '200']) {
+    let calls = 0;
+    await assert.rejects(listHeadlessSessions({ async imRequest() {
+      return { pull_recent_conv_chain_downlink_body: { cells: [], has_more: true, next_conv_version: ++calls === 1 ? '100' : next } };
+    } }, { all: true }), error => error.code === 'session_pagination_invalid');
+    assert.equal(calls, 2);
+  }
+  await assert.rejects(listHeadlessSessions({ async imRequest() {
+    return { pull_recent_conv_chain_downlink_body: { cells: [], has_more: 'false' } };
+  } }, { all: true }), error => error.code === 'session_list_invalid');
+});
+
+test('Headless session pagination shares one deadline and never returns a partial list as complete', async t => {
+  let now = 10_000, calls = 0;
+  t.mock.method(Date, 'now', () => now);
+  await assert.rejects(listHeadlessSessions({ async imRequest() {
+    calls++; now += 1000;
+    return { pull_recent_conv_chain_downlink_body: { cells: [sessionCell(0)], has_more: true, next_conv_version: '100' } };
+  } }, { all: true, timeoutMs: 1000 }), error => error.code === 'timeout');
+  assert.equal(calls, 1);
+});
 
 test('Headless project listing follows verified IM cursors and filters inactive projects', async () => {
   const calls = [];

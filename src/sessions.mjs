@@ -1,17 +1,20 @@
 import { cdpStatus, withChatClient } from './cdp.mjs';
 import { currentSession, getDataDir, listSessions, readProfiles } from './storage.mjs';
 import { evaluateWithWatchdog, runtimeParameters } from './protocol.mjs';
+import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
+import { sessionRuntime } from './session-runtime.mjs';
 
 // Current app versions store account-scoped snapshots in IndexedDB rather
 // than the old raw IM response. Read through the app to avoid LevelDB locks,
 // compression details, and stale snapshots from a previously signed-in user.
-export function sessionsFromSnapshots(rows, uid) {
+export function sessionsFromSnapshots(rows, uid, getRuntimeType) {
   const sessions = new Map();
   const visit = (data) => {
     for (const item of data?.conversations || []) {
       const id = String(item.conversation_id || '');
       if (/^\d{12,24}$/u.test(id) && !sessions.has(id)) {
-        sessions.set(id, { id, title: item.name || null });
+        const runtime = sessionRuntime(item, getRuntimeType?.(id));
+        sessions.set(id, { id, title: item.name || null, runtime });
       }
     }
     for (const group of [...(data?.projects || []), ...(data?.devices || [])]) visit(group);
@@ -99,7 +102,7 @@ export async function stopGeneration(client, id, timeoutMs) {
   })()`, timeoutMs + 1000);
 }
 
-export async function sessionIndex(profile) {
+export async function sessionIndex(profile, { includeRuntime = false } = {}) {
   // --profile is a disk selection, not an account switch in a running app.
   const activeProfile = readProfiles(getDataDir()).lastUsed;
   const status = profile.directory === activeProfile ? await cdpStatus() : { available: false };
@@ -108,6 +111,16 @@ export async function sessionIndex(profile) {
     return withChatClient(client => evaluateWithWatchdog(client, `(async () => {
       const uid = localStorage.getItem('flow_tea_user_id');
       if (!uid || uid === '0') throw new Error('Sign in to the selected Doubao app to read sessions');
+      let runtimeService;
+      if (${Boolean(includeRuntime)}) {
+        const req = await new Promise(resolve => {
+          window['@flow-web/desktop:stable'].push([['doubao_session_runtime_' + crypto.randomUUID()], {}, resolve]);
+        });
+        ${APP_MODULE_BOOTSTRAP}
+        runtimeService = appModule(req, 'runtimeManager').oI()
+          .get(appModule(req, 'runtimeServices').ZP.RuntimeEnvironment.Service);
+        if (!runtimeService) throw new Error('Doubao runtime environment service is unavailable');
+      }
       const rows = [];
       for (const entry of await indexedDB.databases()) {
         if (!entry.name?.startsWith('DoubaoPC_')) continue;
@@ -127,12 +140,16 @@ export async function sessionIndex(profile) {
           rows.push(...snapshots);
         } finally { db.close(); }
       }
+      const sessionRuntime = ${sessionRuntime.toString()};
       const parse = ${sessionsFromSnapshots.toString()};
+      const sessions = parse(rows, uid, id => runtimeService?.getState(id).selection?.runtimeType);
       return {
-        sessions: parse(rows, uid),
+        sessions: ${Boolean(includeRuntime)} ? sessions : sessions.map(({ runtime, ...session }) => session),
         currentId: /\\/chat\\/(\\d{12,24})(?:[?#]|$)/u.exec(location.href)?.[1] || null,
       };
     })()`, 10_000));
   }
-  return { sessions: listSessions(profile.path), currentId: currentSession(profile.path) };
+  const sessions = listSessions(profile.path);
+  return { sessions: includeRuntime ? sessions.map(session => ({ ...session, runtime: 'unknown' })) : sessions,
+    currentId: currentSession(profile.path) };
 }

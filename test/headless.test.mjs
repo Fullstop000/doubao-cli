@@ -38,6 +38,41 @@ function isolatedConfig(t) {
   return directory;
 }
 
+test('headless list classifies server runtime metadata without a desktop connection', async t => {
+  isolatedConfig(t);
+  process.env.DOUBAO_HEADLESS_COOKIE = 'sessionid=test-session';
+  const records = [
+    { conv_extra: { agent_task_param: JSON.stringify({ runtime_type: 2 }) } },
+    { conv_extra: { agent_task_param: { runtime_type: 1 } } },
+    {},
+    { extra: JSON.stringify({ agent_task_param: JSON.stringify({ runtime_type: 2 }) }) },
+    { conv_extra: '{invalid' },
+    { conv_extra: { agent_task_param: { runtime_type: 99 } } },
+  ].map((metadata, index) => ({ ...metadata, conversation_id: String(BigInt(conversationId) + BigInt(index)), name: `session-${index}`, update_time: '123' }));
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    const url = new URL(input);
+    if (url.pathname === '/passport/account/info/v2/') return Response.json({ data: { user_id_str: accountId } });
+    assert.equal(url.pathname, '/im/chain/recent_conv');
+    const body = JSON.parse(init.body);
+    assert.equal(body.cmd, 3200);
+    assert.equal(body.uplink_body.pull_recent_conv_chain_uplink_body.option.not_need_message, true);
+    return Response.json({ status_code: 0, downlink_body: { pull_recent_conv_chain_downlink_body: {
+      cells: [...records.map(conversation => ({ conversation })), { conversation: { conversation_id: 'draft' } }], has_more: false,
+    } } });
+  });
+  const result = await withApp(headlessApp, () => executeHeadless(parseOptions(['headless', 'sessions', 'list', '--limit', '100', '--json'])));
+  assert.deepEqual(result.sessions.map(x => x.runtime), ['local', 'cloud', 'cloud', 'local', 'cloud', 'unknown']);
+  assert.equal(result.sessions.length, records.length);
+  assert.equal(result.sessions[0].updatedAt, '123');
+  assert.equal(result.hasMore, false);
+  const logs = [];
+  t.mock.method(console, 'log', value => logs.push(value));
+  await main(['headless', 'sessions', 'list', '--limit', '100']);
+  assert.equal(logs[0], 'CONVERSATION ID\tRUNTIME\tTITLE');
+  assert.equal(logs[1], `${conversationId}\tlocal\tsession-0`);
+  assert.equal(logs.at(-1), 'hasMore\tfalse');
+});
+
 test('headless creates the cloud Work body without desktop runtime or local-app fields', () => {
   const body = completionBody({ mode: 'work', message: 'hello', model: { id: 'model-x', provider: 'provider-x', needDeepThink: 5 }, localMessageId: 'local-1' });
   assert.equal(body.option.agent_mode, 1);
