@@ -8,7 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import qrcode from 'qrcode-terminal';
 import { headlessProfilePaths, listHeadlessProfiles, loadHeadlessState, updateHeadlessState, validateHeadlessProfileName } from './headless-state.mjs';
-import { listHeadlessProjects, createHeadlessProject, headlessEnterpriseSkill, readHeadlessUsage, readHeadlessConversation, modifyHeadlessModel, headlessProfileMetadata } from './headless-services.mjs';
+import { listHeadlessSessions, listHeadlessProjects, createHeadlessProject, headlessEnterpriseSkill, readHeadlessUsage, readHeadlessConversation, modifyHeadlessModel, headlessProfileMetadata } from './headless-services.mjs';
 import { resolveModelName, resolveReasoningEffort } from './models.mjs';
 import { selectProject, projectContext } from './context.mjs';
 import { configDirectory } from './config.mjs';
@@ -324,7 +324,7 @@ export async function executeHeadless(options, { confirmFullAccess = confirmHead
   }
   if (command === 'models') return headlessModels(client, remaining());
   if (command !== 'sessions') throw new Error('Unknown headless command');
-  if (subcommand === 'list') return listHeadlessSessions(client, options.limit, remaining());
+  if (subcommand === 'list') return listHeadlessSessions(client, { limit: options.limit, all: options.all, timeoutMs: remaining() });
   if (subcommand === 'open' || subcommand === 'current') {
     const id = subcommand === 'open' ? validateId(operand) : state.currentConversationId;
     if (!id) throw new Error('No current Headless conversation; use "doubao headless sessions open <id>" or create one');
@@ -616,14 +616,4 @@ function parseExtra(value) {
 }
 function reasoningName(value) {
   return ({ '3': 'low', '4': 'medium', '5': 'high', '6': 'xhigh', '7': 'max' })[String(value)] || null;
-}
-async function listHeadlessSessions(client, limit, timeoutMs) {
-  const result = await client.imRequest('chain/recent_conv', 3200, 'pull_recent_conv_chain_uplink_body', {
-    limit: Math.min(limit, 100), api_version: 1, conv_version: 0, direction: 3,
-    option: { not_need_message: true, need_complete_conversation: true, need_coco_conversation: true, need_coco_bot: true } }, timeoutMs);
-  const data = result?.pull_recent_conv_chain_downlink_body;
-  if (!Array.isArray(data?.cells)) throw new Error('Doubao session list is unavailable');
-  return { platform: 'headless', sessions: data.cells.map(cell => cell.conversation).filter(conversation => ID.test(conversation?.conversation_id || ''))
-    .slice(0, limit).map(conversation => ({ id: conversation.conversation_id, title: conversation.name, updatedAt: conversation.update_time })),
-    hasMore: Boolean(data.has_more) };
 }

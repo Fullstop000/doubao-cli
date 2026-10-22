@@ -6,6 +6,17 @@ const desktop = args => parseOptions(['--platform', 'doubao', ...args]);
 const web = args => parseOptions(['--platform', 'web', ...args]);
 const headless = args => parseOptions(['--platform', 'headless', ...args]);
 
+test('all-session traversal is Headless-list-only and cannot silently ignore an explicit limit', () => {
+  assert.equal(headless(['sessions', 'list', '--all']).all, true);
+  assert.equal(headless(['sessions', 'list']).all, false);
+  assert.equal(web(['sessions', 'list', '--all']).all, true);
+  assert.throws(() => desktop(['sessions', 'list', '--all']), /--all requires doubao headless sessions list/u);
+  assert.throws(() => headless(['sessions', 'read', '38439138239851266', '--all']), /--all requires doubao headless sessions list/u);
+  for (const flags of [['--all', '--limit', '20'], ['--limit', '20', '--all']]) {
+    assert.throws(() => headless(['sessions', 'list', ...flags]), /--all cannot be combined with --limit/u);
+  }
+});
+
 test('explicit confirmation and limits are accepted only where handlers use them', () => {
   assert.equal(desktop(['cdp', 'launch', '--yes']).yes, true);
   assert.throws(() => desktop(['sessions', 'create', 'hello', '--yes']), /--yes requires cdp launch/u);

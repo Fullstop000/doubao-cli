@@ -112,7 +112,7 @@ const HEADLESS_HELP = `Usage:
   doubao headless runtimes [--json]
   doubao headless projects list [--profile <name>] [--timeout <seconds>] [--json]
   doubao headless projects create <name> [--profile <name>] [--timeout <seconds>] [--json]
-  doubao headless sessions list [--limit <count>] [--json]
+  doubao headless sessions list [--all | --limit <count>] [--json]
   doubao headless sessions current [--profile <name>] [--json]
   doubao headless sessions open <conversation-id> [--profile <name>] [--json]
   doubao headless sessions read <conversation-id> [--limit <count>] [--json]
@@ -230,6 +230,7 @@ export function parseOptions(argv) {
   let wait = false;
   let timeoutSeconds = 120;
   let limit = 20;
+  let all = false;
   let model;
   let reasoning;
   let workspace;
@@ -256,6 +257,8 @@ export function parseOptions(argv) {
       help = true;
     } else if (argv[index] === '--json') {
       json = true;
+    } else if (argv[index] === '--all') {
+      all = true;
     } else if (argv[index] === '--yes') {
       yes = true;
     } else if (argv[index] === '--wait') {
@@ -371,7 +374,7 @@ export function parseOptions(argv) {
     platform = 'headless';
   }
   if (app && platform && app !== platform) throw new Error('--app and --platform select different backends');
-  const options = { args, app, platform, targetId, mode, inputFile, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
+  const options = { args, app, platform, targetId, mode, inputFile, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, all, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
   const selectedPlatform = platform || app || (process.platform === 'linux' ? 'headless' : undefined);
   const helpPlatform = selectedPlatform;
   const positionalArgs = args.slice(0, literalStart ?? args.length);
@@ -684,7 +687,11 @@ async function run(options) {
     const validated = validateReplyOption(result, { expectJson, replySchema }, options.schema);
     if ((wait || command === 'sessions' && subcommand === 'wait') && validated.status && validated.status !== 'completed') process.exitCode = 1;
     if (command === 'sessions' && subcommand === 'stop' && validated.stopped === false) process.exitCode = 1;
-    output(command === 'login' && !json ? 'Doubao Headless is signed in and ready.' : validated, json);
+    if (command === 'sessions' && subcommand === 'list' && !json) {
+      console.log('CONVERSATION ID\tRUNTIME\tTITLE');
+      for (const session of validated.sessions) console.log(`${session.id}\t${session.runtime}\t${session.title}`);
+      console.log(`hasMore\t${validated.hasMore}`);
+    } else output(command === 'login' && !json ? 'Doubao Headless is signed in and ready.' : validated, json);
     return;
   }
 
@@ -961,11 +968,11 @@ async function run(options) {
   if (command !== 'sessions') throw new Error(`unknown command "${command}". Run "doubao help".`);
 
   if (subcommand === 'list') {
-    const { sessions } = await sessionIndex(profile);
+    const { sessions } = await sessionIndex(profile, { includeRuntime: true });
     if (json) output(sessions, true);
     else {
-      console.log('CONVERSATION ID\tTITLE');
-      for (const session of sessions) console.log(`${session.id}\t${session.title}`);
+      console.log('CONVERSATION ID\tRUNTIME\tTITLE');
+      for (const session of sessions) console.log(`${session.id}\t${session.runtime}\t${session.title}`);
     }
     return;
   }
