@@ -1,5 +1,6 @@
 import { currentApp, resolveApp, isAppTarget, activeProfile } from './app.mjs';
 import { startConnectionBadge } from './connection-badge.mjs';
+import { applyDesktopSkin } from './skin/index.mjs';
 
 export function cdpEndpoint(env) {
   return env ? resolveApp(undefined, env).endpoint : currentApp().endpoint;
@@ -235,6 +236,7 @@ export async function withChatClient(callback, endpoint = cdpEndpoint()) {
   let stopBadge;
   try {
     if (['work', 'doubao'].includes(currentApp().id)) {
+      await applyDesktopSkin(client, { ...currentApp(), endpoint });
       stopBadge = await startConnectionBadge(client, {
         app: currentApp().name, profile: activeProfile(), endpoint,
       });
