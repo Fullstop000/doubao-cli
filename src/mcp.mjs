@@ -164,7 +164,7 @@ const PREPARE_SANDBOX_EXPRESSION = `(async () => {
   const args = %ARGS%;
   const runtime = await window.neotix.taskMode.runtime.queryRuntimeInfo({ env: true });
   const envId = runtime?.env?.environmentId || '';
-  if (!__req.m || !__req.m[987391] && !__req.m[876207]) await __req.e('28037');
+  if (!__req.m) await __req.e('28037');
   const prepare = appModule(__req, 'sandbox').H;
   const out = await prepare({
     cwd: args.workspace,

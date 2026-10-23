@@ -127,7 +127,8 @@ doubao sessions send <conversation-id> "Search internal docs" --enterprise-knowl
 ```
 
 - `--project`: ID, exact name, or `none`; duplicate names require ID.
-- `--workspace`: existing local directory. `--no-skills`: omit default local skill paths.
+- `--workspace`: existing local directory. Both backends use an explicit workspace first, then the saved workspace on the same device when the project is unchanged, then a current-device project folder, then a generated workspace. Selecting or clearing a project discards the inherited workspace. `--no-skills`: omit default local skill paths.
+- Saved execution metadata is parsed consistently on both backends. Missing legacy metadata keeps follow-ups on cloud; malformed runtime/permission metadata fails before submission. Inherited local sessions from another device require an explicit `--runtime local` or `--runtime cloud`.
 - `--enterprise-knowledge`: requires the available 企业知识 skill; repeat each turn.
 - Cloud rejects `--mcp`, `--workspace`, `--no-skills`, `--permission`. Headless project/enterprise selection requires Work mode.
 - Unconfirmed project creation: check `projects list` before retrying.
@@ -144,7 +145,7 @@ doubao mcp remove <connector-id>
 ```
 
 - Repeat `--arg` and `--env KEY=VALUE` for server arguments/environment.
-- `--mcp` requires a message; repeat `--mcp` each turn. New Headless local conversations default to `AskOnRisk`; follow-ups inherit the saved permission unless overridden with `--permission`. Desktop defaults to `FullAccess`.
+- `--mcp` requires a message; repeat `--mcp` each turn. New local conversations default to `AskOnRisk` on Headless and `FullAccess` on Desktop. Both backends inherit the saved local permission on follow-up unless `--permission` overrides it.
 - Desktop MCP requires `--wait`; incompatible with `--attach`. Approvals occur in the app.
 - Headless approvals require terminal input/output and `--wait`; without `--wait`, operations requiring approval are denied.
 - Headless `FullAccess` requires explicit terminal confirmation each turn, including local task recovery; `--yes` cannot bypass it. Headless MCP `--env` values remain in the local store/process and are omitted from remote registration.

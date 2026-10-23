@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { completionBody } from './headless-completion.mjs';
 export { completionBody } from './headless-completion.mjs';
 import { waitWithLocalRuntime } from './headless-turn.mjs';
-import { requireGoalMode, GOAL_MIN_VERSION, activeGoalFromExtra } from './features.mjs';
+import { requireGoalMode, GOAL_MIN_VERSION } from './features.mjs';
 import { createScheduledTaskService } from './scheduled-tasks.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -10,14 +10,15 @@ import qrcode from 'qrcode-terminal';
 import { headlessProfilePaths, listHeadlessProfiles, loadHeadlessState, updateHeadlessState, validateHeadlessProfileName } from './headless-state.mjs';
 import { listHeadlessSessions, listHeadlessProjects, createHeadlessProject, headlessEnterpriseSkill, readHeadlessUsage, readHeadlessConversation, modifyHeadlessModel, headlessProfileMetadata } from './headless-services.mjs';
 import { resolveModelName, resolveReasoningEffort } from './models.mjs';
-import { selectProject, projectContext } from './context.mjs';
+import { parseConversationContext } from './task-context.mjs';
+import { resolveHeadlessTaskContext } from './headless-context.mjs';
 import { configDirectory } from './config.mjs';
 import { resolveAttachmentFiles } from './attachments.mjs';
 import { uploadHeadlessAttachments } from './headless-attachments.mjs';
 import { HeadlessConnectors } from './headless-mcp.mjs';
 import { HeadlessLocalRuntime, buildHeadlessLocalTaskParam, prepareHeadlessLocalChannel } from './headless-local-runtime.mjs';
 import { createHeadlessApproval, confirmHeadlessFullAccess } from './headless-approval.mjs';
-import { resolvePermission, DEFAULT_HEADLESS_PERMISSION } from './permissions.mjs';
+import { resolvePermission } from './permissions.mjs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { CookieJar, HeadlessClient, consumeSse, HEADLESS_PROTOCOL_VERSION } from './headless-http.mjs';
@@ -352,50 +353,31 @@ export async function executeHeadless(options, { confirmFullAccess = confirmHead
     let mode = options.mode || 'work';
     const goalId = mode === 'goal' ? randomUUID() : undefined;
     if (goalId) await requireGoalMode(client, HEADLESS_PROTOCOL_VERSION, remaining());
-    let previous = {};
+    let conversation;
+    let previous = parseConversationContext();
     if (conversationId) {
-      const snapshot = await readTurn(client, conversationId, { deadline });
-      let extra = {};
-      try { extra = JSON.parse(snapshot.conversation.extra || '{}'); } catch {}
-      mode = extra.mode_id === '1' ? 'chat' : 'work';
-      // A desktop local session cannot be executed by this CLI runtime.
-      let runtime;
-      try { runtime = JSON.parse(extra.agent_task_param || '{}').runtime_type; } catch {}
-      const previousRuntime = parseExtra(extra.agent_task_param);
-      if (runtime === 2 && previousRuntime.local_device_id !== client.device.device_id && !options.runtime) {
-        throw new Error('This conversation uses another local device; select --runtime local or --runtime cloud explicitly');
-      }
-      previous = { extra, conversation: snapshot.conversation };
+      conversation = (await readTurn(client, conversationId, { deadline })).conversation;
+      previous = parseConversationContext(conversation);
+      mode = previous.extra.mode_id === '1' ? 'chat' : 'work';
     }
+    const resolved = await resolveHeadlessTaskContext(client, conversationId, options, { conversation, profile, timeoutMs: remaining() });
+    const taskContext = resolved.taskContext, runtimeChoice = taskContext.runtime, localPermission = resolved.permission;
+    if (mode === 'chat' && (runtimeChoice === 'local' || taskContext.projectId || options.enterpriseKnowledge)) throw new Error('Local runtime, projects and enterprise knowledge require --mode work');
+    if (runtimeChoice === 'local' && localPermission === 'FullAccess') await authorizeFullAccess(resolved.workspace);
     const selectedModel = options.model || (!conversationId ? state.defaults.modelId : undefined);
     const selectedReasoning = options.reasoning || (!conversationId ? state.defaults.reasoning : undefined);
     const reasoning = selectedReasoning ? resolveReasoningEffort(selectedReasoning).effort : undefined;
     const model = selectedModel ? await resolveHeadlessModel(client, options.model ? { name: selectedModel } : { id: selectedModel }, mode === 'goal' ? 'work' : mode, remaining())
       : reasoning ? await resolveHeadlessModel(client, { id: previous.extra?.model_item_key || '9' }, mode === 'goal' ? 'work' : mode, remaining()) : undefined;
-    const previousProjectId = previous.conversation?.project_reference?.project_id || '';
-    const projectValue = options.project ?? previousProjectId;
-    const project = projectValue && projectValue !== 'none' ? selectProject(await listHeadlessProjects(client, remaining()), projectValue) : null;
-    const previousAgentParam = parseExtra(previous.extra?.agent_task_param);
-    const localOptions = options.workspace || options.permission || options.noSkills || options.mcps?.length;
-    const runtimeChoice = options.runtime || (localOptions || previousAgentParam.runtime_type === 2 ? 'local' : 'cloud');
-    if (mode === 'chat' && (runtimeChoice === 'local' || project || options.enterpriseKnowledge)) throw new Error('Local runtime, projects and enterprise knowledge require --mode work');
-    const inheritedPermission = previousAgentParam.runtime_type === 2
-      ? ({ 0: 'AlwaysAsk', 1: 'AskOnRisk', 2: 'FullAccess' })[previousAgentParam.sandbox_auth_type] : undefined;
-    const localPermission = ['AlwaysAsk', 'AskOnRisk', 'FullAccess'][resolvePermission(options.permission ?? inheritedPermission ?? DEFAULT_HEADLESS_PERMISSION)];
-    if (runtimeChoice === 'local' && localPermission === 'FullAccess') {
-      await authorizeFullAccess(options.workspace || previousAgentParam.workspace);
-    }
-    const taskContext = { runtime: runtimeChoice, projectId: project?.id || '', previousProjectId,
-      activeGoalId: activeGoalFromExtra(previous.extra),
-      previousAgentParam: parseExtra(previous.extra?.agent_task_param), projectContext: projectContext(project, '', 'cloud'),
-      ...(options.enterpriseKnowledge ? { enterpriseSkill: await headlessEnterpriseSkill(client, runtimeChoice, remaining()) } : {}) };
     if (runtimeChoice === 'local' && !options.wait && !options.backgroundWorker) {
+      if (options.workspace && !(await fs.stat(resolved.workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${resolved.workspace}`);
+      await fs.mkdir(resolved.workspace, { recursive: true });
       const { startHeadlessSubmissionWorker } = await import('./headless-worker.mjs');
       const configuredRoot = configDirectory();
       await fs.mkdir(configuredRoot, { recursive: true, mode: 0o700 });
       const workerConfigDir = await fs.realpath(configuredRoot);
       const worker = await startHeadlessSubmissionWorker({
-        options: { ...options, runtime: 'local' }, configDir: workerConfigDir, expectedAccountId: client.accountId, ackTimeoutMs: remaining(),
+        options: { ...options, runtime: 'local', workspace: resolved.workspace, permission: localPermission, project: taskContext.projectId || 'none' }, configDir: workerConfigDir, expectedAccountId: client.accountId, ackTimeoutMs: remaining(),
         fullAccessConfirmed,
       });
       const accepted = { platform: worker.platform, mode: worker.mode, conversationId: worker.conversationId, runId: worker.runId,
@@ -408,10 +390,8 @@ export async function executeHeadless(options, { confirmFullAccess = confirmHead
     let localTaskParam, localRuntime, connectors, enginePromise, localChannel, localChannelAbort;
     try {
       if (runtimeChoice === 'local') {
-        const localProject = projectContext(project, client.device.device_id, 'local');
-        const workspace = path.resolve(options.workspace || (previousAgentParam.local_device_id === client.device.device_id ? previousAgentParam.workspace : '')
-          || localProject.folders?.find(folder => folder.is_primary)?.path || localProject.folders?.[0]?.path
-          || path.join(headlessProfilePaths({ profile }).directory, 'workspaces', randomUUID()));
+        const localProject = taskContext.projectContext;
+        const workspace = resolved.workspace;
         if (options.workspace && !(await fs.stat(workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`);
         await fs.mkdir(workspace, { recursive: true });
         const sandboxId = `cli-${randomUUID()}`;
@@ -520,7 +500,7 @@ export async function executeHeadless(options, { confirmFullAccess = confirmHead
           () => enginePromise ||= startLocalRuntime(client, profile, receipt, connectors, remaining(), undefined, localChannelAbort?.signal),
           { abortStartup: () => localChannelAbort?.abort() }) : await wait();
         return { platform: 'headless', mode, ...(goalId ? { goalId } : {}), context: { runtime: runtimeChoice, ...(localRuntime ? { workspace: localRuntime.workspace } : {}),
-          projectId: project?.id || null, enterpriseKnowledge: Boolean(taskContext.enterpriseSkill) }, accepted: true, ...result };
+          projectId: taskContext.projectId || null, enterpriseKnowledge: Boolean(taskContext.enterpriseSkill) }, accepted: true, ...result };
       } catch (error) { throw acceptedLocalFailure(error, receipt); }
     } finally {
       localChannelAbort?.abort();

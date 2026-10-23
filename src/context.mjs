@@ -6,7 +6,8 @@ import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 import { currentApp } from './app.mjs';
 import { defaultWorkspace, evaluateWithWatchdog, runtimeParameters } from './protocol.mjs';
 import { imRequest } from './turns.mjs';
-import { activeGoalFromExtra } from './features.mjs';
+import { parseConversationContext, selectTaskContext, resolveContextValues, selectProject, validateTaskOptions } from './task-context.mjs';
+export { selectProject, projectContext, validateTaskOptions } from './task-context.mjs';
 
 const CONTEXT_BOOTSTRAP = `const req = await new Promise(resolve => {
   window['@flow-web/desktop:stable'].push([['doubao_context_' + crypto.randomUUID()], {}, resolve]);
@@ -98,23 +99,6 @@ export async function createProject(client, options) {
   }
 }
 
-export function selectProject(projects, value) {
-  if (!value || value === 'none') return null;
-  const byId = projects.find(p => p.id === value);
-  if (byId) return byId;
-  const matches = projects.filter(p => p.name === value);
-  if (matches.length > 1) throw new Error(`Multiple projects named "${value}"; use a project id`);
-  if (!matches.length) throw new Error(`Doubao project not found: ${value}. Run "doubao projects list"`);
-  return matches[0];
-}
-
-export function projectContext(project, deviceId, runtime) {
-  if (!project) return {};
-  return { project_id: project.id, project_name: project.name,
-    folders: runtime === 'local' ? project.folders.filter(f => f.deviceId === deviceId && f.path?.trim())
-      .map(f => ({ folder_name: f.name?.trim() || '', path: f.path.trim(), is_primary: f.primary })) : [] };
-}
-
 export async function enterpriseSkill(client, runtime) {
   const skill = await evaluateWithWatchdog(client, `(async () => {
     ${CONTEXT_BOOTSTRAP}
@@ -129,55 +113,30 @@ export async function enterpriseSkill(client, runtime) {
 }
 
 export async function conversationContext(client, conversationId) {
-  if (!conversationId) return { agentParam: null, projectId: '' };
+  if (!conversationId) return parseConversationContext();
   const body = await imRequest(client, 'conversation/batch_get', 1111, 'batch_get_conv_info_uplink_body', {
     conversation_id: [conversationId], option: { recent_message_count_per_conv: 0 }, ext: {},
   });
   const conversation = body?.batch_get_conv_info_downlink_body?.conversation_info_list?.find(c => c.conversation_id === conversationId);
   if (!conversation) throw new Error('Doubao conversation was not found');
-  const rawExtra = conversation.extra || conversation.ext || {};
-  const extra = typeof rawExtra === 'string' ? JSON.parse(rawExtra) : rawExtra;
-  let agentParam = extra.agent_task_param;
-  if (typeof agentParam === 'string') {
-    try { agentParam = JSON.parse(agentParam); } catch { throw new Error('Doubao conversation execution context is invalid'); }
-  }
-  return { agentParam: agentParam || null, projectId: conversation.project_reference?.project_id || '', activeGoalId: activeGoalFromExtra(extra) };
-}
-
-export function validateTaskOptions(options) {
-  if (options.runtime !== undefined && !['local', 'cloud'].includes(options.runtime)) throw new Error('--runtime requires local or cloud');
-  if (options.runtime === 'cloud' && (options.mcps?.length || options.workspace || options.permission || options.skillPaths?.length === 0 || options.noSkills)) {
-    throw new Error('--runtime cloud cannot use --mcp, --workspace, --permission, or --no-skills');
-  }
+  return parseConversationContext(conversation);
 }
 
 export async function resolveTaskContext(client, conversationId, options = {}) {
   validateTaskOptions(options);
   const previous = await conversationContext(client, conversationId);
-  const localOption = options.mcps?.length || options.workspace || options.permission || options.skillPaths?.length === 0;
-  const runtime = options.runtime || (localOption || !conversationId ? 'local' : previous.agentParam?.runtime_type === 2 ? 'local' : 'cloud');
-  // An inherited remote-device session must not silently acquire local files.
-  const local = runtime === 'local' ? (await runtimeAvailability(client)).runtimes.find(r => r.id === 'local') : { deviceId: '', deviceName: '' };
-  if (runtime === 'local' && (!local.available || !local.deviceId)) throw new Error('Doubao local runtime is not ready; check "doubao runtimes" and initialize 本地电脑 in the app');
-  if (runtime === 'local' && !options.runtime && !localOption && previous.agentParam?.local_device_id
-      && (previous.agentParam.local_device_id !== local.deviceId || previous.agentParam.local_app_id !== currentApp().aid)) {
-    throw new Error('This session uses another local device/app; pass --runtime local to select this computer explicitly');
-  }
-  const requestedProject = options.project ?? previous.projectId;
-  const project = requestedProject && requestedProject !== 'none' ? selectProject(await listProjects(client), requestedProject) : null;
-  const context = projectContext(project, local.deviceId, runtime);
-  const projectChanged = (project?.id || '') !== previous.projectId;
-  const sameDevice = previous.agentParam?.local_device_id === local.deviceId && previous.agentParam?.local_app_id === currentApp().aid;
-  const selectedWorkspace = options.workspace
-    || (options.project === undefined && !projectChanged && sameDevice ? previous.agentParam?.workspace : '')
-    || context.folders?.find(f => f.is_primary)?.path || context.folders?.[0]?.path;
-  const createWorkspace = runtime === 'local' && !selectedWorkspace;
-  const workspace = runtime === 'local' ? path.resolve(selectedWorkspace || defaultWorkspace()) : undefined;
-  if (options.workspace && (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory())) throw new Error(`workspace is not a directory: ${workspace}`);
-  return { workspace, createWorkspace, taskContext: { runtime, projectId: project?.id || '', projectContext: context,
-    previousAgentParam: previous.agentParam, previousProjectId: previous.projectId, activeGoalId: previous.activeGoalId,
-    deviceId: local.deviceId, deviceName: local.deviceName,
-    ...(options.enterpriseKnowledge ? { enterpriseSkill: await enterpriseSkill(client, runtime) } : {}) } };
+  const selection = selectTaskContext(previous, options, {
+    newConversation: !conversationId, defaultRuntime: 'local', defaultPermission: 'FullAccess',
+  });
+  const local = selection.runtime === 'local' ? (await runtimeAvailability(client)).runtimes.find(r => r.id === 'local') : {};
+  if (selection.runtime === 'local' && (!local?.available || !local.deviceId)) throw new Error('Doubao local runtime is not ready; check "doubao runtimes" and initialize 本地电脑 in the app');
+  const project = selection.projectValue && selection.projectValue !== 'none'
+    ? selectProject(await listProjects(client), selection.projectValue) : null;
+  const resolved = resolveContextValues(previous, options, { selection, project,
+    device: { id: local.deviceId, name: local.deviceName, appId: currentApp().aid }, defaultWorkspace });
+  if (options.workspace && (!fs.existsSync(resolved.workspace) || !fs.statSync(resolved.workspace).isDirectory())) throw new Error(`workspace is not a directory: ${resolved.workspace}`);
+  if (options.enterpriseKnowledge) resolved.taskContext.enterpriseSkill = await enterpriseSkill(client, selection.runtime);
+  return resolved;
 }
 
 export function publicTaskContext(taskContext, workspace) {
