@@ -6,14 +6,14 @@ const desktop = args => parseOptions(['--platform', 'doubao', ...args]);
 const web = args => parseOptions(['--platform', 'web', ...args]);
 const headless = args => parseOptions(['--platform', 'headless', ...args]);
 
-test('all-session traversal is Headless-list-only and cannot silently ignore an explicit limit', () => {
+test('all-session traversal is shared by Desktop and Headless and cannot silently ignore an explicit limit', () => {
   assert.equal(headless(['sessions', 'list', '--all']).all, true);
   assert.equal(headless(['sessions', 'list']).all, false);
   assert.equal(web(['sessions', 'list', '--all']).all, true);
-  assert.throws(() => desktop(['sessions', 'list', '--all']), /--all requires doubao headless sessions list/u);
-  assert.throws(() => headless(['sessions', 'read', '38439138239851266', '--all']), /--all requires doubao headless sessions list/u);
+  assert.equal(desktop(['sessions', 'list', '--all']).all, true);
+  assert.throws(() => headless(['sessions', 'read', '38439138239851266', '--all']), /--all requires sessions list/u);
   for (const flags of [['--all', '--limit', '20'], ['--limit', '20', '--all']]) {
-    assert.throws(() => headless(['sessions', 'list', ...flags]), /--all cannot be combined with --limit/u);
+    for (const parse of [desktop, headless]) assert.throws(() => parse(['sessions', 'list', ...flags]), /--all cannot be combined with --limit/u);
   }
 });
 
@@ -24,7 +24,10 @@ test('explicit confirmation and limits are accepted only where handlers use them
   assert.equal(headless(['sessions', 'list', '--limit', '8']).limit, 8);
   assert.equal(headless(['sessions', 'read', '38439138239851266', '--limit', '8']).limit, 8);
   assert.equal(web(['sessions', 'read', '38439138239851266', '--limit', '8']).limit, 8);
-  assert.throws(() => desktop(['sessions', 'list', '--limit', '8']), /--limit requires sessions list or read/u);
+  assert.equal(desktop(['sessions', 'list', '--limit', '8']).limit, 8);
+  assert.throws(() => desktop(['sessions', 'list', '--limit', '101']), /1 to 100/u);
+  assert.equal(desktop(['sessions', 'list', '--timeout', '6']).timeoutMs, 6000);
+  assert.equal(desktop(['projects', 'list', '--timeout', '6']).timeoutMs, 6000);
   assert.throws(() => headless(['sessions', 'create', 'hello', '--limit', '8']), /--limit requires sessions list or read/u);
 });
 
@@ -123,7 +126,7 @@ test('variable-length names and messages remain intact, while headless read limi
   assert.deepEqual(headless(['mcp', 'register', 'A connector name', '--command', '/usr/bin/node']).args,
     ['mcp', 'register', 'A connector name']);
   assert.equal(headless(['sessions', 'read', '12345678901234', '--limit', '100']).limit, 100);
-  assert.throws(() => headless(['sessions', 'read', '12345678901234', '--limit', '101']), /1 to 100 on doubao headless/u);
+  assert.throws(() => headless(['sessions', 'read', '12345678901234', '--limit', '101']), /1 to 100/u);
   assert.equal(desktop(['sessions', 'read', '12345678901234', '--limit', '101']).limit, 101);
   assert.equal(headless(['sessions', 'create', 'a message with spaces', '--', 'literal']).args.at(-1), 'literal');
   assert.equal(headless(['sessions', 'create', '--', 'a', 'message', 'with', 'spaces']).args.slice(2).join(' '), 'a message with spaces');

@@ -3,8 +3,8 @@
 export function appModule(req, kind) {
   const definitions = {
     stores: { ids: [110872, 521109], match: s => s.includes('Wp:') && s.includes('chat-ioc-manager: store') },
-    runtimeManager: { ids: [464468], match: s => s.includes('oI:') && s.includes('mE:') && s.length < 500 },
-    runtimeServices: { ids: [67651], match: s => s.includes('RuntimeEnvironment:') && s.includes('agent.cloud-computer.device-service') },
+    runtimeSelection: { ids: [438244], match: s => s.includes('getInputToolConversationRuntimeEnvironment:')
+      && s.includes('getInputToolConversationStateSnapshot:') },
     attachments: { ids: [284642, 109595], match: s => s.includes('getAttachmentActions:') && s.includes('attachmentStatesSelector:') },
     attachmentBlock: { ids: [907216, 613922], match: s => s.includes('S:') && s.includes('transform:') && s.includes('BLOCK_ATTACHMENT') && s.includes('attachmentStates:') },
     skills: { ids: [359531, 609347], match: s => s.includes('Sf:') && s.includes('SI:') },
