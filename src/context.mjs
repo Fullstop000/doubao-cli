@@ -6,6 +6,8 @@ import { APP_MODULE_BOOTSTRAP } from './app-modules.mjs';
 import { currentApp } from './app.mjs';
 import { defaultWorkspace, evaluateWithWatchdog, runtimeParameters } from './protocol.mjs';
 import { imRequest } from './turns.mjs';
+import { desktopListClient } from './desktop-list-client.mjs';
+import { listApiProjects } from './list-services.mjs';
 import { activeGoalFromExtra } from './features.mjs';
 
 const CONTEXT_BOOTSTRAP = `const req = await new Promise(resolve => {
@@ -20,28 +22,8 @@ export async function runtimeAvailability(client) {
     { id: 'cloud', name: '云端', available: true }] };
 }
 
-export async function listProjects(client) {
-  const projects = new Map(), cursors = new Set();
-  let cursor;
-  do {
-    const body = await imRequest(client, 'project/list', 4605, 'list_projects_uplink_body', {
-      limit: 100, include_invisible_projects: false, sort_type: 1,
-      group_conversation_filter_param: { exclude_archive: true }, ...(cursor ? { cursor } : {}),
-    });
-    const page = body?.list_projects_downlink_body;
-    if (!Array.isArray(page?.projects)) throw new Error('Doubao project list could not be read');
-    for (const p of page.projects) {
-      if (p.status !== 1) continue;
-      projects.set(String(p.project_id), { id: String(p.project_id), name: p.name,
-        folders: (p.folders || []).map(f => ({ name: f.folder_name, path: f.workspace,
-          deviceId: String(f.folder_device_id || ''), deviceName: f.folder_device_name, primary: Boolean(f.is_primary) })) });
-    }
-    if (!page.has_more) break;
-    if (!page.next_cursor || cursors.has(page.next_cursor)) throw new Error('Doubao project pagination did not advance');
-    cursor = page.next_cursor;
-    cursors.add(cursor);
-  } while (true);
-  return [...projects.values()];
+export async function listProjects(client, timeoutMs = 10_000) {
+  return listApiProjects(desktopListClient(client), timeoutMs);
 }
 
 export function projectCreationInput(name, workspace) {

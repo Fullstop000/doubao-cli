@@ -28,7 +28,7 @@ function clientFor({ deviceId = 'current', mutate, readback } = {}) {
     424242: { toString: () => 'r.d(e,{th:()=>X});class ProjectStoreService{async createProject(e,t){} async deleteProject(e,t){}}' },
     8001: { toString: () => 'U: project_shared_get_device_error getDeviceInfo()' },
   };
-  const context = vm.createContext({ URL, crypto, setTimeout, clearTimeout, AbortSignal,
+  const context = vm.createContext({ localStorage: { getItem: () => '12345678901234' }, URL, crypto, setTimeout, clearTimeout, AbortSignal,
     performance: { getEntriesByType: () => [{ name: `https://www.doubao.com/im/project/list?aid=${currentApp().aid}&device_id=current` }] },
     window: { '@flow-web/desktop:stable': { push: ([,,fn]) => fn(req) }, neotix: { taskMode: { runtime: {
       queryRuntimeInfo: async () => ({ status: 'READY', env: { environmentId: 'env' } }),
@@ -36,7 +36,7 @@ function clientFor({ deviceId = 'current', mutate, readback } = {}) {
     fetch: async (url, options) => {
       assert.match(url, /\/im\/project\/list\?/);
       assert.equal(JSON.parse(options.body).cmd, 4605);
-      return readback ? readback(project) : Response.json({ downlink_body: { list_projects_downlink_body: { projects: [project] } } });
+      return readback ? readback(project) : Response.json({ downlink_body: { list_projects_downlink_body: { has_more: false, projects: [project] } } });
     },
   });
   return { calls, evaluate: expression => vm.runInContext(expression, context), close() {} };
@@ -87,7 +87,7 @@ test('workspace creation binds the current app device and verifies the primary f
     }
     const mismatch = clientFor({ readback: project => {
       project.folders[0].folder_device_id = 'other';
-      return Response.json({ downlink_body: { list_projects_downlink_body: { projects: [project] } } });
+      return Response.json({ downlink_body: { list_projects_downlink_body: { has_more: false, projects: [project] } } });
     } });
     await assert.rejects(createProject(mismatch, { name: 'folder', workspace }), e => e.code === 'project_readback_failed' && e.result.id === '123');
   } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
@@ -110,7 +110,7 @@ test('uncertain creation preserves operation id and never retries the mutation',
 test('readback failures preserve the created id without creating a second project', async () => {
   for (const readback of [async () => { throw new Error('offline'); }, async project => {
     project.name = 'different';
-    return Response.json({ downlink_body: { list_projects_downlink_body: { projects: [project] } } });
+    return Response.json({ downlink_body: { list_projects_downlink_body: { has_more: false, projects: [project] } } });
   }]) {
     const client = clientFor({ readback });
     await assert.rejects(createProject(client, { name: 'demo' }), error => {
