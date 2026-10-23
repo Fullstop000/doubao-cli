@@ -188,3 +188,28 @@ test('an inherited workspace override wins over the project primary folder', asy
   assert.equal((await resolveTaskContext(client, '123', {})).workspace, '/tmp/override');
   assert.equal((await resolveTaskContext(client, '123', { project: 'project' })).workspace, '/tmp/primary');
 });
+
+test('sandbox preparation discovers a moved registered module before attempting an obsolete chunk', async () => {
+  const { prepareToolSandbox } = await import('../src/mcp.mjs');
+  let loads = 0;
+  const req = id => { assert.equal(id, 434056); return { H: async () => ({ sandboxId: 'moved', resolvedSharedFolders: [] }) }; };
+  req.m = { 434056: { toString: () => 'H: resolvedSharedFolders: projectFolders:' } };
+  req.e = async () => { loads++; throw new Error('obsolete chunk'); };
+  const context = vm.createContext({ crypto, document: { querySelector: () => ({}) }, window: { '@flow-web/desktop:stable': { push: ([,,fn]) => fn(req) }, neotix: { taskMode: { runtime: { queryRuntimeInfo: async () => ({ env: {} }) } } } } });
+  const result = await prepareToolSandbox({ evaluate: expression => vm.runInContext(expression, context), close() {} }, { workspace: process.cwd(), permission: 'AskOnRisk' });
+  assert.equal(result.sandboxId, 'moved'); assert.equal(loads, 0);
+});
+
+test('Desktop follow-ups carry saved permissions into both sandbox and task request parameters', async () => {
+  for (const [name, code] of [['AlwaysAsk', 0], ['AskOnRisk', 1], ['FullAccess', 2]]) {
+    const client = mockClient({ fetch: async () => info({ runtime_type: 2, sandbox_auth_type: code,
+      local_device_id: 'current', local_app_id: currentApp().aid, workspace: '/tmp/saved' }) });
+    const resolved = await resolveTaskContext(client, '123', {});
+    assert.equal(resolved.permission, name);
+    const task = JSON.parse(conversationExt(AUTOMATIC_MODEL_PROTOCOL, 'message', resolved.workspace,
+      { taskContext: resolved.taskContext, permission: resolved.permission, existingConversation: true }).general_task_param);
+    assert.equal(task.agent_task_param.sandbox_auth_type, code);
+    assert.equal(task.client_option.sandbox_auth_type, code);
+    assert.equal(task.agent_task_param_change.sandbox_auth_type_changed, false);
+  }
+});

@@ -9,3 +9,12 @@ export function resolvePermission(value = 'FullAccess') {
   if (!name) throw new Error('unknown permission; expected AlwaysAsk, AskOnRisk, or FullAccess');
   return PERMISSIONS[name];
 }
+
+export function taskPermission(explicit, previous, fallback) {
+  let value = explicit;
+  if (value == null && previous?.runtime_type === 2 && previous.sandbox_auth_type !== undefined) {
+    value = Object.keys(PERMISSIONS).find(name => PERMISSIONS[name] === previous.sandbox_auth_type);
+    if (!value) throw new Error('Doubao conversation execution context has an invalid permission');
+  }
+  return Object.keys(PERMISSIONS).find(name => PERMISSIONS[name] === resolvePermission(value ?? fallback));
+}
