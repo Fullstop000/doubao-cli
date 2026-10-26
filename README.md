@@ -37,7 +37,7 @@ doubao status --json
 
 ## Commands
 
-Desktop and Headless `sessions list` use the same `/im/chain/recent_conv` pagination and runtime classification. Both accept `--all` or `--limit 1–100` (default 20); `--timeout` covers the traversal. `--all` follows all API-visible sessions, removes duplicate IDs, and finishes with `hasMore: false`. Deleted or inaccessible history is outside this API's scope. Invalid pages, non-advancing cursors and timeouts fail instead of returning partial success. The observed intermittent read error is retried twice on the same page.
+Desktop and Headless `sessions list` use the same `/im/chain/recent_conv` pagination and runtime classification. Both accept `--all` or `--limit 1–100` (default 20); `--archived` lists archived sessions instead of active ones; `--timeout` covers the traversal. `--all` follows all API-visible sessions, removes duplicate IDs, and finishes with `hasMore: false`. Deleted or inaccessible history is outside this API's scope. Invalid pages, non-advancing cursors and timeouts fail instead of returning partial success. The observed intermittent read error is retried twice on the same page.
 
 JSON uses an object with `sessions`, `source`, `complete`, `hasMore`, `pages`, and `platform`. **Desktop JSON changed from an array to this object**; scripts should read `.sessions`. `source: "api"` identifies a live query; `complete: true` means the response includes every API-visible session. Text output includes the same completeness fields below the session rows.
 
@@ -77,6 +77,25 @@ doubao sessions stop <conversation-id> --run <run-id> --json
 | `--reply-schema` | Schema file: `type`, `required`, `properties`, `enum`, `items` |
 
 Create/send reply validation requires `--wait`; invalid replies exit nonzero.
+
+## Session management
+
+Desktop and Headless support the same saved-session changes:
+
+```bash
+doubao sessions archive <conversation-id> --json
+doubao sessions unarchive <conversation-id> --json
+doubao sessions list --archived --all --json
+doubao sessions pin <conversation-id> --json
+doubao sessions unpin <conversation-id> --json
+doubao sessions rename <conversation-id> "New title" --json
+doubao sessions move <conversation-id> <project-id-or-exact-name> --json
+doubao sessions move <conversation-id> none --json
+```
+
+Add `headless` after `doubao` for Headless, or select a desktop app with `--app work|doubao`. Commands support `--profile` and `--timeout`. Titles must be non-empty and at most 20 UTF-16 units, matching the app's rename dialog. `move` resolves an existing project by ID or exact name; duplicate names require an ID. `none` removes the project assignment. Moving changes the session's project reference; it does not move local files.
+
+Each change reads the current session, writes once if needed, and confirms the saved state before returning `verified: true`. An already-satisfied change returns `changed: false`. An uncertain write or failed readback exits nonzero with `verified: false`, the requested change and an operation ID; inspect the session before retrying. Listing JSON includes `pinned`, `archived`, and `projectId`; unknown archive status is `null`. Archived listing requires a live API connection; a desktop disk-cache result is incomplete and has no archived rows.
 
 ## Desktop
 

@@ -1,3 +1,4 @@
+import { sessionMetadata } from './session-metadata.mjs';
 import { sessionRuntime } from './session-runtime.mjs';
 
 export function requestDeadline(timeoutMs) {
@@ -13,7 +14,7 @@ function serviceError(message, code) {
   return Object.assign(new Error(message), { code });
 }
 
-export async function listApiSessions(client, { limit = 20, all = false, timeoutMs = 10_000 } = {}) {
+export async function listApiSessions(client, { limit = 20, all = false, archived = false, timeoutMs = 10_000 } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Session limit must be from 1 to 100');
   const remaining = requestDeadline(timeoutMs);
   const sessions = new Map(), cursors = new Set(['0:0']);
@@ -34,7 +35,8 @@ export async function listApiSessions(client, { limit = 20, all = false, timeout
       option: { not_need_message: true, need_complete_conversation: true,
         need_coco_conversation: cursor === 0, need_coco_bot: cursor === 0,
         // Without the PC chain, the cursor skips most Work conversations.
-        need_pc_pin_chain: true, pc_pin_query_type: pinType },
+        need_pc_pin_chain: !archived, pc_pin_query_type: pinType,
+        exclude_archive: !archived, only_archive: archived },
     });
     remaining();
     pages++;
@@ -46,7 +48,9 @@ export async function listApiSessions(client, { limit = 20, all = false, timeout
       const conversation = cell?.conversation;
       const id = conversation?.conversation_id;
       if (!/^[1-9]\d{11,23}$/u.test(id || '') || sessions.has(id)) continue;
-      sessions.set(id, { id, title: conversation.name, runtime: sessionRuntime(conversation), updatedAt: conversation.update_time });
+      const { pinned, archived: isArchived, projectId } = sessionMetadata(conversation);
+      sessions.set(id, { id, title: conversation.name, runtime: sessionRuntime(conversation), updatedAt: conversation.update_time,
+        pinned, archived: isArchived, projectId });
     }
     if (!data.has_more || !all && sessions.size >= limit) {
       return { source: 'api', complete: !data.has_more && (all || sessions.size <= limit), sessions: [...sessions.values()].slice(0, all ? undefined : limit),
