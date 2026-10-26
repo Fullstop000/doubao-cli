@@ -37,7 +37,7 @@ Credentials are stored under the CLI configuration directory in `headless/sessio
 
 ## Sessions and recovery
 
-`sessions list --all` follows every page exposed by the session API and removes duplicate IDs. Success ends with `hasMore: false`; JSON `pages` reports successfully read pages. The observed intermittent server error is retried twice on the same page. Without `--all`, the default total limit is 20, and `--limit` accepts 1–100. The flags cannot be combined. `--timeout` covers the full traversal; timeouts, malformed pages and non-advancing cursors fail rather than returning a partial list as complete. Deleted or inaccessible conversations are outside this API's scope.
+`sessions list --all` follows every page exposed by the session API and removes duplicate IDs. Success ends with `hasMore: false`; JSON `pages` reports successfully read pages. `source: "api"` identifies a live query; `complete` is true only when the returned list reaches the end without truncation. Desktop uses the same list service, with its current runtime selections overlaid. The observed intermittent server error is retried twice on the same page. Without `--all`, the default total limit is 20, and `--limit` accepts 1–100. The flags cannot be combined. `--timeout` covers the full traversal; timeouts, malformed pages and non-advancing cursors fail rather than returning a partial list as complete. Deleted or inaccessible conversations are outside this API's scope.
 
 ```bash
 doubao headless sessions list --limit 20 --json

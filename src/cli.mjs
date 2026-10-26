@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { getDataDir, readProfiles, resolveProfile } from './storage.mjs';
-import { sessionIndex } from './sessions.mjs';
+import { sessionIndex, listDesktopSessions } from './sessions.mjs';
 import { listProfiles, formatProfiles } from './profiles.mjs';
 import { cdpStatus, withChatClient } from './cdp.mjs';
 import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
@@ -39,9 +39,9 @@ const HELP = `Usage:
   doubao usage [--profile <name>] [--json]
   doubao profiles [--json]
   doubao runtimes [--json]
-  doubao projects list [--json]
+  doubao projects list [--timeout <seconds>] [--json]
   doubao projects create <name> [--workspace <path>] [--json]
-  doubao sessions list [--profile <name>] [--json]
+  doubao sessions list [--all | --limit <count>] [--profile <name>] [--timeout <seconds>] [--json]
   doubao sessions current [--profile <name>] [--json]
   doubao sessions create [message] [--mode goal] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
@@ -601,7 +601,7 @@ export async function main(argv) {
 }
 
 async function run(options) {
-  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
+  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, all, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
   const isolation = { runtime, project, enterpriseKnowledge, workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
 
@@ -688,9 +688,7 @@ async function run(options) {
     if ((wait || command === 'sessions' && subcommand === 'wait') && validated.status && validated.status !== 'completed') process.exitCode = 1;
     if (command === 'sessions' && subcommand === 'stop' && validated.stopped === false) process.exitCode = 1;
     if (command === 'sessions' && subcommand === 'list' && !json) {
-      console.log('CONVERSATION ID\tRUNTIME\tTITLE');
-      for (const session of validated.sessions) console.log(`${session.id}\t${session.runtime}\t${session.title}`);
-      console.log(`hasMore\t${validated.hasMore}`);
+      printSessionList(validated);
     } else output(command === 'login' && !json ? 'Doubao Headless is signed in and ready.' : validated, json);
     return;
   }
@@ -785,7 +783,7 @@ async function run(options) {
     return;
   }
   if (command === 'projects' && subcommand === 'list') {
-    const result = await withChatClient(listProjects);
+    const result = await withChatClient(client => listProjects(client, timeoutMs));
     if (json) output(result, true);
     else for (const item of result) console.log(`${item.id}\t${item.name}`);
     return;
@@ -968,12 +966,10 @@ async function run(options) {
   if (command !== 'sessions') throw new Error(`unknown command "${command}". Run "doubao help".`);
 
   if (subcommand === 'list') {
-    const { sessions } = await sessionIndex(profile, { includeRuntime: true });
-    if (json) output(sessions, true);
-    else {
-      console.log('CONVERSATION ID\tRUNTIME\tTITLE');
-      for (const session of sessions) console.log(`${session.id}\t${session.runtime}\t${session.title}`);
-    }
+    const result = await listDesktopSessions(profile, { limit, all, timeoutMs });
+    if (json) output(result, true);
+    else printSessionList(result);
+    if (all && !result.complete) process.exitCode = 1;
     return;
   }
 
@@ -1069,4 +1065,12 @@ async function run(options) {
   }
 
   throw new Error(`unknown sessions command "${subcommand || ''}". Run "doubao help".`);
+}
+
+function printSessionList(result) {
+  console.log('CONVERSATION ID\tRUNTIME\tTITLE');
+  for (const session of result.sessions) console.log(`${session.id}\t${session.runtime}\t${session.title}`);
+  console.log(`source\t${result.source}`);
+  console.log(`complete\t${result.complete}`);
+  console.log(`hasMore\t${result.hasMore}`);
 }

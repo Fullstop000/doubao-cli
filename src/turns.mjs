@@ -88,12 +88,12 @@ export async function imRequest(client, route, cmd, key, body, timeoutMs = 10000
     const result = await webJsonRequest(client, runtime, 'https://www.doubao.com/im/' + route + '?' + query,
       JSON.stringify({ cmd, uplink_body: { [key]: body }, sequence_id: crypto.randomUUID(), channel: 2, version: '1' }),
       'application/json; encoding=utf-8', 'Doubao task lookup failed', deadline);
-    if (result.status_code) throw new Error('Doubao task lookup failed: ' + result.status_desc);
+    if (result.status_code) throw Object.assign(new Error('Doubao task lookup failed (' + result.status_code + '): ' + result.status_desc), { code: 'request_rejected' });
     return result.downlink_body;
   }
   const identity = webIdentityGuard(runtime);
   const fetchTimeoutMs = Math.max(1, timeoutMs);
-  return evaluateWithWatchdog(client, `(async () => {
+  const result = await evaluateWithWatchdog(client, `(async () => {
     ${identity.setup}
     ${identity.check}
     const response = await fetch(${JSON.stringify('https://www.doubao.com/im/' + route + '?' + query)}, {
@@ -106,9 +106,10 @@ export async function imRequest(client, route, cmd, key, body, timeoutMs = 10000
     if (!response.ok) throw new Error('Doubao task lookup failed: HTTP ' + response.status);
     const result = await response.json();
     ${identity.check}
-    if (result.status_code) throw new Error('Doubao task lookup failed: ' + result.status_desc);
-    return result.downlink_body;
+    return result;
   })()`, timeoutMs + 1000);
+  if (result.status_code) throw Object.assign(new Error('Doubao task lookup failed (' + result.status_code + '): ' + result.status_desc), { code: 'request_rejected' });
+  return result.downlink_body;
 }
 
 const parse = value => { try { return typeof value === 'string' ? JSON.parse(value) : value || {}; } catch { return {}; } };

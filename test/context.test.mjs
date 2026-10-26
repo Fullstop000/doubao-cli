@@ -41,7 +41,7 @@ function mockClient({ fetch, prepare, reconcile = async () => ({ ok: true }), lo
     throw new Error('unexpected module ' + id);
   };
   req.e = async () => {};
-  const context = vm.createContext({ URL, crypto, setTimeout, clearTimeout, TextDecoder, AbortController, AbortSignal,
+  const context = vm.createContext({ localStorage: { getItem: () => '12345678901234' }, URL, crypto, setTimeout, clearTimeout, TextDecoder, AbortController, AbortSignal,
     document: { querySelector: () => ({}) },
     performance: { getEntriesByType: () => [{ name: `https://www.doubao.com/im/chain/recent_conv?aid=${currentApp().aid}&device_id=current` }] },
     window: { '@flow-web/desktop:stable': { push: ([,,fn]) => fn(req) }, neotix: { taskMode: { runtime: {
@@ -125,18 +125,16 @@ test('module discovery survives changed ids and never requires a missing module'
   const req = id => { assert.ok(req.m[id]); calls.push(id); return { id }; };
   req.m = {
     424242: function(e,t,r){r.d(t,{Wp:()=>s});const s='chat-ioc-manager: store';},
-    424243: function(e,t,r){r.d(t,{oI:()=>s,mE:()=>s});const s='manager';},
-    424244: function(e,t,r){r.d(t,{ZP:()=>s});const s={RuntimeEnvironment:'agent.cloud-computer.device-service'};},
+    424243: function(e,t,r){r.d(t,{getInputToolConversationRuntimeEnvironment:()=>s,getInputToolConversationStateSnapshot:()=>s});const s='selection';},
     525252: function(e,t,r){r.d(t,{th:()=>X});class ProjectStoreService{async createProject(e,t){} async deleteProject(e,t){}}},
   };
   assert.equal(appModule(req, 'stores').id, 424242);
-  assert.equal(appModule(req, 'runtimeManager').id, 424243);
-  assert.equal(appModule(req, 'runtimeServices').id, 424244);
+  assert.equal(appModule(req, 'runtimeSelection').id, 424243);
   assert.equal(appModule(req, 'projects').id, 525252);
   assert.throws(() => appModule(req, 'attachments'), /unavailable/);
   req.m[626262] = function(e,t,r){r.d(t,{th:()=>X});class OtherProjectStore{async createProject(e,t){} async deleteProject(e,t){}}};
   assert.throws(() => appModule(req, 'projects'), /unavailable or ambiguous/);
-  assert.deepEqual(calls, [424242, 424243, 424244, 525252]);
+  assert.deepEqual(calls, [424242, 424243, 525252]);
 });
 
 test('enterprise skill lookup discovers its moved export without loading a fixed chunk', async () => {
