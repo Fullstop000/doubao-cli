@@ -71,6 +71,8 @@ test('Headless session limit counts unique sessions across pages and preserves t
   assert.equal(calls, 2);
   assert.equal(result.sessions.length, 3);
   assert.equal(result.hasMore, true);
+  assert.equal(result.complete, false);
+  assert.equal(result.source, 'api');
   assert.equal(result.pages, 2);
 });
 
