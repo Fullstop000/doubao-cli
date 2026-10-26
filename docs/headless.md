@@ -53,6 +53,21 @@ doubao headless sessions wait <conversation-id> --run <run-id> --timeout 600 --j
 doubao headless sessions stop <conversation-id> --run <run-id> --json
 ```
 
+Session management uses the same service and readback checks as Desktop:
+
+```bash
+doubao headless sessions archive <conversation-id> --json
+doubao headless sessions unarchive <conversation-id> --json
+doubao headless sessions list --archived --all --json
+doubao headless sessions pin <conversation-id> --json
+doubao headless sessions unpin <conversation-id> --json
+doubao headless sessions rename <conversation-id> "New title" --json
+doubao headless sessions move <conversation-id> <project-id-or-exact-name> --json
+doubao headless sessions move <conversation-id> none --json
+```
+
+Titles are trimmed, non-empty and limited to 20 UTF-16 units, matching the app. Project names must match exactly; ambiguous names require an ID. `none` clears the project reference without moving files. All commands support `--profile` and `--timeout`. A change returns `verified: true` only after server readback; an already-satisfied operation returns `changed: false`. Writes are never automatically retried. Failed confirmation exits nonzero with `verified: false`, an operation ID and the requested change. Listing defaults to active sessions; `--archived` selects archived sessions. JSON rows include `pinned`, `archived` (`null` if unknown), and `projectId`.
+
 New sessions default to cloud Work; choose `--mode chat` for ordinary chat, or `--mode goal` to define a measurable objective. Goal mode uses the 2.32.10 protocol revision and checks the account's `goal_mode_enable` flag before sending. Desktop requires installed Doubao 2.32.10+; Headless requires no app. Follow-ups inherit one active goal; multiple active goals require resolution in Doubao. A completed turn does not establish completion of the whole goal.
 
 `sessions open` and `current` select the CLI's current conversation and do not open a UI. Listing returns recent sessions; `read` returns up to 100 recent messages.

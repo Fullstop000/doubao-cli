@@ -1,3 +1,4 @@
+import { SESSION_ACTIONS } from './session-actions.mjs';
 const SESSION_CREATE_OR_SEND = command => command[0] === 'sessions' && ['create', 'send'].includes(command[1]);
 const SESSION_STATE = command => command[0] === 'sessions' && ['status', 'wait', 'stop'].includes(command[1]);
 const SESSION_LIST_OR_READ = command => command[0] === 'sessions'
@@ -10,6 +11,7 @@ function allowed(flag, command, backend) {
   switch (flag) {
     case '--yes': return backend === 'desktop' && command[0] === 'cdp' && command[1] === 'launch';
     case '--limit': return SESSION_LIST_OR_READ(command);
+    case '--archived': return command[0] === 'sessions' && command[1] === 'list';
     case '--all': return command[0] === 'sessions' && command[1] === 'list';
     case '--run': return sessionState;
     case '--mode': return command[0] === 'sessions' && command[1] === 'create';
@@ -23,7 +25,7 @@ function allowed(flag, command, backend) {
       if (backend === 'web') return command[0] === 'login' || command[0] === 'sessions'
         && ['open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(command[1]);
       return sessionMessage || command[0] === 'projects' && command[1] === 'list'
-        || command[0] === 'sessions' && ['list', 'read', 'wait', 'stop'].includes(command[1])
+        || command[0] === 'sessions' && ['list', 'read', 'wait', 'stop', ...SESSION_ACTIONS].includes(command[1])
         || command[0] === 'mcp' && command[1] === 'register';
     case '--target': return backend === 'web' && ['login', 'status', 'cdp', 'sessions'].includes(command[0]);
     case '--profile':
@@ -55,6 +57,7 @@ const HEADLESS_HELP_OPTIONS = [
   ['--cookie-file', '<path>', 'Import cookies from a session file during login', command => command[0] === 'login'],
   ['--timeout', '<seconds>', 'Set the request or wait budget', command => allowed('--timeout', command, 'headless')],
   ['--limit', '<count>', 'Limit the number of listed sessions', command => allowed('--limit', command, 'headless')],
+  ['--archived', '', 'List archived sessions instead of active sessions', command => allowed('--archived', command, 'headless')],
   ['--all', '', 'Follow all session pages and remove duplicate IDs', command => allowed('--all', command, 'headless')],
   ['--mode', 'chat|work|goal', 'Select the mode for a new conversation', command => allowed('--mode', command, 'headless')],
   ['--model', '<model-name>', 'Select an available model by its exact name', command => allowed('--model', command, 'headless')],
@@ -105,6 +108,7 @@ function optionError(flag, command, backend) {
   if (flag === '--timeout') return `${flag} is not valid for ${command.join(' ') || 'this command'}`;
   if (flag === '--yes') return '--yes requires cdp launch on a desktop platform';
   if (flag === '--limit') return '--limit requires sessions list or read';
+  if (flag === '--archived') return '--archived requires sessions list';
   if (flag === '--all') return '--all requires sessions list';
   if (flag === '--target' && backend === 'web') return `--target is not used by doubao web ${command.join(' ')}`;
   if (flag === '--target') return '--target requires doubao web';
@@ -134,6 +138,8 @@ function validatePositionalContract(options) {
   }
   if (command === 'sessions') {
     if (['list', 'current'].includes(subcommand)) exact(2, `sessions ${subcommand} accepts no positional arguments`);
+    if (['archive', 'unarchive', 'pin', 'unpin'].includes(subcommand)) exact(3, `sessions ${subcommand} requires exactly one conversation ID`);
+    if (['rename', 'move'].includes(subcommand)) minimum(4, `sessions ${subcommand} requires a conversation ID and ${subcommand === 'rename' ? 'title' : 'project ID, exact name, or none'}`);
     if (['read', 'open', 'status', 'wait', 'stop'].includes(subcommand)) exact(3, `sessions ${subcommand} requires exactly one conversation ID`);
   }
   if (command === 'cdp' && ['status', 'launch'].includes(subcommand)) exact(2, `cdp ${subcommand} accepts no positional arguments`);

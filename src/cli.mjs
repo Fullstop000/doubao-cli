@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { getDataDir, readProfiles, resolveProfile } from './storage.mjs';
 import { sessionIndex, listDesktopSessions } from './sessions.mjs';
+import { SESSION_ACTIONS, sessionMutationInput, mutateApiSession } from './session-actions.mjs';
+import { desktopListClient } from './desktop-list-client.mjs';
 import { listProfiles, formatProfiles } from './profiles.mjs';
 import { cdpStatus, withChatClient } from './cdp.mjs';
 import { listConnectors, registerConnector, removeConnector } from './mcp.mjs';
@@ -41,8 +43,14 @@ const HELP = `Usage:
   doubao runtimes [--json]
   doubao projects list [--timeout <seconds>] [--json]
   doubao projects create <name> [--workspace <path>] [--json]
-  doubao sessions list [--all | --limit <count>] [--profile <name>] [--timeout <seconds>] [--json]
+  doubao sessions list [--all | --limit <count>] [--archived] [--profile <name>] [--timeout <seconds>] [--json]
   doubao sessions current [--profile <name>] [--json]
+  doubao sessions archive <conversation-id> [--timeout <seconds>] [--json]
+  doubao sessions unarchive <conversation-id> [--timeout <seconds>] [--json]
+  doubao sessions pin <conversation-id> [--timeout <seconds>] [--json]
+  doubao sessions unpin <conversation-id> [--timeout <seconds>] [--json]
+  doubao sessions rename <conversation-id> <title> [--timeout <seconds>] [--json]
+  doubao sessions move <conversation-id> <project-id-or-name|none> [--timeout <seconds>] [--json]
   doubao sessions create [message] [--mode goal] [--attach <path>] [--model <model>] [--reasoning <level>] [--wait] [--timeout <seconds>] [--runtime local|cloud] [--project <id-or-name|none>] [--enterprise-knowledge] [--workspace <path>] [--no-skills] [--mcp <connector-id>]... [--permission <mode>] [--expect-json] [--reply-schema <path>] [--json]
   doubao sessions open <conversation-id>
   doubao sessions read <conversation-id> [--limit <count>] [--json]
@@ -112,8 +120,14 @@ const HEADLESS_HELP = `Usage:
   doubao headless runtimes [--json]
   doubao headless projects list [--profile <name>] [--timeout <seconds>] [--json]
   doubao headless projects create <name> [--profile <name>] [--timeout <seconds>] [--json]
-  doubao headless sessions list [--all | --limit <count>] [--json]
+  doubao headless sessions list [--all | --limit <count>] [--archived] [--json]
   doubao headless sessions current [--profile <name>] [--json]
+  doubao headless sessions archive <conversation-id> [--timeout <seconds>] [--json]
+  doubao headless sessions unarchive <conversation-id> [--timeout <seconds>] [--json]
+  doubao headless sessions pin <conversation-id> [--timeout <seconds>] [--json]
+  doubao headless sessions unpin <conversation-id> [--timeout <seconds>] [--json]
+  doubao headless sessions rename <conversation-id> <title> [--timeout <seconds>] [--json]
+  doubao headless sessions move <conversation-id> <project-id-or-name|none> [--timeout <seconds>] [--json]
   doubao headless sessions open <conversation-id> [--profile <name>] [--json]
   doubao headless sessions read <conversation-id> [--limit <count>] [--json]
   doubao headless sessions create <message> [--mode chat|work|goal] [--model <model-name>] [--wait] [--timeout <seconds>] [--json]
@@ -231,6 +245,7 @@ export function parseOptions(argv) {
   let timeoutSeconds = 120;
   let limit = 20;
   let all = false;
+  let archived = false;
   let model;
   let reasoning;
   let workspace;
@@ -257,6 +272,8 @@ export function parseOptions(argv) {
       help = true;
     } else if (argv[index] === '--json') {
       json = true;
+    } else if (argv[index] === '--archived') {
+      archived = true;
     } else if (argv[index] === '--all') {
       all = true;
     } else if (argv[index] === '--yes') {
@@ -374,7 +391,7 @@ export function parseOptions(argv) {
     platform = 'headless';
   }
   if (app && platform && app !== platform) throw new Error('--app and --platform select different backends');
-  const options = { args, app, platform, targetId, mode, inputFile, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, all, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
+  const options = { args, app, platform, targetId, mode, inputFile, cookieFile, profile, runId, json, yes, wait, timeoutMs: timeoutSeconds * 1000, limit, all, archived, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs, unknownFlags };
   const selectedPlatform = platform || app || (process.platform === 'linux' ? 'headless' : undefined);
   const helpPlatform = selectedPlatform;
   const positionalArgs = args.slice(0, literalStart ?? args.length);
@@ -389,6 +406,7 @@ export function parseOptions(argv) {
   if (!positionalArgs.length && ['help', '--help', '-h'].includes(args[0])) return { ...options, helpPath: [] };
   const backend = selectedPlatform === 'headless' ? 'headless' : 'desktop';
   validateOptionContract({ ...options, explicitOptions: [...explicitOptions] }, backend);
+  if (args[0] === 'sessions' && SESSION_ACTIONS.includes(args[1])) sessionMutationInput(args[1], args[2], args.slice(3).join(' '));
   if (mode && backend === 'desktop' && mode !== 'goal') throw new Error('--mode requires goal on Desktop; chat/work require Web or Headless sessions create');
   if (mode === 'goal' && !args.slice(2).join(' ').trim()) throw new Error('--mode goal requires a message');
   if (args[0] === 'automations' && ['create', 'update'].includes(args[1])) {
@@ -577,7 +595,7 @@ export async function main(argv) {
     app.profile = resolveProfile(app.dataDir, options.profile).directory;
     const [command, subcommand] = options.args;
     const usesRenderer = ['models', 'model', 'mcp', 'runtimes', 'projects', 'usage', 'automations'].includes(command)
-      || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop', 'status', 'wait'].includes(subcommand));
+      || (command === 'sessions' && ['open', 'create', 'send', 'read', 'stop', 'status', 'wait', ...SESSION_ACTIONS].includes(subcommand));
     if (usesRenderer && app.profile !== readProfiles(app.dataDir).lastUsed) {
       throw new Error(`Profile ${app.profile} is not active in ${app.name}; switch profiles in the app before automating it`);
     }
@@ -601,7 +619,7 @@ export async function main(argv) {
 }
 
 async function run(options) {
-  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, all, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
+  const { args, profile: requestedProfile, runId, json, yes, wait, timeoutMs, limit, all, archived, model, reasoning, attachments, workspace, noSkills, permission, runtime, project, enterpriseKnowledge, expectJson, replySchema, mcps, commandPath, commandArgs, envPairs } = options;
   const isolation = { runtime, project, enterpriseKnowledge, workspace, skillPaths: noSkills ? [] : undefined, permission };
   const [command, subcommand, operand] = args;
 
@@ -728,6 +746,7 @@ async function run(options) {
       detectCurrentSession: true,
       openSession: true,
       createSessions: cdp.available,
+      sessionActions: cdp.available ? SESSION_ACTIONS : [],
       readMessages: cdp.available,
       sendMessages: cdp.available,
       stopGeneration: cdp.available,
@@ -966,10 +985,17 @@ async function run(options) {
   if (command !== 'sessions') throw new Error(`unknown command "${command}". Run "doubao help".`);
 
   if (subcommand === 'list') {
-    const result = await listDesktopSessions(profile, { limit, all, timeoutMs });
+    const result = await listDesktopSessions(profile, { limit, all, archived, timeoutMs });
     if (json) output(result, true);
     else printSessionList(result);
     if (all && !result.complete) process.exitCode = 1;
+    return;
+  }
+
+  if (SESSION_ACTIONS.includes(subcommand)) {
+    const input = sessionMutationInput(subcommand, operand, args.slice(3).join(' '));
+    const result = await withChatClient(client => mutateApiSession(desktopListClient(client), input, timeoutMs));
+    output({ platform: 'desktop', ...result }, json);
     return;
   }
 

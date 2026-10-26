@@ -74,7 +74,11 @@ Pass `--json` to every data-returning command when another program consumes the 
 | List runtimes / projects | `doubao runtimes --json` / `doubao projects list --json` |
 | Create a project | `doubao projects create "name" [--workspace /absolute/directory] --json` |
 | Select task context | add `--runtime local\|cloud --project <id-or-name> --enterprise-knowledge` to create/send |
-| List sessions | `doubao sessions list --json` |
+| List sessions / archives | `doubao sessions list [--archived] [--all] --json` |
+| Archive / restore session | `doubao sessions archive <id> --json` / `doubao sessions unarchive <id> --json` |
+| Pin / unpin session | `doubao sessions pin <id> --json` / `doubao sessions unpin <id> --json` |
+| Rename session | `doubao sessions rename <id> "New title" --json` (non-empty, at most 20 UTF-16 units) |
+| Move session to project | `doubao sessions move <id> <project-id-or-exact-name\|none> --json` |
 | Current session | `doubao sessions current --json` |
 | Create session with first message | `doubao sessions create "..." --wait --json` |
 | Blank draft session | `doubao sessions create --json` (returns `conversationId: null`) |
@@ -160,3 +164,5 @@ Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `xhigh` (极
 - Missing requested turn in history → the lookup is limited to the latest 100 main-conversation messages; do not substitute a newer turn. Full child lists/event streaming are not CLI features yet.
 - Commands break after an app update → the app changed its DOM/API surface; run `doubao update check` for a fixed CLI release.
 - CDP is unauthenticated but bound to 127.0.0.1; quit and relaunch Doubao normally when automation is no longer needed.
+
+Session management commands also support the `headless` prefix, `--profile`, and `--timeout`. Use project IDs when names are duplicated; `none` clears the project assignment. Changes read server state before writing and confirm it afterward. `verified: false` means the result is uncertain; inspect the session before retrying. Writes are never automatically retried.

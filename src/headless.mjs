@@ -1,3 +1,4 @@
+import { SESSION_ACTIONS, sessionMutationInput, mutateApiSession } from './session-actions.mjs';
 import fs from 'node:fs/promises';
 import { completionBody } from './headless-completion.mjs';
 export { completionBody } from './headless-completion.mjs';
@@ -40,7 +41,7 @@ export function validateHeadlessOptions(options) {
   if (options.unknownFlags?.length) throw new Error(`Unknown Headless option: ${options.unknownFlags[0]}; use -- before literal option text`);
   if (options.cookieFile && command !== 'login') throw new Error('--cookie-file requires doubao headless login');
   const supported = ['login', 'logout', 'status', 'capabilities', 'models', 'profiles', 'usage', 'runtimes'].includes(command)
-    || command === 'sessions' && ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'].includes(subcommand)
+    || command === 'sessions' && ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop', ...SESSION_ACTIONS].includes(subcommand)
     || command === 'automations' && ['list', 'get', 'create', 'update', 'delete'].includes(subcommand)
     || command === 'projects' && ['list', 'create'].includes(subcommand)
     || command === 'mcp' && ['register', 'list', 'remove'].includes(subcommand)
@@ -230,7 +231,7 @@ export async function executeHeadless(options, { confirmFullAccess = confirmHead
   const started = Date.now(), deadline = started + options.timeoutMs;
   const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0) throw Object.assign(new Error('Headless request timed out'), { code: 'timeout' }); return ms; };
   if (command === 'capabilities') return { platform: 'headless', browserRequired: false, appRequired: false,
-    login: ['terminal-qr', 'cookie-file'], sessions: ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop'],
+    login: ['terminal-qr', 'cookie-file'], sessions: ['list', 'current', 'open', 'read', 'create', 'send', 'status', 'wait', 'stop', ...SESSION_ACTIONS],
     runtime: ['cloud', 'local'], models: true, modelSelection: true, reasoning: true, profiles: true, usage: true,
     goalMode: { supported: true, minimumVersion: GOAL_MIN_VERSION, protocolVersion: HEADLESS_PROTOCOL_VERSION, accountGate: 'goal_mode_enable' },
     automations: ['list', 'get', 'create', 'update', 'delete'],
@@ -324,7 +325,11 @@ export async function executeHeadless(options, { confirmFullAccess = confirmHead
   }
   if (command === 'models') return headlessModels(client, remaining());
   if (command !== 'sessions') throw new Error('Unknown headless command');
-  if (subcommand === 'list') return listHeadlessSessions(client, { limit: options.limit, all: options.all, timeoutMs: remaining() });
+  if (SESSION_ACTIONS.includes(subcommand)) {
+    const input = sessionMutationInput(subcommand, operand, options.args.slice(3).join(' '));
+    return { platform: 'headless', ...await mutateApiSession(client, input, remaining()) };
+  }
+  if (subcommand === 'list') return listHeadlessSessions(client, { limit: options.limit, all: options.all, archived: options.archived, timeoutMs: remaining() });
   if (subcommand === 'open' || subcommand === 'current') {
     const id = subcommand === 'open' ? validateId(operand) : state.currentConversationId;
     if (!id) throw new Error('No current Headless conversation; use "doubao headless sessions open <id>" or create one');

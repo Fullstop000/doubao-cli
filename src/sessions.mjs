@@ -166,17 +166,17 @@ export async function listDesktopSessionsFromClient(client, options = {}) {
   })) };
 }
 
-export async function listDesktopSessions(profile, { limit = 20, all = false, timeoutMs = 10_000 } = {}) {
+export async function listDesktopSessions(profile, { limit = 20, all = false, archived = false, timeoutMs = 10_000 } = {}) {
   const remaining = requestDeadline(timeoutMs);
   const activeProfile = readProfiles(getDataDir()).lastUsed;
   const active = profile.directory === activeProfile;
   const status = active ? await cdpStatus(undefined, remaining()) : { available: false };
   if (status.identityMismatch) throw new Error(status.error);
   if (status.available) {
-    return withChatClient(client => listDesktopSessionsFromClient(client, { limit, all, timeoutMs: remaining() }));
+    return withChatClient(client => listDesktopSessionsFromClient(client, { limit, all, archived, timeoutMs: remaining() }));
   }
   const cached = listSessions(profile.path);
   return { platform: 'desktop', source: 'disk-cache', complete: false, hasMore: null, pages: 0,
     incompleteReason: active ? 'cdp_unavailable' : 'inactive_profile',
-    sessions: (all ? cached : cached.slice(0, limit)).map(session => ({ ...session, runtime: 'unknown' })) };
+    sessions: (archived ? [] : all ? cached : cached.slice(0, limit)).map(session => ({ ...session, runtime: 'unknown' })) };
 }
