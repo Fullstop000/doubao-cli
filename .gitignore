@@ -4,3 +4,5 @@ npm-debug.log*
 
 .worktree/
 .e2e/
+
+dist/
