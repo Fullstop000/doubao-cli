@@ -6,6 +6,12 @@ log({ event: 'start', args: process.argv.slice(2), marker: process.env.DOUBAO_E2
 for await (const line of readline.createInterface({ input: process.stdin })) {
   let request;
   try { request = JSON.parse(line); } catch { continue; }
+  // Record the transport boundary even when a caller uses an unknown tool name.
+  // Keep values private: method/name and argument shape are enough to diagnose routing.
+  log({ event: 'request', method: request.method, toolName: request.params?.name,
+    argumentType: typeof request.params?.arguments,
+    argumentKeys: request.params?.arguments && typeof request.params.arguments === 'object'
+      ? Object.keys(request.params.arguments) : [] });
   if (request.id === undefined) continue;
   let result;
   if (request.method === 'initialize') {
@@ -18,6 +24,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     result = { content: [{ type: 'text', text }] };
   } else if (request.method === 'ping') result = {};
   else {
+    log({ event: 'error', method: request.method, toolName: request.params?.name, code: -32601 });
     process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Unknown method' } }) + '\n');
     continue;
   }

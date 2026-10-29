@@ -17,8 +17,9 @@ const MODIFY_URL = 'https://www.doubao.com/im/conversation/modify';
 const BOT_ID = '7338286299411103781';
 export const CONNECTOR_API_BASE = 'https://www.doubao.com/alice/office/skills/manage/connector';
 
-// Read only the common, non-secret request parameters from this renderer.
-// Never copy signature/token fields or use another application's device ids.
+// Read the common, non-secret request parameters from this renderer. Initialize
+// only the native client identity key when absent; never substitute a sandbox
+// environment id, copy signature/token fields, or use another app's device ids.
 export async function runtimeParameters(client, { timeoutMs = 10_000 } = {}) {
   const web = currentApp().id === 'web';
   const expectedAccountId = web ? currentApp().accountId : undefined;
@@ -64,8 +65,36 @@ export async function runtimeParameters(client, { timeoutMs = 10_000 } = {}) {
     if (!entry) throw new Error('Doubao runtime parameters are not ready; open a chat and retry');
     const source = new URL(entry.name).searchParams;
     const params = Object.fromEntries(keys.filter(key => source.has(key)).map(key => [key, source.get(key)]));
-    const runtime = await window.neotix.taskMode.runtime.queryRuntimeInfo({ env: true });
-    return { params, clientEnvId: runtime?.env?.environmentId || '' };
+    if (params.aid !== ${JSON.stringify(currentApp().aid)} || !params.device_id) {
+      throw new Error(${JSON.stringify('Runtime identity does not match ' + currentApp().name)});
+    }
+    // Native completion-task builder 682436 keeps this UUID in runtimeStorage.
+    // The raw bridge returns the value; its service wrapper returns {isOK,data}.
+    // A sandbox environment id belongs to provisioning, not client_env_id.
+    const clientEnvId = await (async () => {
+      const storage = window.neotix?.runtimeStorage;
+      if (typeof storage?.get !== 'function') return '';
+      const key = 'general-agent:client-env-id';
+      const value = raw => {
+        if (raw && typeof raw === 'object' && typeof raw.isOK === 'boolean') {
+          if (!raw.isOK) return undefined;
+          raw = raw.data;
+        }
+        if (raw === null || raw === undefined || raw === '') return null;
+        return typeof raw === 'string' && raw.trim() ? raw : undefined;
+      };
+      try {
+        const saved = value(await storage.get(key));
+        if (typeof saved === 'string') return saved;
+        if (saved !== null || typeof storage.set !== 'function') return '';
+        // Match native initialization, then use the persisted readback rather
+        // than an unconfirmed in-memory id. Never retry an uncertain write.
+        await storage.set({ key, value: crypto.randomUUID() });
+        const stored = value(await storage.get(key));
+        return typeof stored === 'string' ? stored : '';
+      } catch { return ''; }
+    })();
+    return { params, clientEnvId };
   `;
   const runtime = await evaluateWithWatchdog(client, `(async () => {
     const keys = ['aid', 'real_aid', 'channel', 'chromium_version', 'client_platform',
@@ -273,6 +302,10 @@ const SEND_EXPRESSION = `(async () => {
   const checkpoint = () => { if (args.receiptBinding && window[args.receiptBinding]) window[args.receiptBinding](JSON.stringify(receipt())); };
   try {
     const localMessageId = args.localMessageId || crypto.randomUUID();
+    // A live catalog selection carries the complete native model metadata. The
+    // default Auto sentinel has none: on follow-ups it means inherit the saved
+    // model, so never turn that sentinel into an explicit model_config.
+    const hasModelMetadata = args.model.extraParams !== undefined;
     const body = {
       client_meta: {
         local_conversation_id: args.localConversationId || ('local_' + Date.now()),
@@ -306,15 +339,17 @@ const SEND_EXPRESSION = `(async () => {
           ? { model_item_key: args.model.key, reasoning_effort: args.reasoningEffort || '5', mode_id: '3',
             ...(args.ext ? { agent_task_param: JSON.stringify(JSON.parse(args.ext.general_task_param).agent_task_param) } : {}) }
           : undefined,
-        model_config: args.reasoningEffort
-          ? { model_item_key: args.model.key, reasoning_effort: Number(args.reasoningEffort) }
-          : undefined,
-        aggregate_params: (args.model.provider || args.reasoningEffort)
-          ? {
-            provider_id: args.model.provider || '',
-            ...(args.reasoningEffort ? { reasoning_effort: args.reasoningEffort } : {}),
-          }
-          : undefined,
+        model_config: hasModelMetadata
+          ? { model_item_key: args.model.key, model_extra_params: args.model.extraParams,
+            ...(args.reasoningEffort ? { reasoning_effort: Number(args.reasoningEffort) } : {}) }
+          : args.reasoningEffort ? { model_item_key: args.model.key, reasoning_effort: Number(args.reasoningEffort) } : undefined,
+        aggregate_params: hasModelMetadata
+          ? { provider_id: args.model.provider || '', model_item_key: args.model.key,
+            mode_id: '3', agent_mode: '1', conversation_mode: '', reasoning_effort: args.reasoningEffort || '' }
+          : (args.model.provider || args.reasoningEffort)
+            ? { provider_id: args.model.provider || '',
+              ...(args.reasoningEffort ? { reasoning_effort: args.reasoningEffort } : {}) }
+            : undefined,
       },
     };
     if (args.ext) {

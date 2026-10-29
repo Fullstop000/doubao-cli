@@ -211,3 +211,34 @@ test('Desktop follow-ups carry saved permissions into both sandbox and task requ
     assert.equal(task.agent_task_param_change.sandbox_auth_type_changed, false);
   }
 });
+
+// Native submit module 66848 keeps catalog model_extra_params; serializer
+// 316377 emits model_config and string-valued aggregate_params even without
+// an explicit reasoning level. Exercise the actual injected fetch body.
+test('explicit custom model metadata reaches create and followup requests without requiring reasoning', async () => {
+  const extraParams = { model_type: 'custom', provider_id: 'fixture-provider', memory_profile: '1000k_80' };
+  const model = { key: 'fixture-custom', ndt: 10001, provider: 'fixture-provider', extraParams };
+  for (const conversationId of [undefined, '123']) {
+    let body;
+    const client = mockClient({ fetch: async (_, options) => {
+      body = JSON.parse(options.body);
+      return new Response('event: SSE_ACK\ndata: {"ack_client_meta":{"conversation_id":"123"},"query_list":[{"question_id":"456"}]}\n\n');
+    } });
+    await sendChatCompletion(client, { conversationId, message: 'fixture', model, waitForReply: false });
+    assert.deepEqual(body.option.model_config, { model_item_key: 'fixture-custom', model_extra_params: extraParams });
+    assert.deepEqual(body.option.aggregate_params, { provider_id: 'fixture-provider', model_item_key: 'fixture-custom',
+      mode_id: '3', agent_mode: '1', conversation_mode: '', reasoning_effort: '' });
+  }
+});
+
+test('unspecified followup model continues to inherit instead of explicitly selecting Auto', async () => {
+  let body;
+  const client = mockClient({ fetch: async (_, options) => {
+    body = JSON.parse(options.body);
+    return new Response('event: SSE_ACK\ndata: {"ack_client_meta":{"conversation_id":"123"},"query_list":[{"question_id":"456"}]}\n\n');
+  } });
+  await sendChatCompletion(client, { conversationId: '123', message: 'fixture', model: AUTOMATIC_MODEL_PROTOCOL, waitForReply: false });
+  assert.equal(body.option.model_config, undefined);
+  assert.equal(body.option.aggregate_params, undefined);
+  assert.equal(body.option.conversation_init_ext, undefined);
+});

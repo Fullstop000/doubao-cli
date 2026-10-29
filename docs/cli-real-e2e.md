@@ -10,6 +10,8 @@
 
 Desktop 当前版本的附件叶子模块/重导出、项目设备 helper 和具名 skills facade 已适配；附件上传、工作目录绑定、企业知识均已用新安装包实测通过。MCP 固定旧 chunk 已修复，注册/list/remove 通过；实际调用仍失败：任务 completed 但专用服务器日志 0 call、没有预期 pong。发送回执包含 localConnectors 和工具 schema，精确 run 保留 local/AskOnRisk；助手使用了其他工具，但没有 connector.call，也无待批准证据。具体路由原因尚未确定，不能归为人工权限问题或记为通过。
 
+Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_id、按应用区分 agent workspace。Node 22/24 各 525 项自动测试及隔离打包检查通过；这些结果不改变 MCP 未通过结论。详见 [协议与诊断记录](desktop-mcp-model-contract.md)。
+
 ## 验收边界
 
 - 候选来自隔离 npm 安装。发现问题后只同步修复的运行时文件，并保存变更 hash；最终包检查另行记录。
@@ -150,7 +152,7 @@ Desktop 当前版本的附件叶子模块/重导出、项目设备 helper 和具
 
 ## 未完成项
 
-- Desktop `--mcp` 实际调用失败，原因未确定；后续应修复调用链路后新建单独验收样本。原 run 已终态、资源已清理，不重发原任务。
+- Desktop `--mcp` 仍未通过：独立 CLI 样本及全新原生 UI 会话均为 0 次实际调用；聊天页和后台页直接调用原生 MCP bridge 各成功 1 次。结构化错误及原生日志将问题缩小到 native callTool dispatch 之前，根因未确定。详见 [诊断记录](desktop-mcp-model-contract.md)。测试资源已清理，未重发原任务。
 - 上述四项人工登录/权限流程尚未执行。
 - 未实测多子任务取消、真实重启确认、已安装皮肤的视觉效果、实际版本升级安装。这些分支不能由模拟或其他成功路径替代。
 - chat 严格文本断言与一次新模型 JSON 断言失败保留：前者多句点，后者附加字符；CLI 对无效 JSON 正确返回非零，不能把原正向断言改记为成功。
