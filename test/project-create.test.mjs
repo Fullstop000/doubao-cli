@@ -26,7 +26,7 @@ function clientFor({ deviceId = 'current', mutate, readback } = {}) {
   };
   req.m = {
     424242: { toString: () => 'r.d(e,{th:()=>X});class ProjectStoreService{async createProject(e,t){} async deleteProject(e,t){}}' },
-    8001: { toString: () => 'U: project_shared_get_device_error getDeviceInfo()' },
+    8001: { toString: () => 'r.d(e,{U:()=>device});project_shared_get_device_error getDeviceInfo()' },
   };
   const context = vm.createContext({ localStorage: { getItem: () => '12345678901234' }, URL, crypto, setTimeout, clearTimeout, AbortSignal,
     performance: { getEntriesByType: () => [{ name: `https://www.doubao.com/im/project/list?aid=${currentApp().aid}&device_id=current` }] },

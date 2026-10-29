@@ -49,7 +49,7 @@ function buildExpression(template, args) {
 const REGISTER_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
   const args = %ARGS%;
-  if (!__req.m || !__req.m[359531] && !__req.m[609347]) await __req.e('1383');
+  if (!__req.m) await __req.e('1383');
   const api = appModule(__req, 'skills').Sf;
   const created = await api.AGWManageCreatePersonalConnector({
     name: args.name,
@@ -79,7 +79,7 @@ const REGISTER_EXPRESSION = `(async () => {
 
 const LIST_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
-  if (!__req.m || !__req.m[359531] && !__req.m[609347]) await __req.e('1383');
+  if (!__req.m) await __req.e('1383');
   const api = appModule(__req, 'skills').Sf;
   const result = await api.AGWManageListUserConnectors({ keyword: '', page_size: 100, page_token: '' });
   if (result?.code || !Array.isArray(result?.data?.items)) throw new Error('Doubao connector list could not be read');
@@ -96,7 +96,7 @@ const LIST_EXPRESSION = `(async () => {
 const REMOVE_EXPRESSION = `(async () => {
   ${RUNTIME_BOOTSTRAP}
   const args = %ARGS%;
-  if (!__req.m || !__req.m[359531] && !__req.m[609347]) await __req.e('1383');
+  if (!__req.m) await __req.e('1383');
   const api = appModule(__req, 'skills').Sf;
   const result = { connectorId: args.connectorId, removed: false };
   const verify = async () => {

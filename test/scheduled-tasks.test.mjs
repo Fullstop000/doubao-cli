@@ -122,6 +122,27 @@ test('create readback failure reports the operation id and never resends create'
   assert.deepEqual(calls.map(call => call.route), ['/alice/job_cron/create', '/alice/job_cron/get']);
 });
 
+test('schedule readback compares ISO instants at server second precision for create and update', async t => {
+  for (const action of ['create', 'update']) {
+    for (const [name, actual, passes] of [
+      ['timezone and fractional-second normalization', { repeat_type: 1, execute_at: '2027-01-27T11:30:40+08:00' }, true],
+      ['different second', { repeat_type: 1, execute_at: '2027-01-27T11:30:41+08:00' }, false],
+      ['different timezone instant', { repeat_type: 1, execute_at: '2027-01-27T03:30:40+08:00' }, false],
+      ['different repeat type', { repeat_type: 3, execute_at: '2027-01-27T11:30:40+08:00' }, false],
+      ['timezone absent', { repeat_type: 1, execute_at: '2027-01-27T03:30:40' }, false],
+    ]) await t.test(`${action}: ${name}`, async () => {
+      const schedule = { repeat_type: 1, execute_at: '2027-01-27T03:30:40.987Z' };
+      const { service, calls } = fixture((call, index) => index === 1
+        ? response({ job_id: '205' })
+        : response({ job: job('205', { schedule_config: actual, runtime_config: createInput.runtime_config, timezone: createInput.timezone }) }));
+      const result = action === 'create' ? service.create({ ...createInput, schedule }) : service.update('205', { schedule });
+      if (passes) assert.equal((await result).verified, true);
+      else await assert.rejects(result, /readback did not match schedule/u);
+      assert.equal(calls.length, 2, 'one mutation and one readback, never retry the mutation');
+    });
+  }
+});
+
 test('update sends only editable patch fields and returns verified readback', async () => {
   const { service, calls } = fixture((call, index) => index === 1
     ? response({ job: job('301') })
