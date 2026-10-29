@@ -36,7 +36,7 @@ The current candidate passed 525 automated tests on each of Node 22.16.0 and Nod
 
 Direct calls through the real native bridge succeeded from both the chat renderer and background execution page: each produced one matching `tools/call` and the expected echo. Native logs distinguish these successful dispatches from the failed model run, whose correlated logs contain no call dispatch or sandbox prepare/rekey failure. This narrows the problem to the path before native MCP dispatch; it does not establish a server root cause.
 
-The native connector registration, sandbox create and conversation reconciliation signatures were checked against the current app. No missing client/device registration field was found. Model metadata, client identity and workspace namespace corrections remain independently justified protocol fixes, not a demonstrated MCP repair. FullAccess and interactive permission cases remain deferred.
+The native connector registration, sandbox create and conversation reconciliation signatures were checked against the current app. No missing client/device registration field was found. Model metadata, client identity and workspace namespace corrections remain independently justified protocol fixes, not a demonstrated MCP repair. Headless FullAccess and interactive permission cases remain deferred. A later Desktop control used the already-confirmed native default policy, without changing global permission or answering any prompt.
 
 A fresh conversation sent using the native UI also completed with zero MCP calls. Its structured file-operation tool block returned the same “连接器暂时不可用” error, without a numeric error code; this is not inferred from assistant prose. Its captured native request contained the exact newly registered connector/tool and local runtime with AskOnRisk. This control did not reuse a CLI-created conversation or CLI-built completion request. Both the chat-renderer and background-page bridge controls succeeded independently. All diagnostic connectors were removed, test conversations archived, and the prior global permission preference restored. No permission dialog was approved.
 
@@ -50,4 +50,31 @@ The hand-written fixture's initialize, tools/list and tools/call response shapes
 
 ## Remaining boundary
 
-No client-side repair has restored model-to-MCP execution in these controls. The native UI reproduces the failure, and the service-visible tool result exposes no finer error code. The next useful evidence is the service's connector availability/routing decision for one saved failing run. Repeating the same client test, weakening permissions, or adding a speculative compatibility patch would not establish that cause. The verified protocol corrections are kept separate from the unresolved model-to-MCP execution issue. Their automated checks do not establish MCP E2E success.
+No client-side repair has restored model-to-MCP execution in these controls. The native UI reproduces the failure, and the service-visible tool result exposes no finer error code. Further client-side investigation compares a historical successful native MCP dispatch with current failures; service routing logs are unavailable. Repeating the same client test, weakening permissions, or adding a speculative compatibility patch would not establish that cause. The verified protocol corrections are kept separate from the unresolved model-to-MCP execution issue. Their automated checks do not establish MCP E2E success.
+
+## Further execution-path controls
+
+- Native high-level registration (`643755.yl`) was tested, including native registry/cache updates and READY revision waiting. Model-to-MCP execution still failed.
+- A single AskOnRisk task successfully read a random value that was not included in its prompt, then failed MCP. Native logs confirm 6002 → Read → sandboxFs.fileReadTool → success → upload. Thus ordinary local execution and result delivery work in the same task.
+- The Desktop user's existing always_allow preference and confirmed flag were read back before a pure-echo control. Using that already-confirmed Desktop policy also failed MCP. No global permission changed and no prompt was approved. This does not cover Headless's per-turn confirmation flow.
+- Full native registration plus a fresh native UI submission, using that existing policy, also completed with zero actual MCP calls. Its connector and conversation were cleaned up.
+- Actual dispatch runs in the app's independent `jsrt.mojom.Service`, loading bundled `entry-moa/main.js`, not the visible CDP background renderer. Its connector.call handler is registered and resolves LocalFile for both SSE and multi-env tool calls. Passive inspection of zero stream objects in the visible renderer is therefore not proof of transport failure.
+- Observed 6003 command results being produced/uploaded do not establish business execution success. These commands include workspace synchronization; they must not be counted as MCP calls.
+
+The precise completion response LogID was captured privately. A targeted Argos query was rejected for missing `argos.streamlog.view`; no service log contents were available. Relevant services reported in the permission response include `flow.moa.connector`, `flow.mcp.core`, `flow.mcp.proxy` and `flow.office.tool_localhub`. This leaves the service-side reason unknown; log access is not a prerequisite for continuing client-side protocol and transport comparisons. No alternate identity or tool was used to circumvent IAM. Private identifiers and IAM application URLs are excluded from this repository.
+
+## Historical routing comparison
+
+A successful native MCP call on 2026-10-28 was found in the DoubaoWork log directory: client version 2.34.1, delivery `sse`, real `read_image` dispatch, successful MCP response and result upload. The same log window contains the Work monitoring application identifier. Current 2.34.6 failed controls use dispatcher delivery. This correlation is not yet a demonstrated cause: ordinary local Read succeeds over dispatcher, and version, transport and tool differ.
+
+An additional official SDK echo control omitted all MCP tool annotations and still completed with zero tool calls. Its dedicated resources were cleaned up. Tool annotations alone therefore do not explain the observed failure.
+
+## Same-account ordinary Doubao control
+
+The stopped, installed ordinary Doubao app was launched without restarting another app. A private identity comparison confirmed the same logged-in account. The candidate CLI passed real MCP execution for a new conversation, explicit-model follow-up and inherited-model follow-up using Doubao 2.1 Lite: three distinct inbound calls and matching echo results. The test connector was removed and conversation archived. Native logs for the accepted task identify SSE delivery. The app metadata reports 2.32.3 while the native event reports pc_version 2.32.6; these are recorded separately rather than assumed equivalent.
+
+Opening a Work-created seed conversation initially made `models` fail because its saved model ID was absent from the ordinary app's live catalog. No connector or model request was created in that attempt. A fresh blank draft resolved the harness prerequisite. This is not an MCP repair.
+
+These controls establish that the installed candidate and account can execute MCP through the ordinary app. They do not establish current Work acceptance or justify silently changing apps, transport flags or permission policy.
+
+A second fresh control with Doubao 2.1 Pro also passed all three stages (new conversation, explicit-model follow-up, inherited-model follow-up), with three actual calls and matching results. Its connector removal and conversation archival were verified. This removes the model-name difference for the comparison with the earlier failing Work Pro control, while app and delivery remain different.
