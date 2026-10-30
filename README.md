@@ -15,11 +15,15 @@ doubao --version
 | --- | --- |
 | `doubao` on Linux | Headless |
 | `doubao` on macOS | Work if installed, otherwise Doubao |
-| `doubao headless` | Headless |
+| `doubao --platform work` | Doubao Work desktop app |
+| `doubao --platform doubao` | Doubao desktop app |
+| `doubao --platform headless` / `doubao headless` | Headless |
 | `doubao web` / `doubao --platform web` | Headless (compatibility aliases) |
-| `doubao --app work` / `doubao --app doubao` | Selected desktop app |
+| `doubao --app work` / `doubao --app doubao` | Desktop compatibility aliases for `--platform` |
 
-Keep the same backend, account and profile for each conversation.
+Use `--platform` to select a backend. `--app` remains compatible for `work` and `doubao`; if both flags are supplied, their values must match. `--platform web` is an alias for `headless`.
+
+Keep the same backend, account and profile for each conversation. `--runtime local|cloud` selects task execution within a backend; it does not switch backends.
 
 ## Setup
 
@@ -93,7 +97,7 @@ doubao sessions move <conversation-id> <project-id-or-exact-name> --json
 doubao sessions move <conversation-id> none --json
 ```
 
-Add `headless` after `doubao` for Headless, or select a desktop app with `--app work|doubao`. Commands support `--profile` and `--timeout`. Titles must be non-empty and at most 20 UTF-16 units, matching the app's rename dialog. `move` resolves an existing project by ID or exact name; duplicate names require an ID. `none` removes the project assignment. Moving changes the session's project reference; it does not move local files.
+Add `headless` after `doubao` for Headless, or select a desktop app with `--platform work|doubao`. Commands support `--profile` and `--timeout`. Titles must be non-empty and at most 20 UTF-16 units, matching the app's rename dialog. `move` resolves an existing project by ID or exact name; duplicate names require an ID. `none` removes the project assignment. Moving changes the session's project reference; it does not move local files.
 
 Each change reads the current session, writes once if needed, and confirms the saved state before returning `verified: true`. An already-satisfied change returns `changed: false`. An uncertain write or failed readback exits nonzero with `verified: false`, the requested change and an operation ID; inspect the session before retrying. Listing JSON includes `pinned`, `archived`, and `projectId`; unknown archive status is `null`. Archived listing requires a live API connection; a desktop disk-cache result is incomplete and has no archived rows.
 

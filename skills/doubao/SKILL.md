@@ -49,11 +49,13 @@ To rerun live acceptance, use a source checkout, a separate config directory wit
 
 ## Desktop app selection (macOS)
 
-Requires CLI 0.10.0 or newer. Check `doubao --version`; update older installations before using `--app` or Work.
+Check `doubao --version`; update older installations with `doubao update` before using the selectors below.
 
-Prefer DoubaoWork when installed; fall back to Doubao only when Work is absent. Use `--app work` or `--app doubao` on any command to select explicitly. A login or CDP failure must not trigger a switch. Check `status --json` for `app`, `appPath`, `dataDir`, profile, and `cdpEndpoint`.
+Prefer DoubaoWork when installed; fall back to Doubao only when Work is absent. Use `--platform work` or `--platform doubao` on any command to select explicitly. A login or CDP failure must not trigger a switch. Check `status --json` for `app`, `appPath`, `dataDir`, profile, and `cdpEndpoint`.
 
-Work uses port 9226 and its own profile directory; regular Doubao uses 9225. Keep the same `--app` on follow-ups. Connectors are account-level, so the same account can expose them in both apps. Restart authorization applies separately to each app.
+`--platform work|doubao|headless` is the standard backend selector. `--app work|doubao` remains a desktop compatibility alias; conflicting selectors are rejected. `--platform web` remains an alias for `headless`.
+
+Work uses port 9226 and its own profile directory; regular Doubao uses 9225. Keep the same `--platform` on follow-ups. Connectors are account-level, so the same account can expose them in both apps. Restart authorization applies separately to each app.
 
 ## Desktop readiness check
 
@@ -150,7 +152,7 @@ Reasoning effort levels: `low` (低), `medium` (中), `high` (高), `xhigh` (极
 
 ## Environment overrides
 
-- `DOUBAO_APP` — explicit application path; overrides automatic selection. `--app` selects the other variant when specified.
+- `DOUBAO_APP` — explicit application path; overrides automatic selection. `--platform work|doubao` selects the other variant when specified.
 - `DOUBAO_DATA_DIR` — selected app user-data directory override
 - `DOUBAO_CDP_ENDPOINT` — CDP endpoint (Work: `http://127.0.0.1:9226`; Doubao: `http://127.0.0.1:9225`). An endpoint belonging to the other app is rejected.
 - `DOUBAO_CLI_CONFIG_DIR` — CLI settings directory

@@ -98,7 +98,7 @@ async function quitAppForCdp(appPath) {
 async function confirmCdpRestart({ json, yes }) {
   if (yes) return;
   if (json || !process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error(`${currentApp().name} must restart to enable CDP. Re-run "doubao --app ${currentApp().id} cdp launch --yes" to confirm.`);
+    throw new Error(`${currentApp().name} must restart to enable CDP. Re-run "doubao --platform ${currentApp().id} cdp launch --yes" to confirm.`);
   }
 
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
@@ -350,7 +350,7 @@ async function run(options) {
       cdp,
       note: cdp.available
         ? 'Message automation is available through the authenticated Doubao renderer over local CDP.'
-        : `Run doubao --app ${currentApp().id} cdp launch to enable message automation.`,
+        : `Run doubao --platform ${currentApp().id} cdp launch to enable message automation.`,
     };
     if (json) output(capabilities, true);
     else {

@@ -55,7 +55,7 @@ export async function cdpStatus(endpoint = cdpEndpoint(), timeoutMs = undefined)
         protocolVersion: version['Protocol-Version'], targetIds: targetIds(matching), ...(targetId ? { targetId } : {}) };
     }
     if (!targets.some((target) => isAppTarget(target.url) || isAppTarget(target.url, currentApp(), 'background'))) {
-      return { available: false, endpoint, identityMismatch: true, error: `CDP endpoint ${endpoint} does not belong to ${currentApp().name}; select the correct --app or endpoint` };
+      return { available: false, endpoint, identityMismatch: true, error: `CDP endpoint ${endpoint} does not belong to ${currentApp().name}; select the correct --platform or endpoint` };
     }
     return { app: currentApp().id, available: true, endpoint, browser: version.Browser, protocolVersion: version['Protocol-Version'] };
   } catch (error) {
@@ -229,7 +229,7 @@ export async function withChatClient(callback, endpoint = cdpEndpoint()) {
     if (currentApp().id === 'web') {
       throw new Error(status.identityMismatch ? status.error : `Doubao Web browser is unavailable at ${endpoint}. Run "doubao web login" to start a browser with remote debugging enabled and sign in.`);
     }
-    throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --app ${currentApp().id} cdp launch" to enable CDP.`);
+    throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --platform ${currentApp().id} cdp launch" to enable CDP.`);
   }
   const target = await findChatTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();
@@ -251,7 +251,7 @@ export async function withBackgroundClient(callback, endpoint = cdpEndpoint()) {
   if (currentApp().id === 'web') throw new Error('Doubao Web does not support desktop background-page operations');
   const status = await cdpStatus(endpoint);
   if (!status.available) {
-    throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --app ${currentApp().id} cdp launch" to enable CDP.`);
+    throw new Error(status.error && status.identityMismatch ? status.error : `${currentApp().name} CDP is unavailable at ${endpoint}. Run "doubao --platform ${currentApp().id} cdp launch" to enable CDP.`);
   }
   const target = await findBackgroundTarget(endpoint);
   const client = await new CdpClient(target.webSocketDebuggerUrl).connect();

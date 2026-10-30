@@ -1,5 +1,9 @@
 import { helpEntries } from './commands.js';
 
+const DESKTOP_SELECTORS = `  --platform work|doubao|headless  Select a backend; web is an alias for headless
+  --app work|doubao  Compatibility alias for --platform (desktop only)`;
+const HEADLESS_SELECTOR = '  --platform headless  Select Headless; equivalent to doubao headless';
+
 const DESKTOP_NOTES = `Help:
   Add --help or -h to any command, or use help <command>.
   --  Treat the remaining arguments as literal text, including help and --help.
@@ -10,8 +14,9 @@ Local task execution permission (requires --runtime local or --mcp):
                       This does not guarantee approval for each MCP call.
 
 Application:
-  --app work|doubao  Select an app (default: Work if installed, otherwise Doubao)
-  --platform work|doubao|headless  Select a backend; web is an alias for headless
+${DESKTOP_SELECTORS}
+  Default on macOS: Work if installed, otherwise Doubao. Linux defaults to Headless.
+  If both selectors are supplied, they must select the same backend.
   --mode chat|work|goal  Select a new conversation mode (goal: Desktop/Headless, Doubao >=2.32.10)
 
 Environment:
@@ -27,6 +32,7 @@ const HEADLESS_NOTES = `Help:
   --  Treat the remaining arguments as literal text, including help and --help.
 
 Options:
+${HEADLESS_SELECTOR}
   --mode chat|work|goal  Select the mode for a new conversation
   --model <model-name>  Select an available model by its exact name from headless models
   --reasoning low|medium|high|xhigh|max  Set reasoning effort
@@ -51,7 +57,6 @@ Account:
   DOUBAO_HEADLESS_COOKIE supplies an in-memory session; explicit login verifies and saves it.
 
 Compatibility:
-  doubao --platform headless <command> remains supported.
   doubao web <command> and --platform web are aliases for Headless, including login.
   Run "doubao help" for desktop and update commands.
 `;
@@ -86,10 +91,10 @@ export function commandHelp(helpPath: string[], platform: string | undefined, he
     ? [`  doubao${headless ? ' headless' : ''} --version`]
     : helpEntries(platform).filter(entry => helpPath.every((token, index) => entry.path[index] === token)).map(entry => entry.line);
   const options = helpPath[0] === 'skin'
-    ? '  --app work|doubao  Select the desktop app\n  --platform work|doubao|headless  Select a backend\n  --json  Output results as JSON'
+    ? `${DESKTOP_SELECTORS}\n  --json  Output results as JSON`
     : headless
-    ? [...headlessOptionsForHelp(helpPath), '  --json  Output results as JSON'].join('\n')
-    : '  --app work|doubao  Select the desktop app\n  --platform work|doubao|headless  Select a backend (web aliases headless)\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON';
+    ? [HEADLESS_SELECTOR, ...headlessOptionsForHelp(helpPath), '  --json  Output results as JSON'].join('\n')
+    : `${DESKTOP_SELECTORS}\n  --profile <name>  Select a desktop profile\n  --json  Output results as JSON`;
   const permission = !headless && helpPath[0] === 'sessions' && (!helpPath[1] || ['create', 'send'].includes(helpPath[1]))
     ? `\n\nLocal task execution permission${rootHelp('desktop').split('\n\nLocal task execution permission')[1].split('\n\nApplication:')[0]}`
     : '';
