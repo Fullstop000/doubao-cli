@@ -29,6 +29,9 @@ test('documents model selection commands', () => {
   const result = spawnSync(process.execPath, [cliPath.pathname, '--platform', 'doubao', '--help'], { encoding: 'utf8' });
 
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--app work\|doubao  Compatibility alias for --platform/u);
+  assert.ok(result.stdout.indexOf('--platform work|doubao|headless') >= 0
+    && result.stdout.indexOf('--platform work|doubao|headless') < result.stdout.indexOf('--app work|doubao'));
   assert.match(result.stdout, /doubao models \[--json\]/u);
   assert.match(result.stdout, /doubao model select <model>/u);
   assert.match(result.stdout, /--model <model>/u);
@@ -123,7 +126,14 @@ test('every desktop and web command exposes scoped help before executing', () =>
       const usage = topic === 'version' ? '--version' : topic;
       assert.ok(result.stdout.includes(`  doubao${isWeb ? ' headless' : ''} ${usage}`), argv.join(' '));
       if (topic === 'sessions create') assert.doesNotMatch(result.stdout, /sessions send/u);
-      if (isWeb) assert.doesNotMatch(result.stdout, /--target|--app/u);
+      if (isWeb) {
+        assert.doesNotMatch(result.stdout, /--target|--app/u);
+        assert.match(result.stdout, /--platform headless  Select Headless/u);
+      } else {
+        assert.match(result.stdout, /--app work\|doubao  Compatibility alias for --platform/u);
+        assert.ok(result.stdout.indexOf('--platform work|doubao|headless') >= 0
+          && result.stdout.indexOf('--platform work|doubao|headless') < result.stdout.indexOf('--app work|doubao'));
+      }
     }
   }
 });

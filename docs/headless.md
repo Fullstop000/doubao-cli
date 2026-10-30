@@ -14,7 +14,7 @@ doubao headless sessions list --json
 
 - Linux defaults to Headless for unprefixed commands such as `doubao login` and `doubao sessions list`.
 - macOS defaults to the desktop app: DoubaoWork when installed, otherwise Doubao, unless `DOUBAO_APP` overrides the app path. Use `doubao headless ...` on macOS.
-- `doubao --platform headless ...` is an equivalent explicit selector on either system.
+- `doubao --platform headless ...` uses the standard backend selector on either system; `doubao headless ...` is equivalent. `--app` is retained only for desktop compatibility (`work` or `doubao`); it cannot select Headless.
 - `doubao web ...` and `doubao --platform web ...` are compatibility aliases for Headless, including login, help and all task options. They share Headless credentials and profiles; browser login sessions are not imported. Run `doubao web login` if Headless is not signed in. Browser `--target` and `web cdp` commands are unsupported.
 - Backend selection and task execution are separate. `--runtime cloud` means cloud execution within Headless; it does not select the Headless backend.
 

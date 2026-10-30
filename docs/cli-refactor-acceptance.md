@@ -87,7 +87,7 @@
 | O02 | `--version`、`-v` | 独立版本入口，与 `version` 对比 | 通过 | 通过 |
 | O03 | `--json` | 业务结果 JSON；版本/帮助保持其实际文本行为 | 通过 | 通过 |
 | O04 | `--platform` | work / doubao / headless；web 兼容映射至 headless | 通过 | 通过 |
-| O05 | `--app` | work / doubao；与 Headless 命名空间冲突 | 通过 | 通过 |
+| O05 | `--app` | --platform 的桌面兼容别名：work / doubao；与不同后端或 Headless 命名空间冲突 | 通过 | 通过 |
 | O06 | `--profile` | 账号配置；具体范围见下表 | 通过 | 通过 |
 | O07 | `--timeout` | 有限正数秒，默认 120；具体范围见下表 | 通过 | 通过 |
 | O08 | `--all` | 仅 sessions list；不能与显式 --limit 同用 | 通过 | 通过 |

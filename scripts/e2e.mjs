@@ -145,7 +145,7 @@ async function selection() {
   }, { expectedCode: capabilities.data.cdp.available ? 0 : 1 });
   if (!capabilities.data.cdp.available) {
     await check('fallback unavailable CDP cannot use running Work', ['model'], (_, r) => assert.match(r.stderr, /Doubao CDP is unavailable.*9225/), { expectedCode: 1 });
-    if (auto.data.running) await check('fallback restart requires consent', ['cdp', 'launch'], (_, r) => assert.match(r.stderr, /Doubao must restart.*--app doubao cdp launch --yes/), { expectedCode: 1 });
+    if (auto.data.running) await check('fallback restart requires consent', ['cdp', 'launch'], (_, r) => assert.match(r.stderr, /Doubao must restart.*--platform doubao cdp launch --yes/), { expectedCode: 1 });
   }
   await check('fallback sessions list', ['sessions', 'list'], d => assert.ok(Array.isArray(d)));
   await check('explicit Work never falls back when missing', ['status'], d => {
@@ -171,7 +171,7 @@ async function baseline() {
   const initial = await inspect(`({ href:location.href, draft:document.querySelector('[contenteditable="true"]')?.innerText || '' })`);
   assert.equal(initial.draft.trim(), '', 'Clear the draft before running live E2E');
   if (!state().initialUrl) save({ initialUrl: initial.href });
-  await check('help', ['help'], (_, result) => assert.match(result.stdout, /--app work\|doubao/), { json: false });
+  await check('help', ['help'], (_, result) => assert.match(result.stdout, /--platform work\|doubao\|headless/), { json: false });
   await check('version', ['--version'], (_, result) => assert.equal(result.stdout.trim(), JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version), { json: false });
   const status = await check('status selected app', ['status'], d => { assert.equal(d.app, app); assert.equal(d.running, true); assert.equal(d.installed, true); });
   save({ appVersion: status.data.appVersion, profile: status.data.profile, dataDir: status.data.dataDir });
