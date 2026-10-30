@@ -4,7 +4,7 @@
 
 ## 结论
 
-本轮补测已覆盖扫码登录、AlwaysAsk 批准/拒绝、Headless MCP 实际调用、多子任务取消、真实重启、升级安装及视觉集成。FullAccess 拒绝已通过，正向执行仍待本人确认。Doubao Work MCP 实际工具调用仍失败，因此不能声明全部通过。模拟接口、解析兼容性与帮助测试不计入真实服务端验收；原始失败证据保留，修复后使用独立目录记录。
+本轮补测已覆盖扫码登录、AlwaysAsk 批准/拒绝、Headless MCP 实际调用、多子任务取消、真实重启、升级安装及视觉集成。FullAccess 拒绝及本人确认后的正向执行均已通过。Doubao Work MCP 实际工具调用仍失败，因此不能声明全部通过。模拟接口、解析兼容性与帮助测试不计入真实服务端验收；原始失败证据保留，修复后使用独立目录记录。
 
 本轮发现并修复定时任务时间回读误判：服务端将 UTC 毫秒时间转换为任务时区、秒精度，现比较同一秒的时间点。Desktop、Headless 的创建、查询、修改、删除已重新实测通过；6 条测试定时任务全部删除并回读确认。
 
@@ -22,7 +22,7 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 - 实际升级安装：`test/update-install-upgrade/run.mjs` 使用隔离 npm prefix/config/cache，先安装 registry 的 0.21.0，再执行候选 CLI 的 update 命令，实际安装 registry 的 0.22.0 并回读包/bin 版本。为进入升级分支，仅候选临时副本的版本元数据设为 0.21.0；运行时代码保持候选内容。不是未发布候选的发布证明，也不是当前 0.22.0 到尚不存在的新版本的实测。未改变 HOME 或全局 CLI。
 - 视觉集成：`scripts/verify-skin-visual.mjs` 使用最小本地 CSS 皮肤夹具，在真实 Work 页面验证开/关的 computedStyle、重复连接不重复注入、设置回读及恢复原样，Node 22 五项通过。第三方 doubao-skin 包兼容性没有验证。一次 Node 26 重跑在 CDP discovery 阶段失败，保留为瞬时连接失败，原因未知；夹具节点最终为零。
 - 人工交互发现问题：权限 readline 未配置输出流，输入缺少可见回显；独立并发测试也发现多个审批回调可同时读取同一输入。修复为每个终端串行排队并启用回显，排队取消不显示/读取答案，单次输入不能批准后续问题。FullAccess 拒绝原样本通过；批准原样本提交前非零退出且 stderr 未捕获，不能确定原因。AlwaysAsk 原样本已按原 run 取消、回读并归档，不冒充通过。
-- 修复后的 Node 22.16.0 / Node 24.10.0 各 530 项测试、build/typecheck 通过。人工批准/拒绝及 MCP 的修复后实测继续记录；自动测试不替代人工验收。
+- 修复后的 Node 22.16.0 / Node 24.10.0 各 530 项测试、build/typecheck 通过。修复后的人工批准/拒绝及 Headless MCP 已实测，具体证据如下；自动测试不替代人工验收。
 
 私有证据：`~/.local/state/doubao-cli/validation/cli-e2e-2026-10-30/` 与 `interactive-e2e-2026-10-30/`。其中原始回执、日志及凭据不入库。
 
@@ -38,11 +38,13 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 ## 人工项补测状态（2026-10-30）
 
 1. 新鲜扫码登录已通过，用户亲自在手机确认，服务端账号回读一致。
-2. FullAccess 拒绝已通过；正向执行尚未验证，用户在批准测试中仍输入 N，CLI 正确拒绝。不能记为执行成功，也不归为产品失败。
+2. FullAccess 拒绝和正向执行均已通过。最终单项由用户在原生提示中输入 y；任务 exit 0 / completed，专用 proof.txt 内容精确匹配预期 marker，运行时 journal 确认 Bash 成功并上传，原 run 终态与会话归档均回读确认。此前输入 N 的拒绝样本及未操作导致的超时样本保留，不改写成成功。
 3. AlwaysAsk 拒绝与批准均已验证。拒绝样本无测试文件且 journal 记录 PERMISSION_DENIED；批准样本通过真实 MCP 调用确认。
 4. Headless MCP 正向调用已通过：AlwaysAsk 下用户亲自批准，fixture 收到恰好一次调用，回复 marker 与已上传 MCP 结果一致，连接器和会话清理已回读。
 
 补测脚本的两次误判均保留原记录：FullAccess 拒绝样本读取尚未 flush 的终端日志时得到空字符串；最终日志证明提示与拒绝均发生，后续 launcher 使用 script -F 即时落盘。MCP 样本错误要求 wrapper 的 isError===false，而实际 MCP 内容位于 raw_result、isError 可省略；已按真实协议修正断言并复核原 run，没有重新发送任务。`simple-v4/post-run-verification.json` 和 `approve-v5/post-run-verification.json` 保存复核结论，原结果未覆盖。
+
+FullAccess 最终成功证据位于 `~/.local/state/doubao-cli/validation/interactive-e2e-2026-10-30-fullaccess-v7/`：`results/fullaccess-approve.json`、`results/fullaccess-approve-proof.json`、私有 runtime journal 与 `suite-state.json`。本次只执行一个已确认的任务，没有重放此前的失败请求。
 
 ## 私有证据
 
@@ -84,7 +86,7 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 | C10 | `sessions create [消息]` | 通过 | 通过 | 有消息创建；Headless 无消息草稿另测 |
 | C11 | `sessions open <会话ID>` | 通过 | 通过 | 专用会话打开/选中 |
 | C12 | `sessions read <会话ID>` | 通过 | 通过 | 消息和 limit 回读 |
-| C13 | `sessions send <会话ID> <消息>` | 部分 | 部分 | 普通发送、附件通过；Desktop MCP实际调用失败，Headless MCP待人工 |
+| C13 | `sessions send <会话ID> <消息>` | 部分 | 部分 | 普通发送、附件通过；Desktop MCP实际调用失败，Headless MCP创建实测通过，MCP续聊未补测 |
 | C14 | `sessions status <会话ID>` | 通过 | 通过 | 指定 run 回读 |
 | C15 | `sessions wait <会话ID>` | 通过 | 通过 | 同 IDs 恢复；JSON/schema 校验 |
 | C16 | `sessions stop <会话ID>` | 通过 | 通过 | 修复后同一原 run 两端均 cancelled/stopped:true；无子任务，子任务终止另有覆盖边界 |
@@ -108,7 +110,7 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 | C34 | `update check` | 通过 | 通过 | 真实 npm registry |
 | C35 | `update auto [on/off/status]` | 通过 | 通过 | 隔离设置 on/status/off/status |
 | C36 | `update notify [on/off/status]` | 通过 | 通过 | 隔离设置 on/status/off/status |
-| C37 | `login` | 不适用 | 部分 | Desktop 拒绝；Headless Cookie 登录通过，扫码待人工 |
+| C37 | `login` | 不适用 | 通过 | Desktop 拒绝；Headless Cookie 登录及本人扫码登录均通过 |
 | C38 | `logout` | 不适用 | 通过 | Desktop 拒绝；隔离 profile 登出后 status 未登录 |
 | C39 | `cdp status` | 通过 | 不适用 | Headless 实际命令拒绝 |
 | C40 | `cdp launch` | 部分 | 不适用 | 普通 Doubao 从未运行启动成功，Work 已就绪路径通过；重启分支未执行 |
@@ -145,8 +147,8 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 | O18 | `--enterprise-knowledge` | 通过 | 两端真实请求；Desktop 上下文 projectId/enterpriseKnowledge 回读 |
 | O19 | `--workspace` | 通过 | 两端创建项目绑定、目录回读；local 文件读取 |
 | O20 | `--no-skills` | 通过 | 实际 local 任务使用 |
-| O21 | `--permission` | 部分 | AskOnRisk 安全读取通过；非TTY FullAccess拒绝通过；正向FullAccess/AlwaysAsk待人工 |
-| O22 | `--mcp` | 未通过 | Headless 需现场批准；Desktop completed但服务器0call、无pong |
+| O21 | `--permission` | 部分 | AskOnRisk 安全读取通过；非TTY FullAccess拒绝通过；Headless FullAccess及AlwaysAsk批准/拒绝已补测 |
+| O22 | `--mcp` | 未通过 | Headless AlwaysAsk现场批准后真实调用通过；Work completed但服务器0call、无pong |
 | O23 | `--expect-json` | 通过 | 真实回复 JSON 验证 |
 | O24 | `--reply-schema` | 通过 | 真实回复 Schema 验证与明确失败出口 |
 | O25 | `--command` | 通过 | 两端 stdio MCP 注册 READY |
@@ -171,6 +173,6 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 以下旧清单中的人工项以本文件 2026-10-30 补测状态为准；多子任务取消和真实重启已补测，皮肤仅完成真实 CLI 视觉集成夹具，实际升级安装的版本元数据夹具边界如上。
 
 - Desktop `--mcp` 仍未通过：独立 CLI 样本及全新原生 UI 会话均为 0 次实际调用；聊天页和后台页直接调用原生 MCP bridge 各成功 1 次。结构化错误及原生日志将问题缩小到 native callTool dispatch 之前，根因未确定。详见 [诊断记录](desktop-mcp-model-contract.md)。测试资源已清理，未重发原任务。
-- 人工项仅剩 FullAccess 正向执行，扫码与 AlwaysAsk/MCP 的新结论见补测状态。
+- 原列出的人工扫码、Headless FullAccess、AlwaysAsk 和 Headless MCP 项均已补测，详见补测状态；这不意味着所有后端、模型与参数组合均已穷举。
 - 多子任务取消、真实重启和升级安装已补测。皮肤的真实 CLI 注入/恢复夹具通过，但没有第三方兼容皮肤包的视觉验收。升级分支使用候选副本的旧版本元数据夹具，实际下载和安装的是 registry 包。
 - chat 严格文本断言与一次新模型 JSON 断言失败保留：前者多句点，后者附加字符；CLI 对无效 JSON 正确返回非零，不能把原正向断言改记为成功。
