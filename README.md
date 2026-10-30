@@ -169,7 +169,9 @@ doubao mcp remove <connector-id>
 
 - Repeat `--arg` and `--env KEY=VALUE` for server arguments/environment.
 - `--mcp` requires a message; repeat `--mcp` each turn. New local conversations default to `AskOnRisk` on Headless and `FullAccess` on Desktop. Both backends inherit the saved local permission on follow-up unless `--permission` overrides it.
-- Desktop MCP requires `--wait`; incompatible with `--attach`. Approvals occur in the app.
+- Desktop MCP requires `--wait`; incompatible with `--attach`. On newer clients using dispatcher, the CLI automatically supplies the missing MCP SSE channel after verifying this task's native delivery logs. It only executes the selected connectors' tools for the accepted active task; native commands remain in the app.
+- In this Desktop compatibility path, `AskOnRisk` and `AlwaysAsk` require approval in the CLI terminal for every MCP call. Without interactive terminal input/output they are denied; tool annotations do not bypass approval. Native app approvals for other operations are unchanged.
+- Compatibility transport state is shared per app/account/device across CLI config directories to prevent concurrent listeners and replay. It closes when the CLI wait ends. Recovery requires fresh native dispatcher evidence; unavailable or truncated logs cause a diagnostic and no compatibility execution. The CLI never switches the app's global transport setting.
 - Headless approvals require terminal input/output and `--wait`; without `--wait`, operations requiring approval are denied.
 - Headless `FullAccess` requires explicit terminal confirmation each turn, including local task recovery; `--yes` cannot bypass it. Headless MCP `--env` values remain in the local store/process and are omitted from remote registration.
 - Permission policies do not restrict the MCP server process.

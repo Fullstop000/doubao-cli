@@ -242,6 +242,7 @@ export async function stopConversation(id, options = {}) {
 
 // A receipt identifies the accepted turn even if the streaming connection is lost.
 async function sendTracked(client, request, options) {
+  const mcpStartedAt = options.mcps?.length ? Date.now() : undefined;
   const deadline = Date.now() + request.timeoutMs;
   if (options.mode === 'goal') {
     await requireGoalMode(await rendererJsonClient(client), desktopVersion(), request.timeoutMs);
@@ -263,28 +264,32 @@ async function sendTracked(client, request, options) {
   const taskContext = publicTaskContext(resolved.taskContext, resolved.workspace);
   const goal = request.goalId ? { mode: 'goal', goalId: request.goalId } : {};
   const store = await receiptStore(client);
+  const relayOwner = options.mcps?.length ? (await import('./desktop-mcp-relay.mjs')).createDesktopMcpRelayOwner(client, { deadline, onDiagnostic: message => console.error(message) }) : null;
   let receipt = {};
   const onReceipt = next => {
-    receipt = { ...receipt, conversationId: next.conversationId, runId: next.runId,
+    receipt = { ...receipt, ...(mcpStartedAt ? { mcpStartedAt } : {}), conversationId: next.conversationId, runId: next.runId,
       localMessageId: next.localMessageId, handoffs: next.handoffs || receipt.handoffs || [],
       liveMessages: next.liveMessages || receipt.liveMessages || [], requestBody: next.requestBody || receipt.requestBody };
     store.save(receipt);
+    relayOwner?.accept(receipt);
   };
-  let stream;
   try {
-    stream = options.mcps?.length ? await sendWithConnectors(client, { ...request, onReceipt }, options.mcps)
-      : await sendChatCompletion(client, { ...request, onReceipt });
-    onReceipt(stream);
-  } catch (error) {
-    if (error.receipt?.runId) onReceipt(error.receipt);
-    if (!receipt.runId || !['timeout', 'incomplete_stream', 'exception'].includes(error.code)) {
-      error.result ||= { conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId || error.receipt?.localMessageId, status: 'unknown', reply: null };
-      throw error;
+    let stream;
+    try {
+      stream = options.mcps?.length ? await sendWithConnectors(client, { ...request, onReceipt }, options.mcps)
+        : await sendChatCompletion(client, { ...request, onReceipt });
+      onReceipt(stream);
+    } catch (error) {
+      if (error.receipt?.runId) onReceipt(error.receipt);
+      if (!receipt.runId || !['timeout', 'incomplete_stream', 'exception'].includes(error.code)) {
+        error.result ||= { conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId || error.receipt?.localMessageId, status: 'unknown', reply: null };
+        throw error;
+      }
     }
-  }
-  if (!receipt.conversationId || !receipt.runId) throw new Error('Doubao did not identify the accepted turn');
-  if (!request.waitForReply) return { ...goal, context: taskContext, conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
-  return { ...await waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) }), ...goal, context: taskContext };
+    if (!receipt.conversationId || !receipt.runId) throw new Error('Doubao did not identify the accepted turn');
+    if (!request.waitForReply) return { ...goal, context: taskContext, conversationId: receipt.conversationId, runId: receipt.runId, localMessageId: receipt.localMessageId, status: 'running', reply: null };
+    return { ...await waitTurn(client, receipt.conversationId, { receipt, deadline, onReceipt, loadReceipt: runId => store.read(receipt.conversationId, runId) }), ...goal, context: taskContext };
+  } finally { await relayOwner?.close(); }
 }
 
 export async function taskStatus(id, options = {}) {
@@ -301,7 +306,19 @@ export async function waitConversation(id, options = {}) {
     const store = await receiptStore(client);
     const runId = options.runId || (await readTurn(client, id)).result.runId;
     const receipt = store.read(id, runId);
-    return waitTurn(client, id, { ...options, runId, receipt, deadline, onReceipt: r => store.save(r), loadReceipt: run => store.read(id, run) });
+    let mcpReceipt = false;
+    try { const body = typeof receipt?.requestBody === 'string' ? JSON.parse(receipt.requestBody) : receipt?.requestBody;
+      const task = body?.option?.general_task_param;
+      const input = typeof task?.task_input_json === 'string' ? JSON.parse(task.task_input_json) : task?.task_input_json;
+      mcpReceipt = task?.runtime_type === 2 && Boolean(input?.localConnectors?.length);
+    } catch { /* An invalid receipt cannot authorize a relay. */ }
+    const owner = mcpReceipt ? (await import('./desktop-mcp-relay.mjs')).createDesktopMcpRelayOwner(client,
+      { deadline, onDiagnostic: message => console.error(message) }) : null;
+    owner?.accept(receipt);
+    try {
+      return await waitTurn(client, id, { ...options, runId, receipt, deadline,
+        onReceipt: r => { store.save(r); owner?.accept(r); }, loadReceipt: run => store.read(id, run) });
+    } finally { await owner?.close(); }
   });
 }
 
