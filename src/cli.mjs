@@ -1,5 +1,5 @@
-import { parseArguments } from '../dist/command/parser.mjs';
-import { rootHelp, commandHelp } from '../dist/command/help.mjs';
+import { parseArguments } from '../dist/command/parser.js';
+import { rootHelp, commandHelp } from '../dist/command/help.js';
 import { validateCliOptions } from './cli-validation.mjs';
 import { createScheduledTaskService } from './scheduled-tasks.mjs';
 import { rendererJsonClient, goalAvailability, desktopVersion, GOAL_MIN_VERSION } from './features.mjs';

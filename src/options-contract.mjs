@@ -1,4 +1,4 @@
-import { headlessOptionLines } from '../dist/command/options.mjs';
+import { headlessOptionLines } from '../dist/command/options.js';
 import { SESSION_ACTIONS } from './session-actions.mjs';
 const SESSION_CREATE_OR_SEND = command => command[0] === 'sessions' && ['create', 'send'].includes(command[1]);
 const SESSION_STATE = command => command[0] === 'sessions' && ['status', 'wait', 'stop'].includes(command[1]);

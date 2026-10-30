@@ -14,7 +14,7 @@ const root=await fs.realpath(rootArg),manifest=JSON.parse(await fs.readFile(path
 const cli=await fs.realpath(manifest.cli),config=await fs.realpath(manifest.config),source=await fs.realpath(manifest.source);
 assert.equal(config,path.join(root,'config'),'Use only this suite’s fresh isolated config');
 const files=[];
-async function walk(base,relative=''){for(const entry of (await fs.readdir(path.join(base,relative),{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){const f=path.join(relative,entry.name);if(entry.isDirectory())await walk(base,f);else if(f.endsWith('.mjs'))files.push(f);}}
+async function walk(base,relative=''){for(const entry of (await fs.readdir(path.join(base,relative),{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){const f=path.join(relative,entry.name);if(entry.isDirectory())await walk(base,f);else if(/\.(?:mjs|js)$/.test(f))files.push(f);}}
 for(const folder of ['src','dist','bin']){const partial=[];const start=files.length;await walk(path.join(source,folder));for(let i=start;i<files.length;i++)files[i]=path.join(folder,files[i]);}
 const hash=createHash('sha256');
 for(const file of files.sort()){

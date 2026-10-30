@@ -1,6 +1,6 @@
 # CLI 重构验收基线
 
-更新时间：2026-10-28（Asia/Shanghai）。
+更新时间：2026-10-30（Asia/Shanghai）。
 
 原始清单基于 `a51e5c99f0b495242435b224c4a9fbf18f9a8dc1`。PR #28 已合并；本轮固定源码基线为主干 `3dae8b4de6910cc943bd033aedbb056c25855625`。该提交的文件树与最初用于验证的集成基线 `cf927638ff3bcf0a0884f87ad08ea22fab3f4caa` 完全相同。新增 6 个 session 管理命令及 `--archived` 已纳入清单。
 
@@ -199,7 +199,7 @@
 
 ## 本轮验证记录（2026-10-28）
 
-- `src/command/*.mts`：TypeScript 严格模式下的命令定义、选项定义、Commander 参数解析和帮助。业务适配器继续使用原实现。
+- `src/command/*.ts`：TypeScript 严格模式下的命令定义、选项定义、Commander 参数解析和帮助。业务适配器继续使用原实现。
 - Commander 固定 `13.1.0`，保持包声明 `node >=22`；TypeScript 固定 `5.9.3`，只用于开发构建。
 - 冻结差分：5,738 个 argv 用例，覆盖三个显式后端、Linux/macOS 默认、有效/无效组合、重复参数、缺值、边界、help 与 `--` 原文。期望值从固定基线的隔离 Git archive 生成；不调用真实账号。测试用例中的 commandPaths 统计包含命名空间，和上方 C01–C46 的业务清单计数口径不同。
 - 基线全套测试 495 项；候选 Node 22.16.0 和 Node 24.10.0 各 496 项通过。其中 1 项自动测试包含上述 5,738 个差分用例，不能把它们混报为 5,738 个独立业务测试。
@@ -227,11 +227,20 @@ npm run test:package
 node scripts/generate-cli-compatibility.mjs 3dae8b4de6910cc943bd033aedbb056c25855625
 ```
 
+## 命令层编译验证（2026-10-30）
+
+- 命令层统一为 `src/command/*.ts`，按 NodeNext 编译为 ESM `.js` 和 `.d.ts`；运行时导入、包检查和交互验收的运行文件哈希范围同步更新。
+- 构建先清理 `dist/command`，避免旧 `.mjs` / `.d.mts` 混入发布包；安装后不需要 TypeScript。
+- build、typecheck 通过；Node 22.16.0 / 24.10.0 各 530/530 测试通过，包含冻结参数兼容性验证。
+- 两个 Node 版本均通过真实 npm pack、隔离生产依赖安装、125 个帮助入口、兼容别名与 detached worker 的预期 login_required 分支。
+- 初次把测试与打包重建并行运行，触发共享 dist 文件短暂缺失；该次失败保留，分阶段复测全部通过。
+- 此次仅复测编译、命令契约与安装包；此前账号验收记录仍属于此前候选版本，未冒充本次重新执行。Work MCP 已知失败仍保留。
+
 ## 源码依据
 
-- [TypeScript 命令定义](../src/command/commands.mts)
-- [TypeScript 选项定义](../src/command/options.mts)
-- [Commander 解析与兼容归一化](../src/command/parser.mts)
+- [TypeScript 命令定义](../src/command/commands.ts)
+- [TypeScript 选项定义](../src/command/options.ts)
+- [Commander 解析与兼容归一化](../src/command/parser.ts)
 - [命令执行与退出码](../src/cli.mjs)
 - [后置参数校验](../src/cli-validation.mjs)
 - [冻结差分测试](../test/cli-compatibility.test.mjs)

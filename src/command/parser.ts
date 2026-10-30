@@ -1,6 +1,6 @@
 import { Command, Option } from 'commander';
-import { helpCommandPath } from './help.mjs';
-import { optionDefinitions, type CliOptions } from './options.mjs';
+import { helpCommandPath } from './help.js';
+import { optionDefinitions, type CliOptions } from './options.js';
 
 interface ParsedValues {
   help: boolean; json: boolean; archived: boolean; all: boolean; yes: boolean; wait: boolean;

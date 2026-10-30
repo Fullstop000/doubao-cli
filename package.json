@@ -14,7 +14,7 @@
     "docs/headless.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm run build",
     "test": "node --test test/*.test.mjs",

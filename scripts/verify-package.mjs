@@ -14,9 +14,15 @@ const env = { ...process.env, DOUBAO_CLI_CONFIG_DIR: path.join(root, 'config'),
 let child;
 try {
   const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', root], { cwd: source, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))[0];
+  assert(!packed.files.some(item => /^dist\/command\/.*\.(?:mjs|mts)$/.test(item.path)),
+    'package contains stale command outputs from the former .mts build');
   for (const file of ['bin/doubao.mjs', 'src/cli.mjs', 'src/cli-validation.mjs', 'src/headless-worker.mjs',
-    'dist/command/parser.mjs', 'dist/command/help.mjs', 'dist/command/options.mjs', 'dist/command/commands.mjs']) {
+    'dist/command/parser.js', 'dist/command/help.js', 'dist/command/options.js', 'dist/command/commands.js']) {
     assert(packed.files.some(item => item.path === file), `package is missing ${file}`);
+  }
+  for (const name of ['parser', 'help', 'options', 'commands']) {
+    assert(packed.files.some(item => item.path === `dist/command/${name}.d.ts`),
+      `package is missing command declarations for ${name}`);
   }
   const prefix = path.join(root, 'installed');
   execFileSync('npm', ['install', '--prefix', prefix, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', path.join(root, packed.filename)],
@@ -25,7 +31,7 @@ try {
   const bin = path.join(prefix, 'node_modules/.bin/doubao');
   const invoke = args => execFileSync(process.execPath, [bin, ...args], { cwd: root, env, encoding: 'utf8', timeout: 10_000 });
   assert.equal(invoke(['--version']).trim(), packed.version);
-  const { commands } = await import(pathToFileURL(path.join(packageRoot, 'dist/command/commands.mjs')));
+  const { commands } = await import(pathToFileURL(path.join(packageRoot, 'dist/command/commands.js')));
   let helps = 0;
   for (const platform of ['work', 'doubao', 'headless']) {
     const backend = platform === 'headless' ? 'headless' : 'desktop';

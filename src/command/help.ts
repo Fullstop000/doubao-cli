@@ -1,4 +1,4 @@
-import { helpEntries } from './commands.mjs';
+import { helpEntries } from './commands.js';
 
 const DESKTOP_NOTES = `Help:
   Add --help or -h to any command, or use help <command>.

@@ -227,6 +227,6 @@ npm test
 npm run test:package
 ```
 
-The command definitions and parser live in `src/command/*.mts`; `npm run build` compiles them to `dist/command/*.mjs`. Build before running `node bin/doubao.mjs` from a checkout. `npm test` and `npm pack` build automatically; installed packages include the compiled files and do not need TypeScript at runtime.
+The command definitions and parser live in `src/command/*.ts`; `npm run build` compiles them to ESM `dist/command/*.js` with `.d.ts` declarations under the package’s `"type": "module"`. Each build removes obsolete command outputs before compiling. Build before running `node bin/doubao.mjs` from a checkout. `npm test` and `npm pack` build automatically; installed packages include the compiled files and do not need TypeScript at runtime.
 
 See [the refactor acceptance matrix](docs/cli-refactor-acceptance.md) for command coverage, compatibility cases and account-validation evidence.
