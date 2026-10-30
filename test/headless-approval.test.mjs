@@ -6,7 +6,11 @@ import { confirmHeadlessFullAccess, createHeadlessApproval } from '../src/headle
 function streams() {
   const input = new PassThrough();
   const output = new PassThrough();
-  return { input, output, readOutput: () => output.read()?.toString('utf8') || '' };
+  return { input, output, readOutput: () => {
+    const chunks = [];
+    for (let value; (value = output.read()) !== null;) chunks.push(value.toString('utf8'));
+    return chunks.join('');
+  } };
 }
 
 test('FullAccess requires an explicit yes from a TTY and explains its reach', async () => {
@@ -128,4 +132,108 @@ test('abort cancels a pending TTY question and denies approval', async () => {
   assert.match(readOutput(), /write_file \(agents\.md\)/u);
   input.destroy();
   output.destroy();
+});
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('separate approval instances serialize prompts and one answer resolves only the active request', async () => {
+  const io = streams();
+  const first = createHeadlessApproval({ ...io, interactive: true });
+  const second = createHeadlessApproval({ ...io, interactive: true });
+  const a = first({ toolName: 'Bash', input: { command: 'first' } });
+  let secondSettled = false;
+  const b = second({ toolName: 'Bash', input: { command: 'second' } }).then(value => { secondSettled = true; return value; });
+  const initial = io.readOutput();
+  assert.match(initial, /command: first/u);
+  assert.doesNotMatch(initial, /command: second/u);
+  io.input.write('y\n');
+  assert.equal(await a, true);
+  await tick();
+  assert.equal(secondSettled, false);
+  assert.match(io.readOutput(), /command: second/u);
+  io.input.write('n\n');
+  assert.equal(await b, false);
+  assert.match(io.readOutput(), /n\r?\n/u, 'raw-terminal input must be echoed with a newline');
+  io.input.destroy();
+  io.output.destroy();
+});
+
+test('queued abort resolves without displaying or consuming an answer, across FullAccess and tools', async () => {
+  const io = streams();
+  const controller = new AbortController();
+  const a = confirmHeadlessFullAccess({ ...io, interactive: true });
+  const approve = createHeadlessApproval({ ...io, interactive: true });
+  const aborted = approve({ toolName: 'Write', input: { file_path: 'must-not-show' }, signal: controller.signal });
+  const c = approve({ toolName: 'Read', input: { file_path: 'third' } });
+  controller.abort();
+  assert.equal(await aborted, false);
+  const initial = io.readOutput();
+  assert.match(initial, /Enable FullAccess/u);
+  assert.doesNotMatch(initial, /must-not-show|third/u);
+  io.input.write('n\n');
+  assert.equal(await a, false);
+  await tick();
+  const next = io.readOutput();
+  assert.match(next, /third/u);
+  assert.doesNotMatch(next, /must-not-show/u);
+  io.input.write('y\n');
+  assert.equal(await c, true);
+  io.input.destroy();
+  io.output.destroy();
+});
+
+test('active abort closes its reader before the next prompt and queued EOF denies without another prompt', async () => {
+  const io = streams();
+  const controller = new AbortController();
+  const approve = createHeadlessApproval({ ...io, interactive: true });
+  const a = approve({ toolName: 'Read', input: { file_path: 'first' }, signal: controller.signal });
+  const b = approve({ toolName: 'Read', input: { file_path: 'second' } });
+  io.readOutput();
+  controller.abort();
+  assert.equal(await a, false);
+  await tick();
+  assert.match(io.readOutput(), /second/u);
+  io.input.write('n\n');
+  assert.equal(await b, false);
+  const c = approve({ toolName: 'Read', input: { file_path: 'third' } });
+  const d = approve({ toolName: 'Read', input: { file_path: 'fourth' } });
+  io.readOutput();
+  io.input.end();
+  assert.equal(await c, false);
+  assert.equal(await d, false);
+  assert.doesNotMatch(io.readOutput(), /fourth/u);
+  io.output.destroy();
+});
+
+test('one input chunk cannot approve several queued requests', async () => {
+  const io = streams();
+  const approve = createHeadlessApproval({ ...io, interactive: true });
+  const a = approve({ toolName: 'Read', input: { file_path: 'first' } });
+  let secondSettled = false;
+  const b = approve({ toolName: 'Read', input: { file_path: 'second' } }).then(value => { secondSettled = true; return value; });
+  io.input.write('y\ny\n');
+  assert.equal(await a, true);
+  await tick();
+  assert.equal(secondSettled, false);
+  io.input.write('n\n');
+  assert.equal(await b, false);
+  io.input.destroy();
+  io.output.destroy();
+});
+
+test('independent input streams do not block each other', async () => {
+  const first = streams();
+  const second = streams();
+  const a = createHeadlessApproval({ ...first, interactive: true })({ toolName: 'Read' });
+  const b = createHeadlessApproval({ ...second, interactive: true })({ toolName: 'Read' });
+  assert.match(first.readOutput(), /Approve/u);
+  assert.match(second.readOutput(), /Approve/u);
+  second.input.write('y\n');
+  assert.equal(await b, true);
+  first.input.write('n\n');
+  assert.equal(await a, false);
+  first.input.destroy();
+  first.output.destroy();
+  second.input.destroy();
+  second.output.destroy();
 });

@@ -1,16 +1,30 @@
 # CLI 真实 E2E 验收
 
-日期：2026-10-29。范围：PR #31 的安装候选，Desktop（Doubao Work/CDP）和 Headless（HTTPS）。普通 Doubao 额外验证启动、只读接口和平台选择，不等同于第三套完整业务验收。
+日期：2026-10-29；补测更新：2026-10-30。范围：PR #31 的安装候选，Desktop（Doubao Work/CDP）和 Headless（HTTPS）。普通 Doubao 额外验证启动、只读接口和平台选择，不等同于第三套完整业务验收。
 
 ## 结论
 
-本轮可自动执行的验证已完成记录，不能声明全部通过。Desktop MCP 实际工具调用仍失败，人工权限/扫码项已按用户要求暂缓。模拟接口、解析兼容性与帮助测试不计入真实服务端验收。人工项按用户要求暂缓；原始失败证据保留，修复后使用独立目录记录。
+本轮补测已覆盖扫码登录、AlwaysAsk 批准/拒绝、Headless MCP 实际调用、多子任务取消、真实重启、升级安装及视觉集成。FullAccess 拒绝已通过，正向执行仍待本人确认。Doubao Work MCP 实际工具调用仍失败，因此不能声明全部通过。模拟接口、解析兼容性与帮助测试不计入真实服务端验收；原始失败证据保留，修复后使用独立目录记录。
 
 本轮发现并修复定时任务时间回读误判：服务端将 UTC 毫秒时间转换为任务时区、秒精度，现比较同一秒的时间点。Desktop、Headless 的创建、查询、修改、删除已重新实测通过；6 条测试定时任务全部删除并回读确认。
 
 Desktop 当前版本的附件叶子模块/重导出、项目设备 helper 和具名 skills facade 已适配；附件上传、工作目录绑定、企业知识均已用新安装包实测通过。MCP 固定旧 chunk 已修复，注册/list/remove 通过；实际调用仍失败：任务 completed 但专用服务器日志 0 call、没有预期 pong。发送回执包含 localConnectors 和工具 schema，精确 run 保留 local/AskOnRisk；助手使用了其他工具，但没有 connector.call，也无待批准证据。具体路由原因尚未确定，不能归为人工权限问题或记为通过。
 
 Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_id、按应用区分 agent workspace。Node 22/24 各 525 项自动测试及隔离打包检查通过；这些结果不改变 MCP 未通过结论。详见 [协议与诊断记录](desktop-mcp-model-contract.md)。
+
+## 2026-10-30 补测与权限交互修复
+
+以下新结果补充后文 10 月 29 日矩阵，不能将旧失败覆盖为成功：
+
+- 新鲜扫码登录：首次二维码过期退出；第二次由用户扫码并在手机确认后成功，隔离配置的 status 回读登录及账号一致。未导入 Cookie 代替本项。
+- 多子任务取消：新建一次 cloud 任务，确认父任务和两个子任务均 running 后停止。stop/status 均返回 cancelled，原三个线程均终态且无 running/unknown；并发 wait 非零退出并返回 cancelled。测试会话归档、原页面与草稿恢复均回读确认。
+- 真实应用重启：普通豆包初次退出超过等待预算，明确报错，原失败保留。原候选复验切换 CDP 端口及恢复默认端口均返回 restarted:true；持续观察超过 30 秒，默认端口、主进程稳定，账号/原页面/草稿一致，Work 未重启。没有使用 SIGKILL。
+- 实际升级安装：`test/update-install-upgrade/run.mjs` 使用隔离 npm prefix/config/cache，先安装 registry 的 0.21.0，再执行候选 CLI 的 update 命令，实际安装 registry 的 0.22.0 并回读包/bin 版本。为进入升级分支，仅候选临时副本的版本元数据设为 0.21.0；运行时代码保持候选内容。不是未发布候选的发布证明，也不是当前 0.22.0 到尚不存在的新版本的实测。未改变 HOME 或全局 CLI。
+- 视觉集成：`scripts/verify-skin-visual.mjs` 使用最小本地 CSS 皮肤夹具，在真实 Work 页面验证开/关的 computedStyle、重复连接不重复注入、设置回读及恢复原样，Node 22 五项通过。第三方 doubao-skin 包兼容性没有验证。一次 Node 26 重跑在 CDP discovery 阶段失败，保留为瞬时连接失败，原因未知；夹具节点最终为零。
+- 人工交互发现问题：权限 readline 未配置输出流，输入缺少可见回显；独立并发测试也发现多个审批回调可同时读取同一输入。修复为每个终端串行排队并启用回显，排队取消不显示/读取答案，单次输入不能批准后续问题。FullAccess 拒绝原样本通过；批准原样本提交前非零退出且 stderr 未捕获，不能确定原因。AlwaysAsk 原样本已按原 run 取消、回读并归档，不冒充通过。
+- 修复后的 Node 22.16.0 / Node 24.10.0 各 530 项测试、build/typecheck 通过。人工批准/拒绝及 MCP 的修复后实测继续记录；自动测试不替代人工验收。
+
+私有证据：`~/.local/state/doubao-cli/validation/cli-e2e-2026-10-30/` 与 `interactive-e2e-2026-10-30/`。其中原始回执、日志及凭据不入库。
 
 ## 验收边界
 
@@ -21,12 +35,14 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 - `stop` 需区分“命令返回、任务已终态”与“确实取消了运行中的任务”。Desktop 原任务服务端已中断，CLI 漏读用户消息标记；修复后同一 run 在两个后端的 status/stop 均为 cancelled，stopped:true。Headless 自建 cloud 请求此前已自然完成，未命中运行中取消。
 - `update` 当前最新版本路径通过，没有据此声称实际升级安装路径已执行。Desktop skin 未安装，验证的是设置持久化及 not-installed 行为，未验证皮肤视觉应用。
 
-## 人工项（用户已选择稍后执行）
+## 人工项补测状态（2026-10-30）
 
-1. 新鲜扫码登录（Cookie 文件导入登录/退出已完成）。
-2. Headless 每轮 FullAccess 终端确认与真实执行。
-3. AlwaysAsk 权限批准/拒绝的交互流程。
-4. Headless MCP 正向工具调用所需的现场批准。注册、READY、删除及回读已完成，未将未获批准的调用记为成功。
+1. 新鲜扫码登录已通过，用户亲自在手机确认，服务端账号回读一致。
+2. FullAccess 拒绝已通过；正向执行尚未验证，用户在批准测试中仍输入 N，CLI 正确拒绝。不能记为执行成功，也不归为产品失败。
+3. AlwaysAsk 拒绝与批准均已验证。拒绝样本无测试文件且 journal 记录 PERMISSION_DENIED；批准样本通过真实 MCP 调用确认。
+4. Headless MCP 正向调用已通过：AlwaysAsk 下用户亲自批准，fixture 收到恰好一次调用，回复 marker 与已上传 MCP 结果一致，连接器和会话清理已回读。
+
+补测脚本的两次误判均保留原记录：FullAccess 拒绝样本读取尚未 flush 的终端日志时得到空字符串；最终日志证明提示与拒绝均发生，后续 launcher 使用 script -F 即时落盘。MCP 样本错误要求 wrapper 的 isError===false，而实际 MCP 内容位于 raw_result、isError 可省略；已按真实协议修正断言并复核原 run，没有重新发送任务。`simple-v4/post-run-verification.json` 和 `approve-v5/post-run-verification.json` 保存复核结论，原结果未覆盖。
 
 ## 私有证据
 
@@ -152,7 +168,9 @@ Desktop 协议额外修正：保留完整模型参数、使用原生 client_env_
 
 ## 未完成项
 
+以下旧清单中的人工项以本文件 2026-10-30 补测状态为准；多子任务取消和真实重启已补测，皮肤仅完成真实 CLI 视觉集成夹具，实际升级安装的版本元数据夹具边界如上。
+
 - Desktop `--mcp` 仍未通过：独立 CLI 样本及全新原生 UI 会话均为 0 次实际调用；聊天页和后台页直接调用原生 MCP bridge 各成功 1 次。结构化错误及原生日志将问题缩小到 native callTool dispatch 之前，根因未确定。详见 [诊断记录](desktop-mcp-model-contract.md)。测试资源已清理，未重发原任务。
-- 上述四项人工登录/权限流程尚未执行。
-- 未实测多子任务取消、真实重启确认、已安装皮肤的视觉效果、实际版本升级安装。这些分支不能由模拟或其他成功路径替代。
+- 人工项仅剩 FullAccess 正向执行，扫码与 AlwaysAsk/MCP 的新结论见补测状态。
+- 多子任务取消、真实重启和升级安装已补测。皮肤的真实 CLI 注入/恢复夹具通过，但没有第三方兼容皮肤包的视觉验收。升级分支使用候选副本的旧版本元数据夹具，实际下载和安装的是 registry 包。
 - chat 严格文本断言与一次新模型 JSON 断言失败保留：前者多句点，后者附加字符；CLI 对无效 JSON 正确返回非零，不能把原正向断言改记为成功。

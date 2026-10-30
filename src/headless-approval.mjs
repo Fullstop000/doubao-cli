@@ -53,6 +53,52 @@ function approvalPrompt(request, workspace) {
   return `\n[local runtime: ${permission}; ${risk}] Approve ${tool}: ${operation}; cwd ${workspaceLabel}? [y/N] `;
 }
 
+// All approval callbacks sharing a terminal must share one reader, including
+// callbacks created by separate runtimes and the per-turn FullAccess gate.
+const terminalQueues = new Map();
+function enqueueApproval(input, signal, ask) {
+  const key = input.isTTY && Number.isInteger(input.fd) ? `tty:${input.fd}` : input;
+  let queue = terminalQueues.get(key);
+  if (!queue) { queue = { active: false, waiting: [] }; terminalQueues.set(key, queue); }
+  const drain = () => {
+    if (queue.active) return;
+    const next = queue.waiting.shift();
+    if (!next) { if (terminalQueues.get(key) === queue) terminalQueues.delete(key); return; }
+    if (next.signal?.aborted) { next.finish(false); drain(); return; }
+    queue.active = true;
+    // Start the first prompt synchronously. Queued requests do not attach a
+    // readline listener, print anything, or consume input until their turn.
+    let response;
+    try { response = next.ask(); } catch (error) { response = Promise.reject(error); }
+    Promise.resolve(response).then(value => next.finish(value), error => next.finish(undefined, error)).finally(() => {
+      queue.active = false;
+      drain();
+    });
+  };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const item = { signal, ask, finish(value, error) {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error); else resolve(value);
+    } };
+    const onAbort = () => {
+      const index = queue.waiting.indexOf(item);
+      if (index !== -1) {
+        queue.waiting.splice(index, 1);
+        item.finish(false);
+        drain();
+      }
+      // The active reader owns its abort listener and closes before draining.
+    };
+    queue.waiting.push(item);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    drain();
+  });
+}
+
 /** FullAccess must be explicitly confirmed in the caller's terminal per turn. */
 export async function confirmHeadlessFullAccess(options = {}) {
   return createHeadlessApproval(options)({ permission: 'FullAccess', risk: 'enable-full-access' });
@@ -65,26 +111,31 @@ export function createHeadlessApproval({ input = process.stdin, output = process
     if (!interactive || !input || typeof input.on !== 'function' || typeof output?.write !== 'function') return false;
     if (request?.signal?.aborted) return false;
 
-    output.write(approvalPrompt(request, workspace));
-    const lines = createInterface({ input, crlfDelay: Infinity, terminal: Boolean(interactive) });
-    let onAbort;
-    try {
-      return await new Promise(resolve => {
-        let settled = false;
-        const finish = value => {
-          if (settled) return;
-          settled = true;
-          resolve(value);
-        };
-        lines.once('line', answer => finish(/^(?:y|yes)$/iu.test(answer.trim())));
-        lines.once('close', () => finish(false));
-        onAbort = () => finish(false);
-        request?.signal?.addEventListener('abort', onAbort, { once: true });
-        if (request?.signal?.aborted) finish(false);
-      });
-    } finally {
-      request?.signal?.removeEventListener('abort', onAbort);
-      lines.close();
-    }
+    return enqueueApproval(input, request?.signal, async () => {
+      if (request?.signal?.aborted || input.destroyed || input.readableEnded) return false;
+      output.write(approvalPrompt(request, workspace));
+      // output is required for raw-TTY echo and newline feedback. Without it,
+      // sequential prompts look stacked and typed y/n appears to do nothing.
+      const lines = createInterface({ input, output, crlfDelay: Infinity, terminal: Boolean(interactive) });
+      let onAbort;
+      try {
+        return await new Promise(resolve => {
+          let settled = false;
+          const finish = value => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+          lines.once('line', answer => finish(/^(?:y|yes)$/iu.test(answer.trim())));
+          lines.once('close', () => finish(false));
+          onAbort = () => finish(false);
+          request?.signal?.addEventListener('abort', onAbort, { once: true });
+          if (request?.signal?.aborted) finish(false);
+        });
+      } finally {
+        request?.signal?.removeEventListener('abort', onAbort);
+        lines.close();
+      }
+    });
   };
 }
