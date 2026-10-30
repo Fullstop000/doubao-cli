@@ -179,7 +179,9 @@ async function readOpenOptions(client, menuId) {
         for (let depth = 0; fiber && depth < 24; depth++, fiber = fiber.return) {
           const config = fiber.memoizedProps?.item;
           if (config?.name === name && config.model_item_key && Number.isFinite(config.item_id)) {
-            protocol = { key: config.model_item_key, ndt: config.item_id, provider: config.model_extra_params?.provider_id || '' };
+            const extraParams = typeof config.model_extra_params === 'string'
+              ? JSON.parse(config.model_extra_params) : config.model_extra_params || {};
+            protocol = { key: config.model_item_key, ndt: config.item_id, provider: extraParams.provider_id || '', extraParams };
             break;
           }
         }

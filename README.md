@@ -217,3 +217,16 @@ License: [MIT](LICENSE)
 Desktop chat connections (including `cdp launch`) automatically apply an installed `doubao-skin` skill. Auto-loading defaults to on and preserves the last theme, including the native appearance. The skill must provide `src/integration.mjs`; `doubao skin status --json` reports its path and compatibility. Discovery is limited to the selected app's active profile (`.user_skills` then `.skills`); `DOUBAO_SKIN_ROOT` overrides the skill directory.
 
 `doubao skin off` saves the preference and tries to restore the current desktop immediately; `on` enables it again. Theme selections and custom images are retained. Preferences live in `skin.json` under the CLI settings directory (`DOUBAO_CLI_CONFIG_DIR` overrides it). If the desktop is unavailable, the setting applies on the next connection. Help/version, offline commands, Web and Headless do not auto-load skins. This integration never installs a skill, restarts the app, or opens another debugging port. Skin failures do not fail the CLI command.
+
+## Development
+
+```sh
+npm ci
+npm run build
+npm test
+npm run test:package
+```
+
+The command definitions and parser live in `src/command/*.ts`; `npm run build` compiles them to ESM `dist/command/*.js` with `.d.ts` declarations under the package’s `"type": "module"`. Each build removes obsolete command outputs before compiling. Build before running `node bin/doubao.mjs` from a checkout. `npm test` and `npm pack` build automatically; installed packages include the compiled files and do not need TypeScript at runtime.
+
+See [the refactor acceptance matrix](docs/cli-refactor-acceptance.md) for command coverage, compatibility cases and account-validation evidence.

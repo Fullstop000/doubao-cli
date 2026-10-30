@@ -1,3 +1,4 @@
+import { headlessOptionLines } from '../dist/command/options.js';
 import { SESSION_ACTIONS } from './session-actions.mjs';
 const SESSION_CREATE_OR_SEND = command => command[0] === 'sessions' && ['create', 'send'].includes(command[1]);
 const SESSION_STATE = command => command[0] === 'sessions' && ['status', 'wait', 'stop'].includes(command[1]);
@@ -51,34 +52,6 @@ function allowed(flag, command, backend) {
   }
 }
 
-const HEADLESS_HELP_OPTIONS = [
-  ['--profile', '<name>', 'Select an independent Headless account profile', command => ['automations', 'login', 'logout', 'status', 'models', 'usage', 'runtimes', 'projects', 'model', 'mcp', 'sessions'].includes(command[0])],
-  ['--file', '<json-path>', 'Read automation creation fields or update patch from JSON', command => allowed('--file', command, 'headless')],
-  ['--cookie-file', '<path>', 'Import cookies from a session file during login', command => command[0] === 'login'],
-  ['--timeout', '<seconds>', 'Set the request or wait budget', command => allowed('--timeout', command, 'headless')],
-  ['--limit', '<count>', 'Limit the number of listed sessions', command => allowed('--limit', command, 'headless')],
-  ['--archived', '', 'List archived sessions instead of active sessions', command => allowed('--archived', command, 'headless')],
-  ['--all', '', 'Follow all session pages and remove duplicate IDs', command => allowed('--all', command, 'headless')],
-  ['--mode', 'chat|work|goal', 'Select the mode for a new conversation', command => allowed('--mode', command, 'headless')],
-  ['--model', '<model-name>', 'Select an available model by its exact name', command => allowed('--model', command, 'headless')],
-  ['--reasoning', 'low|medium|high|xhigh|max', 'Set reasoning effort', command => allowed('--reasoning', command, 'headless')],
-  ['--wait', '', 'Wait for the reply after sending a message', command => allowed('--wait', command, 'headless')],
-  ['--run', '<id>', 'Select a run for a session operation', command => allowed('--run', command, 'headless')],
-  ['--runtime', 'local|cloud', 'Choose the task runtime', command => allowed('--runtime', command, 'headless')],
-  ['--project', '<id-or-name|none>', 'Set task project context', command => allowed('--project', command, 'headless')],
-  ['--enterprise-knowledge', '', 'Include enterprise knowledge in task context', command => allowed('--enterprise-knowledge', command, 'headless')],
-  ['--workspace', '<path>', 'Set the task workspace', command => allowed('--workspace', command, 'headless')],
-  ['--no-skills', '', 'Disable task skills', command => allowed('--no-skills', command, 'headless')],
-  ['--permission', '<mode>', 'Set local task permission mode', command => allowed('--permission', command, 'headless')],
-  ['--attach', '<path>', 'Attach a file to a new message', command => allowed('--attach', command, 'headless')],
-  ['--expect-json', '', 'Require a JSON response', command => allowed('--expect-json', command, 'headless')],
-  ['--reply-schema', '<path>', 'Validate a JSON response against a schema', command => allowed('--reply-schema', command, 'headless')],
-  ['--mcp', '<connector-id>', 'Use an MCP connector with a local task', SESSION_CREATE_OR_SEND],
-  ['--command', '<path>', 'Set the stdio MCP server executable', command => allowed('--command', command, 'headless')],
-  ['--arg', '<value>', 'Add a stdio MCP server argument', command => allowed('--arg', command, 'headless')],
-  ['--env', 'KEY=VALUE', 'Set a stdio MCP server environment variable', command => allowed('--env', command, 'headless')],
-];
-
 /** Options actually accepted by the Headless contract for a help topic. */
 export function headlessOptionsForHelp(helpPath) {
   const paths = [helpPath];
@@ -92,8 +65,7 @@ export function headlessOptionsForHelp(helpPath) {
     }[helpPath[0]] || [];
     paths.push(...children.map(child => [...helpPath, child]));
   }
-  const matching = HEADLESS_HELP_OPTIONS.filter(([, , , supports]) => paths.some(supports));
-  return matching.map(([flag, value, description]) => `  ${flag}${value ? ` ${value}` : ''}  ${description}`);
+  return headlessOptionLines(paths, allowed);
 }
 
 function optionError(flag, command, backend) {

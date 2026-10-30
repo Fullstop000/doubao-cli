@@ -206,7 +206,10 @@ export function summarizeTurn(conversationId, root, messages, nodes, receipt = {
   let pending = [...pendingInputs(runMessages), ...nodes.filter(n => !['failed','cancelled'].includes(n.status)).flatMap(n => pendingInputs(n.messages, n.threadId))];
   const tasks = { total: nodes.length, running: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 };
   for (const node of nodes) tasks[node.status in tasks ? node.status : 'unknown']++;
-  let status = messageState(latest);
+  // Cancellation before the first assistant reply is recorded on the exact
+  // submitted question. It must not remain running forever with zero nodes.
+  // Child tasks and unresolved handoffs below still prevent premature success.
+  let status = messageState(root) === 'cancelled' ? 'cancelled' : messageState(latest);
   if (tasks.running || tasks.unknown || receipt.handoffs?.some(task => !task.completed) && !nodes.length) status = 'running';
   else if (status !== 'cancelled' && tasks.failed) status = 'failed';
   else if (status !== 'failed' && tasks.cancelled) status = 'cancelled';

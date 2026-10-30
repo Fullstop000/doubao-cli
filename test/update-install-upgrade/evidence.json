@@ -1,0 +1,22 @@
+{
+  "evidence": "real npm registry tarballs; isolated prefix and npm config/cache",
+  "candidateSource": "workspace candidate CLI copy; package version metadata fixture set to 0.21.0",
+  "initialInstalledPackage": {
+    "version": "0.21.0",
+    "tarball": "https://registry.npmjs.org/doubao-cli/-/doubao-cli-0.21.0.tgz"
+  },
+  "candidateUpdateCommand": {
+    "currentVersion": "0.21.0",
+    "latestVersion": "0.22.0",
+    "updateAvailable": true,
+    "updated": true,
+    "version": "0.22.0"
+  },
+  "finalInstalledPackage": {
+    "version": "0.22.0",
+    "binaryVersion": "0.22.0"
+  },
+  "isolatedNpmGlobalRoot": true,
+  "currentCandidateToNewerRegistryBranch": "not taken: candidate 0.22.0 already equals registry latest",
+  "machineGlobalPrefixTouched": false
+}

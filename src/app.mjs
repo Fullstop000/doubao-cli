@@ -62,7 +62,7 @@ export function activeProfile(app = currentApp()) {
 
 export function agentWorkspace() {
   const app = currentApp();
-  return path.join(app.dataDir, activeProfile(app), '.doubao', 'agent_mode', 'workspace');
+  return path.join(app.dataDir, activeProfile(app), `.${app.scheme}`, 'agent_mode', 'workspace');
 }
 
 export function isAppTarget(url, app = currentApp(), kind = 'chat') {

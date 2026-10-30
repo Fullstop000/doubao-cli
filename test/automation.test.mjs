@@ -188,7 +188,7 @@ test('executes attachment cleanup in origin scope and confirms durable removal b
     3: function draftFactory() { /* WebInputDraftRepository: createInputAttachmentDraftUnit: */ },
   };
   req.m[1].toString = () => 'Wp: chat-ioc-manager: store';
-  req.m[2].toString = () => 'getAttachmentActions: attachmentStatesSelector:';
+  req.m[2].toString = () => 'r.d(e,{getAttachmentActions:()=>a,attachmentStatesSelector:()=>s});store("attachmentsStore").attachmentsMap';
   req.m[3].toString = () => 'WebInputDraftRepository: createInputAttachmentDraftUnit:';
   class WebInputDraftRepository {
     constructor() { this.memory = { snapshotAccountRecords: (accountScope) => durable.filter(record => record.address.accountScope === accountScope) }; }
@@ -221,7 +221,7 @@ test('keeps blank-origin cleanup scoped and rejects memory fallback as durable p
   const req = id => exports[id];
   req.m = { 1: function() {}, 2: function() {}, 3: function() {} };
   req.m[1].toString = () => 'Wp: chat-ioc-manager: store';
-  req.m[2].toString = () => 'getAttachmentActions: attachmentStatesSelector:';
+  req.m[2].toString = () => 'r.d(e,{getAttachmentActions:()=>a,attachmentStatesSelector:()=>s});store("attachmentsStore").attachmentsMap';
   req.m[3].toString = () => 'WebInputDraftRepository: createInputAttachmentDraftUnit:';
   class WebInputDraftRepository {
     constructor() {

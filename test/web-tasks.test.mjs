@@ -218,7 +218,9 @@ test('Web stop does not confirm a root-only break while native task tracking is 
     throw new Error(`Unexpected URL ${url}`);
   } });
   const result = await withApp(resolvePlatform('web', {}), () => stopTurn(client, conversationId, {
-    runId, timeoutMs: 35, receipt: { taskTrackingIncomplete: true, handoffs: [] },
+    // Allow the readback under concurrent test load; the assertion concerns
+    // incomplete tracking, not a sub-50ms scheduler deadline.
+    runId, timeoutMs: 1000, receipt: { taskTrackingIncomplete: true, handoffs: [] },
   }));
   assert.equal(result.status, 'cancelled');
   assert.equal(result.stopped, false);

@@ -7,7 +7,7 @@ import test from 'node:test';
 import { resolveApp, resolvePlatform, currentApp, withApp, agentWorkspace, isAppTarget } from '../src/app.mjs';
 import { cdpStatus, findChatTarget, findBackgroundTarget, withChatClient, withBackgroundClient } from '../src/cdp.mjs';
 import { currentSession } from '../src/storage.mjs';
-import { runtimeParameters } from '../src/protocol.mjs';
+import { runtimeParameters, conversationExt } from '../src/protocol.mjs';
 import { main, parseOptions } from '../src/cli.mjs';
 import { conversationDeepLink } from '../src/automation.mjs';
 
@@ -41,6 +41,23 @@ test('app context stays isolated across asynchronous commands', async () => {
     assert.ok(agentWorkspace().startsWith(app.dataDir + '/'));
     assert.match(conversationDeepLink('38443439495332098'), new RegExp(`^${app.scheme}://`));
   })));
+});
+
+test('native agent workspace uses the selected app namespace in sandbox request paths', () => {
+  const dataDir = path.join(os.tmpdir(), 'doubao-workspace-contract');
+  for (const [app, namespace] of [[work, '.doubaowork'], [doubao, '.doubao']]) {
+    withApp({ ...app, dataDir, profile: 'Profile 2' }, () => {
+      const expected = path.join(dataDir, 'Profile 2', namespace, 'agent_mode', 'workspace');
+      assert.equal(agentWorkspace(), expected);
+      const workspace = path.join(dataDir, 'test-task');
+      const ext = conversationExt({ ndt: 5 }, 'local-test', workspace, {
+        skillPaths: [], permission: 'AskOnRisk',
+      });
+      const clientOption = JSON.parse(ext.general_task_param).client_option;
+      assert.equal(clientOption.agent_workspace.agent_workspace, expected);
+      assert.deepEqual(clientOption.shared_folder_path, [workspace, expected]);
+    });
+  }
 });
 
 test('page routing and persisted current sessions cannot cross app variants', () => {
@@ -85,12 +102,12 @@ test('runtime parameters come from the selected renderer and omit credentials', 
     performance: { getEntriesByType: () => [{ name:
       'https://www.doubao.com/im/chain/recent_conv?aid=1044603&device_id=work-device&pc_version=2.30.5&msToken=secret&a_bogus=secret',
     }] },
-    window: { neotix: { taskMode: { runtime: { queryRuntimeInfo: async () => ({ env: { environmentId: 'work-env' } }) } } } },
+    window: { neotix: { runtimeStorage: { get: async key => { assert.equal(key, 'general-agent:client-env-id'); return 'work-client-id'; } }, taskMode: { runtime: { queryRuntimeInfo: async () => ({ env: { environmentId: 'work-env' } }) } } } },
   }) };
   await withApp(work, async () => {
     const result = await runtimeParameters(client);
     assert.equal(result.params.device_id, 'work-device');
-    assert.equal(result.clientEnvId, 'work-env');
+    assert.equal(result.clientEnvId, 'work-client-id');
     assert.doesNotMatch(result.query, /secret|msToken|a_bogus/u);
   });
   await withApp(doubao, () => assert.rejects(runtimeParameters(client), /identity does not match/u));

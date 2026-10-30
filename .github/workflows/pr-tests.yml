@@ -36,3 +36,6 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Verify production package
+        run: npm run test:package

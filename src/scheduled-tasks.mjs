@@ -270,11 +270,22 @@ function sameValue(actual, expected, { subset = false } = {}) {
     && e.every(key => sameValue(actual[key], expected[key], { subset }));
 }
 
+function normalizedSchedule(schedule) {
+  if (!isObject(schedule) || typeof schedule.execute_at !== 'string') return schedule;
+  // The service returns execute_at in the job timezone at whole-second precision.
+  // Compare explicit ISO instants, while retaining exact checks for all other fields.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(schedule.execute_at)) return schedule;
+  const milliseconds = Date.parse(schedule.execute_at);
+  return Number.isFinite(milliseconds) ? { ...schedule, execute_at: Math.floor(milliseconds / 1000) } : schedule;
+}
+
 function verifyFields(job, fields) {
   const content = cronJobContent(job);
   for (const [field, expected] of Object.entries(fields)) {
     const actualField = field === 'schedule' ? 'schedule_config' : field;
-    if (!sameValue(content?.[actualField], expected, { subset: isObject(expected) || Array.isArray(expected) })) {
+    const actual = field === 'schedule' ? normalizedSchedule(content?.[actualField]) : content?.[actualField];
+    const submitted = field === 'schedule' ? normalizedSchedule(expected) : expected;
+    if (!sameValue(actual, submitted, { subset: isObject(expected) || Array.isArray(expected) })) {
       throw new Error(`scheduled task readback did not match ${field}`);
     }
   }

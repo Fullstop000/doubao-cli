@@ -24,7 +24,7 @@ function parseArgs(argv) {
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (!['--cli', '--config', '--output', '--stage'].includes(arg)) throw new Error(`Unknown option: ${arg}`);
+    if (!['--cli', '--config', '--output', '--stage', '--permission'].includes(arg)) throw new Error(`Unknown option: ${arg}`);
     const value = argv[++index];
     if (!value || value.startsWith('--')) throw new Error(`${arg} requires a value`);
     const key = arg.slice(2);
@@ -32,6 +32,8 @@ function parseArgs(argv) {
     options[key] = value;
   }
   options.stage ||= 'all';
+  options.permission ||= 'AskOnRisk';
+  if (!['AskOnRisk', 'AlwaysAsk', 'FullAccess'].includes(options.permission)) throw new Error('--permission must be AskOnRisk, AlwaysAsk, or FullAccess');
   if (!options.config) throw new Error('--config is required and must point to an isolated Headless config directory with an existing login');
   if (!STAGES.has(options.stage)) throw new Error('--stage must be attachments, local, mcp, background, baseline, or all');
   if (!path.isAbsolute(options.config)) throw new Error('--config must be an absolute path');
@@ -180,7 +182,7 @@ async function run() {
   const workspaceRoot = path.join(runDir, 'workspaces');
   mkdirPrivate(workspaceRoot);
 
-  const receipt = { version: 1, stage: options.stage, startedAt: new Date().toISOString(), steps: [] };
+  const receipt = { version: 1, stage: options.stage, permission: options.permission, startedAt: new Date().toISOString(), steps: [] };
   const receiptPath = path.join(runDir, 'receipt.json');
   const saveReceipt = () => {
     const temporary = `${receiptPath}.${randomUUID()}.tmp`;
@@ -431,7 +433,7 @@ async function run() {
     const prompt = 'Use the Read tool to read probe.txt in the configured workspace. Do not use Bash or any other tool. Return one valid JSON object with the exact token as "marker". Use double quotes for every JSON key and string; no Python syntax, single quotes, Markdown or explanatory text.';
     const model = modelForWork(models);
     const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
-      '--workspace', workspace, '--no-skills', '--permission', 'FullAccess', '--timeout', String(CLI_TIMEOUT_SECONDS)];
+      '--workspace', workspace, '--no-skills', '--permission', options.permission, '--timeout', String(CLI_TIMEOUT_SECONDS)];
     if (model) command.push('--model', model.name, '--reasoning', 'low');
     command.push('--wait', '--expect-json', '--reply-schema', schemaFile);
     const started = await execute('local: create and wait', command);
@@ -454,12 +456,12 @@ async function run() {
     mkdirPrivate(nextWorkspace);
     fs.writeFileSync(path.join(nextWorkspace, 'probe.txt'), `Synthetic local acceptance marker: ${nextMarker}\n`, { mode: 0o600, flag: 'wx' });
     const followed = await execute('local: switch back and read new workspace', ['headless', 'sessions', 'send', data.conversationId,
-      prompt, '--runtime', 'local', '--workspace', nextWorkspace, '--no-skills', '--permission', 'AskOnRisk', '--wait',
+      prompt, '--runtime', 'local', '--workspace', nextWorkspace, '--no-skills', '--permission', options.permission, '--wait',
       '--expect-json', '--reply-schema', schemaFile, '--timeout', String(CLI_TIMEOUT_SECONDS)]);
     const followedData = await recoverIfNeeded('local followup', followed, schemaFile);
     if (responseObject(followedData).marker !== nextMarker) throw new Error('local: followup did not read the changed workspace');
     receipt.steps.push({ name: 'existing session cloud/local/workspace/permission transitions verified',
-      conversationId: followedData.conversationId, runId: followedData.runId, markerSha256: markerHash(nextMarker), permission: 'AskOnRisk' });
+      conversationId: followedData.conversationId, runId: followedData.runId, markerSha256: markerHash(nextMarker), permission: options.permission });
     saveReceipt();
   }
 
@@ -516,7 +518,7 @@ async function run() {
     try {
       connectorId = await registerFixture(toolMarker, name, toolName);
       const command = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
-        '--workspace', workspace, '--no-skills', '--permission', 'FullAccess', '--mcp', connectorId,
+        '--workspace', workspace, '--no-skills', '--permission', options.permission, '--mcp', connectorId,
         '--timeout', String(CLI_TIMEOUT_SECONDS)];
       if (model) command.push('--model', model.name, '--reasoning', 'low');
       const accepted = requireOkay(`${name}: no-wait create`, await execute(`${name}: no-wait create`, command));
@@ -569,7 +571,7 @@ async function run() {
       const schemaFile = writeStageSchema('mcp', schema);
       const prompt = `Call the ${toolName} tool once with no arguments. Return only the JSON object returned by that tool.`;
       const taskArgs = ['headless', 'sessions', 'create', prompt, '--mode', 'work', '--runtime', 'local',
-        '--mcp', connectorId, '--permission', 'FullAccess', '--no-skills', '--wait', '--expect-json',
+        '--mcp', connectorId, '--permission', options.permission, '--no-skills', '--wait', '--expect-json',
         '--reply-schema', schemaFile, '--timeout', String(CLI_TIMEOUT_SECONDS)];
       if (model) taskArgs.push('--model', model.name, '--reasoning', 'low');
       const task = await execute('mcp: local task and wait', taskArgs);
@@ -602,6 +604,7 @@ async function run() {
 
   try {
     console.log(`OUTPUT ${runDir}`);
+    console.log('This runner is non-interactive and never grants approval. MCP/AlwaysAsk/FullAccess cases requiring terminal consent remain manual; all is not a guarantee of unattended completion.');
     const models = await baseline();
     if (options.stage === 'baseline') {
       receipt.completedAt = new Date().toISOString();

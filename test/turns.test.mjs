@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { summarizeTurn, messageState, taskLinks, readTurn, stopTurn, followTaskStreams, waitTurn, receiptStore } from '../src/turns.mjs';
 import { updateLiveControls } from '../src/protocol.mjs';
-import { withApp, resolveApp } from '../src/app.mjs';
+import { withApp, resolveApp, resolvePlatform } from '../src/app.mjs';
 const id = '38442602625749250', runId = '56322687642882050';
 const root = { user_type: 1, message_id: runId, index_in_conv: '1' };
 const text = value => ({ block_type: 10000, content: { text_block: { text: value } } });
@@ -56,10 +56,11 @@ test('task links merge repeated cards and hidden progress is omitted',()=>{
  const p={...text('planning'),control_info:{collapse_block_id:'elapsed'}};
  assert.equal(summarizeTurn(id,root,[reply(2,[p,text('answer')])],[]).reply.text,'answer');
 });
-function clientFor(handler) {
+function clientFor(handler, modernFacade = false) {
  const moduleCalls=[];let chunkLoads=0;
- const req=id=>{moduleCalls.push(id);if(id!==777777)throw new Error('Unexpected module '+id);return{iv:{AGWTaskTerminate:async body=>(await handler('https://www.doubao.com/alice/generaltask/terminate',{body:JSON.stringify(body)})).json()}}};
- req.m={777777:{toString:()=> 'r.d(exports,{Sf:()=>skillService,SI:()=>skillState});'}};
+ const tasks={AGWTaskTerminate:async body=>(await handler('https://www.doubao.com/alice/generaltask/terminate',{body:JSON.stringify(body)})).json()};
+ const req=id=>{moduleCalls.push(id);if(id!==777777)throw new Error('Unexpected module '+id);return modernFacade?{skillsFacadeApiService:{},flowAgentGeneralApiService:tasks}:{iv:tasks}};
+ req.m={777777:{toString:()=>modernFacade?'r.d(exports,{skillsFacadeApiService:()=>skills,flowAgentGeneralApiService:()=>tasks});':'r.d(exports,{Sf:()=>skillService,SI:()=>skillState});'}};
  req.e=async()=>{chunkLoads++;throw new Error('Unexpected chunk load')};
  const context=vm.createContext({URL,crypto,AbortSignal,AbortController,TextDecoder,setTimeout,clearTimeout,
  performance:{getEntriesByType:()=>[{name:'https://www.doubao.com/im/chain/recent_conv?aid=1044603&device_id=test'}]},
@@ -71,7 +72,7 @@ test('read rejects an unavailable requested run instead of selecting a newer tur
  const client=clientFor(async()=>Response.json({downlink_body:{batch_get_conv_info_downlink_body:{conversation_info_list:[{conversation_id:id,messages:[root]}]}}}));
  await withApp(resolveApp('work',{}),()=>assert.rejects(readTurn(client,id,{runId:'56322687642882051'}),/requested turn/));
 });
-test('cancellation resolves the active task service export without loading an unavailable chunk',async()=>{
+for(const modernFacade of [false,true])test(`cancellation resolves the ${modernFacade?'named':'legacy'} task service export without loading an unavailable chunk`,async()=>{
  let cancelled=false;const calls=[];
  const first=reply(2,[text('working'),task('56320433759901186')]);
  const client=clientFor(async(url,options)=>{
@@ -81,7 +82,7 @@ test('cancellation resolves the active task service export without loading an un
  if(url.includes('batch_get'))return Response.json({downlink_body:{batch_get_conv_info_downlink_body:{conversation_info_list:[{conversation_id:id,conversation_type:3,messages:[root,first]}]}}});
  if(url.includes('thread/info'))return Response.json({downlink_body:{get_thread_info_downlink_body:{thread_info:{source_conversation_id:id,ext:{thread_status:cancelled?'cancelled':'running'}}}}});
  return Response.json({downlink_body:{pull_thread_message_chain_downlink_body:{messages:[],has_more:false}}});
- });
+ },modernFacade);
  const result=await withApp(resolveApp('work',{}),()=>stopTurn(client,id,{runId,timeoutMs:1000}));
  assert.equal(result.stopped,true);assert.equal(result.status,'cancelled');
  assert.equal(calls.find(c=>c.url.includes('break_stream_msg')).body.uplink_body.break_stream_msg_uplink_body.reply_msg_id,runId);
@@ -198,4 +199,31 @@ test('answered inputs stop blocking a still-running task', async()=>{
  const client=clientFor(async()=>Response.json({downlink_body:{batch_get_conv_info_downlink_body:{conversation_info_list:[{conversation_id:id,messages:[root,message]}]}}}));
  const snapshot=await withApp(resolveApp('work',{}),()=>readTurn(client,id,{runId,receipt:{liveMessages:[live]}}));
  assert.equal(snapshot.result.status,'running');assert.deepEqual(snapshot.result.pending,[]);
+});
+
+test('server cancellation on the pinned question is terminal even before an assistant reply', () => {
+ const cancelledRoot={...root,ext:{is_finish:'1',is_interrupted:'true'}};
+ assert.equal(summarizeTurn(id,cancelledRoot,[],[]).status,'cancelled');
+ assert.equal(summarizeTurn(id,cancelledRoot,[],[]).reply,null);
+ // A normal user question's is_finish only means input storage finished.
+ assert.equal(summarizeTurn(id,{...root,ext:{is_finish:'1'}},[],[]).status,'running');
+ const newer=reply(3,[text('another turn')],{bot_reply_message_id:'56322687642882099'});
+ assert.equal(summarizeTurn(id,cancelledRoot,[newer],[]).status,'cancelled');
+ const child={threadId:'56320433759901186',status:'running',messages:[]};
+ assert.equal(summarizeTurn(id,cancelledRoot,[],[child]).status,'running');
+ assert.equal(summarizeTurn(id,cancelledRoot,[],[{...child,status:'unknown'}]).status,'running');
+ assert.equal(summarizeTurn(id,cancelledRoot,[],[],{handoffs:[{completed:false}]}).status,'running');
+});
+
+test('stop confirms a server-interrupted pinned question without cancelling a newer run',async()=>{
+ const cancelledRoot={...root,ext:{is_finish:'1',is_interrupted:'true'}};
+ const newer={...root,message_id:'56322687642882099',index_in_conv:'3'};
+ const client={imRequest:async route=>{
+  assert.equal(route,'conversation/batch_get','already-cancelled run must not submit another cancellation');
+  return {batch_get_conv_info_downlink_body:{conversation_info_list:[{conversation_id:id,messages:[cancelledRoot,newer]}]}};
+ }};
+ for(const app of ['work','headless']){
+  const result=await withApp(resolvePlatform(app,{}),()=>stopTurn(client,id,{runId,timeoutMs:1000}));
+  assert.equal(result.runId,runId);assert.equal(result.status,'cancelled');assert.equal(result.stopped,true);
+ }
 });
