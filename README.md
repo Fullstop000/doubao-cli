@@ -173,7 +173,7 @@ doubao mcp remove <connector-id>
 
 - Repeat `--arg` and `--env KEY=VALUE` for server arguments/environment.
 - `--mcp` requires a message; repeat `--mcp` each turn. New local conversations default to `AskOnRisk` on Headless and `FullAccess` on Desktop. Both backends inherit the saved local permission on follow-up unless `--permission` overrides it.
-- Desktop MCP requires `--wait`; incompatible with `--attach`. The desktop app owns tool execution and result upload. If the CLI disconnects or times out, use `sessions wait` with the same conversation/run IDs; it resumes observing the accepted task without resending it or starting another tool executor.
+- Desktop MCP requires `--wait`; incompatible with `--attach`. The desktop app owns tool execution and result upload. If the CLI disconnects or times out, use `sessions wait` with the same conversation/run IDs; it resumes tracking the accepted task without sending a new user message or starting another tool executor.
 - Desktop permission prompts are handled by the selected app. Respond there when a task needs approval; `sessions wait` does not approve or replay the tool. Headless keeps its separate terminal approval flow.
 - Desktop recovery does not require fresh local routing logs. Keep the selected app running and signed in; `waiting_input` requires a response in the app. If native MCP delivery is unavailable, waiting may time out; the CLI does not start a competing execution channel or replay tools. Work 2.34.12 is verified; older client/server combinations that required the previous compatibility relay are not covered by that result.
 - Headless approvals require terminal input/output and `--wait`; without `--wait`, operations requiring approval are denied.
